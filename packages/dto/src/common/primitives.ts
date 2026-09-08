@@ -37,15 +37,33 @@ export const PhoneNumberInputSchema = z
   );
 
 export function isDialablePhoneNumber(value: string): boolean {
+  return normalizePhoneNumber(value) !== null;
+}
+
+/**
+ * Canonical E.164 form of a number a person typed, or null when it is not one.
+ * Accepts E.164 with any punctuation, or a ten-digit North American number
+ * with an optional leading 1.
+ */
+export function normalizePhoneNumber(value: string): string | null {
   const trimmed = value.trim();
+
   if (trimmed.startsWith('+')) {
     const digits = trimmed.slice(1).replace(/\D/g, '');
-    return digits.length >= 7 && digits.length <= 15;
+    return digits.length >= 7 && digits.length <= 15 ? `+${digits}` : null;
   }
+
   const digits = trimmed.replace(/\D/g, '');
-  return (
-    digits.length === 10 || (digits.length === 11 && digits.startsWith('1'))
-  );
+
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `+${digits}`;
+  }
+
+  return null;
 }
 
 /** IANA time zone name accepted by the runtime's `Intl` implementation. */

@@ -177,33 +177,6 @@ const SendTargetShape = {
   to: PhoneNumberInputSchema.optional(),
 };
 
-export const MessageAttachmentInputSchema = z.object({
-  url: z.url(),
-  mimeType: z.string(),
-  fileName: z.string().max(255).optional(),
-  sizeBytes: z.number().int().positive().optional(),
-});
-
-/** Generic send used by the legacy endpoint; prefer SendSms / SendMms. */
-export const SendMessageSchema = z
-  .object({
-    fromPhoneNumberId: EntityIdSchema,
-    conversationId: EntityIdSchema.optional(),
-    to: z.string().trim().min(1).optional(),
-    body: z.string().trim().min(1).optional(),
-    attachments: z.array(MessageAttachmentInputSchema).optional(),
-  })
-  .superRefine((value, ctx) => {
-    requireConversationOrDestination(value, ctx);
-    if (!value.body && !value.attachments?.length) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Provide at least one of body or attachments',
-        path: ['body'],
-      });
-    }
-  });
-
 export const SendSmsSchema = z
   .object({
     ...SendTargetShape,
@@ -291,10 +264,6 @@ export type MessageMedia = z.infer<typeof MessageMediaSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageListQuery = z.infer<typeof MessageListQuerySchema>;
 export type MessageListResponse = z.infer<typeof MessageListResponseSchema>;
-export type MessageAttachmentInput = z.infer<
-  typeof MessageAttachmentInputSchema
->;
-export type SendMessage = z.infer<typeof SendMessageSchema>;
 export type SendSms = z.infer<typeof SendSmsSchema>;
 export type SendSmsResponse = z.infer<typeof SendSmsResponseSchema>;
 export type MessagePreparedMedia = z.infer<typeof MessagePreparedMediaSchema>;

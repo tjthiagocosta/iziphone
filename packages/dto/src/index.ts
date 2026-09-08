@@ -6,6 +6,7 @@
  * schema; pass the inferred type around inside.
  */
 export * from './admin/index.js';
+export * from './calls/index.js';
 export * from './common/index.js';
 export * from './socket/index.js';
 export * from './user/index.js';

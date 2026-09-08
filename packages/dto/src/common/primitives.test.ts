@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   E164PhoneNumberSchema,
   IsoDateTimeSchema,
+  normalizePhoneNumber,
   PhoneNumberInputSchema,
   QueryBooleanSchema,
   TimeOfDaySchema,
@@ -13,7 +14,7 @@ describe('E164PhoneNumberSchema', () => {
     expect(E164PhoneNumberSchema.safeParse('+15555550100').success).toBe(true);
   });
 
-  test.each(['15555550100', '+1 555 555 0100', '+1234', '+1234567890123456'])(
+  test.each(['15555550100', '+1 555 555 0100', '+1234', '+1555555019923456'])(
     'rejects %s',
     (value) => {
       expect(E164PhoneNumberSchema.safeParse(value).success).toBe(false);
@@ -96,5 +97,28 @@ describe('TimeZoneSchema', () => {
   test('rejects unknown names and abbreviations', () => {
     expect(TimeZoneSchema.safeParse('Mars/Olympus').success).toBe(false);
     expect(TimeZoneSchema.safeParse('').success).toBe(false);
+  });
+});
+
+describe('normalizePhoneNumber', () => {
+  test.each([
+    ['(555) 555-0100', '+15555550100'],
+    ['1 555 555 0100', '+15555550100'],
+    ['+1 (555) 555-0100', '+15555550100'],
+    ['+44 7700 900123', '+447700900123'],
+    ['  +15555550100  ', '+15555550100'],
+  ])('normalizes %s to %s', (input, expected) => {
+    expect(normalizePhoneNumber(input)).toBe(expected);
+  });
+
+  test.each([
+    '',
+    'abc',
+    '555-0100',
+    '+12',
+    '2 555 555 0100',
+    '+1555555019923456',
+  ])('returns null for %s', (input) => {
+    expect(normalizePhoneNumber(input)).toBeNull();
   });
 });

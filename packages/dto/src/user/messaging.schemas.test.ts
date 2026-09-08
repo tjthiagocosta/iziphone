@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest';
 import {
   MessageConversationListQuerySchema,
   RequestMessageMediaUploadSchema,
-  SendMessageSchema,
   SendMmsSchema,
   SendSmsSchema,
 } from './messaging.schemas.js';
@@ -92,16 +91,6 @@ describe('SendMmsSchema', () => {
     expect(
       SendMmsSchema.safeParse({ ...base, attachmentIds: ['m1'] }).success,
     ).toBe(true);
-  });
-});
-
-describe('SendMessageSchema', () => {
-  test('requires a body or an attachment', () => {
-    const result = SendMessageSchema.safeParse({
-      fromPhoneNumberId: 'phone-1',
-      to: '+15555550100',
-    });
-    expect(result.success).toBe(false);
   });
 });
 

@@ -67,6 +67,11 @@ export const AssignPhoneNumberSchema = z.object({
   phoneNumberId: EntityIdSchema,
 });
 
+/** Links a user to their identity in the telephony provider; called by the call controller. */
+export const SyncTelephonyUserSchema = z.object({
+  telephonyUserId: z.string().trim().min(1, 'telephonyUserId is required'),
+});
+
 // ---------------------------------------------------------------------------
 // Responses
 // ---------------------------------------------------------------------------
@@ -107,6 +112,7 @@ export type UpdateUser = z.infer<typeof UpdateUserSchema>;
 export type UserListQuery = z.infer<typeof UserListQuerySchema>;
 export type AssignDepartment = z.infer<typeof AssignDepartmentSchema>;
 export type AssignPhoneNumber = z.infer<typeof AssignPhoneNumberSchema>;
+export type SyncTelephonyUser = z.infer<typeof SyncTelephonyUserSchema>;
 export type UserDepartmentResponse = z.infer<
   typeof UserDepartmentResponseSchema
 >;
