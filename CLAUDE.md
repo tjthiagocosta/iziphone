@@ -69,6 +69,7 @@ rules below refine them.
 - The services run on Node, not Bun. Do not use Bun-only APIs (`Bun.*`, `bun:*` imports) anywhere in `apps/` or `packages/`.
 - Prisma 7 generates the client into `packages/db/src/generated/` (gitignored) and `tsc` compiles it into `dist/`. `packages/db/prisma.config.ts` loads the repository-root `.env`; the schema file no longer contains the database URL.
 - The `prisma` CLI lives in the root `devDependencies`, not in `packages/db`, and `pnpm-workspace.yaml` turns off `autoInstallPeers`, `dedupePeerDependents`, and `resolvePeersFromWorkspaceRoot`. Together these keep `@prisma/client`'s and `better-auth`'s optional peers (the Prisma CLI, Studio, TypeScript, Next.js) out of the production images. If a new dependency needs a peer, declare it explicitly in that workspace, then run `pnpm peers check`.
+  `packages/db` deliberately declares no `typescript` of its own: `@prisma/client` would resolve it as a peer and pnpm would then ship the compiler in the production image. It uses the root one.
 - Prisma is on `db:push` with no migrations directory yet. Do not run `db:push` against anything but a local database.
 - `NODE_ENV=development` disables Twilio signature validation in both services. Never set it on a reachable deployment.
 - Better Auth cookies get a `__Secure-` prefix in production. Anything that reads the session cookie by name must handle both forms.
