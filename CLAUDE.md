@@ -23,20 +23,27 @@ Design rule that must hold: **the call controller never touches Postgres.** It r
 
 ## Commands
 
-```bash
-pnpm install                                         # Node 24 LTS, pnpm 12 (corepack enable)
-docker compose -f docker-compose.dev.yml up -d       # Postgres + Redis
-pnpm db:push                                         # generates the Prisma client and applies the schema
-pnpm dev                                             # builds shared packages, then all three apps via turbo
+Requires Node 24 LTS and pnpm 12 (`corepack enable`). Postgres and Redis come
+from `docker compose -f docker-compose.dev.yml up -d`.
 
-pnpm test                                            # turbo -> vitest per workspace, mocked Twilio/Redis/Postgres
-pnpm typecheck                                       # turbo -> tsc --noEmit per app
-pnpm lint                                            # biome check
-pnpm check                                           # lint + typecheck + test
-pnpm lint:fix
-```
+- Install: `pnpm install`
+- Typecheck: `pnpm typecheck`
+- Lint: `pnpm lint` (`pnpm lint:fix` to apply fixes)
+- Test (single file): `pnpm --filter @repo/api exec vitest run src/routes/auth.test.ts`
+  (swap the workspace name and path; on a fresh clone run `pnpm turbo run build --filter='./packages/*'` first)
+- Test (all): `pnpm test`
+- Run locally: `pnpm db:push` once, then `pnpm dev` (web :3000, api :3001, call controller :3002)
+- Everything: `pnpm check` (lint + typecheck + test)
 
 Turbo builds the shared packages before `dev`, `test`, and `typecheck` run, because every shared package exports only its compiled `dist/` and the apps use TypeScript project references to it. In `pnpm dev` the packages run `tsc --watch`, so edits to them rebuild automatically. Task results are cached; a second `pnpm check` with no changes is instant.
+
+## Engineering conventions
+
+The global engineering conventions (organize by feature, deep modules with one
+entry point, pure logic separated from I/O, explicit dependencies, validated
+boundaries, tests on every public interface, smallest correct change, ask
+before adding libraries or abstractions) apply here in full. The repo-specific
+rules below refine them.
 
 ## Conventions
 
