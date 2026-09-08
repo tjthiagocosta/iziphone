@@ -4,6 +4,7 @@
   "description": "A source-available business phone system for teams, powered by Twilio.",
   "license": "SEE LICENSE IN LICENSE",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
