@@ -223,14 +223,16 @@ All services and the Prisma CLI read the root `.env`. `.env.example` documents e
 | `API_PORT`, `API_HOST` | api | Listen address (default `3001`) |
 | `CALL_CONTROLLER_PORT`, `CALL_CONTROLLER_HOST` | call-controller | Listen address (default `3002`) |
 | `BETTER_AUTH_SECRET` | api, call-controller | Session signing secret. Also signs the socket JWT. Generate with `openssl rand -base64 32` |
-| `BETTER_AUTH_URL` | api | Public URL of the API, used for auth callbacks |
+| `BETTER_AUTH_URL` | api | Public URL of the API. Auth callbacks, Twilio messaging webhooks and media links are built on it |
+| `INTERNAL_API_TOKEN` | api, call-controller | Shared secret the call controller presents on the API's `/internal` routes. Generate with `openssl rand -base64 32` |
 | `CORS_ORIGIN` | api, call-controller | Allowed browser origin (the web app URL) |
 | `NEXT_PUBLIC_API_URL` | web | API URL the browser calls |
 | `NEXT_PUBLIC_CALL_CONTROLLER_URL` | web | Call controller URL for Socket.IO and voice tokens |
 | `WEBHOOK_BASE_URL` | api, call-controller | Public HTTPS base URL of the call controller that Twilio can reach |
 | `INTERNAL_API_URL` | call-controller | Where the call controller reaches the API's internal routes (default `http://localhost:3001`) |
 | `DEPARTMENT_CACHE_TTL_SECONDS` | api | Routing cache TTL in Redis (default 24 hours) |
-| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | api, call-controller | Account credentials and webhook signature validation |
+| `MESSAGING_MEDIA_STORAGE_DIR` | api | Directory for MMS attachments (default `.data/messaging-media`) |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | api, call-controller | Account credentials and webhook signature validation. Set both or neither |
 | `TWILIO_API_KEY`, `TWILIO_API_SECRET` | call-controller | Voice token minting |
 | `TWILIO_TWIML_APP_SID` | call-controller | TwiML app for outbound browser calls |
 | `TWILIO_PHONE_NUMBER` | api, call-controller | Default caller ID when a user has no assigned number |
