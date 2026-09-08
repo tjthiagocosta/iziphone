@@ -8,7 +8,7 @@
     "build": {
       "dependsOn": ["^build"],
       "env": ["NEXT_PUBLIC_*"],
-      "outputs": [".next/**", "!.next/cache/**", "dist/**", "src/generated/**"]
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
     },
     "dev": {
       "dependsOn": ["^build"],

@@ -1,0 +1,543 @@
+// Schema for the business API database. The call controller never reads it;
+// it consumes the routing cache the API writes to Redis.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// Enums
+// ============================================
+
+enum Role {
+  ADMIN
+  SUPERVISOR
+  AGENT
+}
+
+enum PhoneNumberType {
+  LOCAL
+  TOLL_FREE
+}
+
+enum PhoneNumberStatus {
+  ACTIVE
+  RESERVED
+  RELEASED
+}
+
+enum RoutingType {
+  SIMULTANEOUS
+  FIXED_ORDER
+}
+
+enum ClosedHoursRouting {
+  VOICEMAIL
+  EXTERNAL_NUMBER
+}
+
+enum TelephonyProvider {
+  VONAGE
+  TWILIO
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageChannel {
+  SMS
+  MMS
+}
+
+enum MessageStatus {
+  RECEIVED
+  PENDING
+  ACCEPTED
+  DELIVERED
+  FAILED
+  REJECTED
+  EXPIRED
+  BUFFERED
+  UNKNOWN
+}
+
+enum MessageProviderEventType {
+  INBOUND
+  STATUS
+}
+
+enum MessageProviderEventProcessingState {
+  RECEIVED
+  PROCESSED
+  QUARANTINED
+  ORPHANED
+}
+
+// ============================================
+// Auth Models (Better Auth)
+// ============================================
+
+model User {
+  id              String  @id @default(cuid())
+  email           String  @unique
+  name            String?
+  emailVerified   Boolean @default(false) @map("email_verified")
+  image           String?
+  role            Role    @default(AGENT)
+  telephonyUserId String? @unique @map("telephony_user_id")
+
+  // Relations
+  departments          UserDepartment[]
+  phoneNumbers         PhoneNumber[]
+  calls                Call[]
+  messageConversations MessageConversation[]
+  preparedMessageMedia MessagePreparedMedia[]
+  sessions             Session[]
+  accounts             Account[]
+
+  // Audit fields
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  createdBy String?   @map("created_by")
+  updatedBy String?   @map("updated_by")
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("sessions")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String    @map("account_id")
+  providerId            String    @map("provider_id")
+  userId                String    @map("user_id")
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?   @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  idToken               String?   @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  @@map("accounts")
+}
+
+model Verification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime  @map("expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime? @updatedAt @map("updated_at")
+
+  @@map("verifications")
+}
+
+// ============================================
+// Phone Number Management
+// ============================================
+
+model PhoneNumber {
+  id           String            @id @default(cuid())
+  phoneNumber  String            @unique @map("phone_number")
+  friendlyName String?           @map("friendly_name")
+  type         PhoneNumberType   @default(LOCAL)
+  label        String?
+  provider     TelephonyProvider @default(TWILIO)
+
+  // Locality information
+  locality String? // City (e.g., "Springfield")
+  region   String? // State/Region (e.g., "IL")
+  country  String? @default("US") // Country code (e.g., "US")
+
+  // Capabilities
+  voiceEnabled Boolean @default(true) @map("voice_enabled")
+  smsEnabled   Boolean @default(false) @map("sms_enabled")
+  mmsEnabled   Boolean @default(false) @map("mms_enabled")
+  faxEnabled   Boolean @default(false) @map("fax_enabled")
+
+  // Assignment (nullable - can be unassigned/reserved)
+  userId               String?               @map("user_id")
+  user                 User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  departmentId         String?               @map("department_id")
+  department           Department?           @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  isPrimary            Boolean               @default(false) @map("is_primary")
+  messageConversations MessageConversation[]
+  messageSuppressions  MessageSuppression[]
+
+  status PhoneNumberStatus @default(ACTIVE)
+
+  // Audit fields
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  createdBy String?   @map("created_by")
+  updatedBy String?   @map("updated_by")
+
+  @@map("phone_numbers")
+}
+
+// ============================================
+// Department Management
+// ============================================
+
+model Department {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+
+  // Relations
+  phoneNumbers         PhoneNumber[]
+  users                UserDepartment[]
+  settings             DepartmentSettings?
+  businessHours        BusinessHours[]
+  holidays             Holiday[]
+  calls                Call[]
+  messageConversations MessageConversation[]
+
+  // Audit fields
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  createdBy String?   @map("created_by")
+  updatedBy String?   @map("updated_by")
+
+  @@map("departments")
+}
+
+model UserDepartment {
+  id           String     @id @default(cuid())
+  userId       String     @map("user_id")
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId String     @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  order        Int        @default(0) // For fixed routing order
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  @@unique([userId, departmentId])
+  @@map("user_departments")
+}
+
+model DepartmentSettings {
+  id           String     @id @default(cuid())
+  departmentId String     @unique @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  timezone  String  @default("America/Chicago")
+  is24Hours Boolean @default(false) @map("is_24_hours")
+
+  openHoursRoutingType      RoutingType        @default(SIMULTANEOUS) @map("open_hours_routing_type")
+  closedHoursRoutingType    ClosedHoursRouting @default(VOICEMAIL) @map("closed_hours_routing_type")
+  closedHoursExternalNumber String?            @map("closed_hours_external_number")
+
+  ringDuration         Int     @default(30) @map("ring_duration") // seconds (10-45)
+  voicemailGreetingUrl String? @map("voicemail_greeting_url")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("department_settings")
+}
+
+model BusinessHours {
+  id           String     @id @default(cuid())
+  departmentId String     @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int        @map("day_of_week") // 0=Sunday, 6=Saturday
+  isOpen       Boolean    @default(true) @map("is_open")
+  openTime     String?    @map("open_time") // "08:00"
+  closeTime    String?    @map("close_time") // "17:00"
+
+  @@unique([departmentId, dayOfWeek])
+  @@map("business_hours")
+}
+
+model Holiday {
+  id           String             @id @default(cuid())
+  departmentId String             @map("department_id")
+  department   Department         @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  name         String
+  date         DateTime
+  isRecurring  Boolean            @default(false) @map("is_recurring") // Annual repeat
+  routingType  ClosedHoursRouting @map("routing_type")
+  routingValue String?            @map("routing_value") // External number if applicable
+  createdAt    DateTime           @default(now()) @map("created_at")
+
+  @@map("holidays")
+}
+
+// ============================================
+// Audit Log
+// ============================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  action     String // e.g., "user.created", "department.updated"
+  entityType String   @map("entity_type") // e.g., "User", "Department"
+  entityId   String   @map("entity_id")
+  userId     String?  @map("user_id") // Who performed the action
+  changes    Json? // What changed
+  metadata   Json? // Additional context
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================
+// Communication Models
+// ============================================
+
+model Contact {
+  id                   String                @id @default(cuid())
+  phoneNumber          String                @unique @map("phone_number")
+  name                 String?
+  messageConversations MessageConversation[]
+  messageSuppressions  MessageSuppression[]
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+
+  @@map("contacts")
+}
+
+model MessageConversation {
+  id                  String                 @id @default(cuid())
+  contactId           String                 @map("contact_id")
+  contact             Contact                @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sourcePhoneNumberId String                 @map("source_phone_number_id")
+  sourcePhoneNumber   PhoneNumber            @relation(fields: [sourcePhoneNumberId], references: [id], onDelete: Restrict)
+  userId              String?                @map("user_id")
+  user                User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  departmentId        String?                @map("department_id")
+  department          Department?            @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  unreadCount         Int                    @default(0) @map("unread_count")
+  lastReadAt          DateTime?              @map("last_read_at")
+  lastMessageAt       DateTime?              @map("last_message_at")
+  messages            Message[]
+  providerEvents      MessageProviderEvent[]
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+
+  @@unique([contactId, sourcePhoneNumberId])
+  @@index([userId, lastMessageAt])
+  @@index([departmentId, lastMessageAt])
+  @@index([sourcePhoneNumberId])
+  @@map("message_conversations")
+}
+
+model Call {
+  id               String            @id @default(cuid())
+  conversationUuid String            @unique @map("conversation_uuid")
+  callerLegUuid    String?           @map("caller_leg_uuid")
+  agentLegUuid     String?           @map("agent_leg_uuid")
+  externalLegUuid  String?           @map("external_leg_uuid")
+  from             String
+  to               String
+  status           String
+  duration         Int?
+  recordingUrl     String?           @map("recording_url")
+  transcript       String?
+  direction        String
+  provider         TelephonyProvider @default(TWILIO)
+  userId           String?           @map("user_id")
+  user             User?             @relation(fields: [userId], references: [id])
+  departmentId     String?           @map("department_id")
+  department       Department?       @relation(fields: [departmentId], references: [id])
+  events           CallEvent[]
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+
+  @@map("calls")
+}
+
+// ============================================
+// Call Events (Timeline)
+// ============================================
+
+enum CallEventType {
+  CALL_INITIATED
+  CALL_RINGING
+  CALL_ANSWERED
+  CALL_COMPLETED
+  CALL_FAILED
+  CALL_CANCELED
+  CALL_NO_ANSWER
+  CALL_BUSY
+  CALL_TRANSFERRED
+  CALL_HELD
+  CALL_RESUMED
+  VOICEMAIL_STARTED
+  VOICEMAIL_COMPLETED
+  DIAL_INITIATED
+  DIAL_ANSWERED
+  DIAL_NO_ANSWER
+  DIAL_BUSY
+  DIAL_FAILED
+}
+
+enum CallActorType {
+  SYSTEM
+  CALLER
+  AGENT
+  PROVIDER
+}
+
+model CallEvent {
+  id        String        @id @default(cuid())
+  callId    String        @map("call_id")
+  call      Call          @relation(fields: [callId], references: [id], onDelete: Cascade)
+  eventType CallEventType @map("event_type")
+  timestamp DateTime      @default(now())
+
+  // Actor information (who/what triggered this event)
+  actorType CallActorType @map("actor_type")
+  actorId   String?       @map("actor_id") // User ID if agent, phone number if caller
+  actorName String?       @map("actor_name") // Display name
+
+  // Human-readable description for timeline UI
+  description String
+
+  // Additional metadata (dial status, duration, etc.)
+  metadata Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([callId, timestamp])
+  @@index([eventType])
+  @@map("call_events")
+}
+
+model Message {
+  id                String                 @id @default(cuid())
+  body              String?
+  from              String
+  to                String
+  conversationId    String                 @map("conversation_id")
+  conversation      MessageConversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction         MessageDirection       @default(OUTBOUND)
+  channel           MessageChannel         @default(SMS)
+  status            MessageStatus          @default(UNKNOWN)
+  provider          TelephonyProvider      @default(TWILIO)
+  providerMessageId String?                @unique @map("provider_message_id")
+  clientReference   String?                @map("client_reference")
+  failureCode       String?                @map("failure_code")
+  failureReason     String?                @map("failure_reason")
+  providerPayload   Json?                  @map("provider_payload")
+  statusPayload     Json?                  @map("status_payload")
+  providerTimestamp DateTime?              @map("provider_timestamp")
+  sentAt            DateTime?              @map("sent_at")
+  deliveredAt       DateTime?              @map("delivered_at")
+  failedAt          DateTime?              @map("failed_at")
+  attachments       MessageMedia[]
+  providerEvents    MessageProviderEvent[]
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @updatedAt @map("updated_at")
+
+  @@unique([conversationId, clientReference])
+  @@index([conversationId, createdAt])
+  @@index([status])
+  @@map("messages")
+}
+
+model MessageMedia {
+  id          String   @id @default(cuid())
+  messageId   String   @map("message_id")
+  message     Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  storageUrl  String   @map("storage_url")
+  originalUrl String?  @map("original_url")
+  mimeType    String   @map("mime_type")
+  fileName    String?  @map("file_name")
+  sizeBytes   Int?     @map("size_bytes")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([messageId])
+  @@map("message_media")
+}
+
+model MessagePreparedMedia {
+  id               String    @id @default(cuid())
+  storageUrl       String    @map("storage_url")
+  publicUrl        String    @map("public_url")
+  mimeType         String    @map("mime_type")
+  fileName         String    @map("file_name")
+  sizeBytes        Int       @map("size_bytes")
+  uploadedByUserId String    @map("uploaded_by_user_id")
+  uploadedByUser   User      @relation(fields: [uploadedByUserId], references: [id], onDelete: Cascade)
+  uploadToken      String    @unique @map("upload_token")
+  uploadedAt       DateTime? @map("uploaded_at")
+  expiresAt        DateTime  @map("expires_at")
+  consumedAt       DateTime? @map("consumed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([uploadedByUserId, expiresAt])
+  @@map("message_prepared_media")
+}
+
+model MessageSuppression {
+  id                  String      @id @default(cuid())
+  contactId           String      @map("contact_id")
+  contact             Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sourcePhoneNumberId String      @map("source_phone_number_id")
+  sourcePhoneNumber   PhoneNumber @relation(fields: [sourcePhoneNumberId], references: [id], onDelete: Cascade)
+  keyword             String
+  reason              String
+  suppressedAt        DateTime    @map("suppressed_at")
+  releasedAt          DateTime?   @map("released_at")
+  createdAt           DateTime    @default(now()) @map("created_at")
+
+  @@unique([contactId, sourcePhoneNumberId])
+  @@index([sourcePhoneNumberId])
+  @@map("message_suppressions")
+}
+
+model MessageProviderEvent {
+  id                String                              @id @default(cuid())
+  provider          TelephonyProvider                   @default(TWILIO)
+  eventType         MessageProviderEventType            @map("event_type")
+  providerEventId   String?                             @map("provider_event_id")
+  providerMessageId String?                             @map("provider_message_id")
+  dedupeKey         String                              @unique @map("dedupe_key")
+  messageId         String?                             @map("message_id")
+  message           Message?                            @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  conversationId    String?                             @map("conversation_id")
+  conversation      MessageConversation?                @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  payload           Json
+  processingState   MessageProviderEventProcessingState @default(RECEIVED) @map("processing_state")
+  processingError   String?                             @map("processing_error")
+  processedAt       DateTime?                           @map("processed_at")
+  createdAt         DateTime                            @default(now()) @map("created_at")
+
+  @@index([providerMessageId])
+  @@index([messageId])
+  @@index([conversationId])
+  @@map("message_provider_events")
+}
