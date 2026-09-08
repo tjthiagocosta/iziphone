@@ -1,0 +1,35 @@
+packages:
+  - apps/*
+  - packages/*
+
+engineStrict: true
+
+# Only these dependencies may run install scripts; pnpm blocks all others.
+allowBuilds:
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true
+
+# Transitive pins that block CVE fixes.
+overrides:
+  deepmerge-ts: ^8.0.2
+  mysql2: ^3.24.4
+
+# pnpm's default minimum release age would otherwise hold back these pins.
+minimumReleaseAgeExclude:
+  - '@types/node@26.5.0'
+  - mysql2@3.24.4
+
+peerDependencyRules:
+  allowedVersions:
+    # better-auth declares an optional Vitest peer that predates Vitest 5.
+    'better-auth>vitest': '5'
+
+# Do not auto-install peers: better-auth and @prisma/client declare optional integrations (next, prisma, react, ...)
+# that would otherwise land in the production images. Required peers are declared explicitly in each workspace.
+autoInstallPeers: false
+# Resolve peers per importer instead of deduplicating across the workspace, for the same reason.
+dedupePeerDependents: false
+# @prisma/client declares prisma and typescript as optional peers; keeping them at the workspace root and not
+# resolving root peers keeps the CLI, Studio and the TypeScript compiler out of the production images.
+resolvePeersFromWorkspaceRoot: false

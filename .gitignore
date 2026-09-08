@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+.turbo/
+
+# Prisma generated client (rebuilt by `pnpm db:generate` / `pnpm build`)
+packages/db/src/generated/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Database dumps and operational data. Never commit real call, message or contact data.
+*.sql
+*.sql.gz
+*.dump
+*.dump.gz
+!**/prisma/migrations/**/*.sql
+recordings/
+exports/
+*.wav
+*.mp3
+
+# Local overrides
+docker-compose.override.yml
+
+# Editor and agent state
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.claude/
+.cursor/
+.aider*
+CLAUDE.local.md
