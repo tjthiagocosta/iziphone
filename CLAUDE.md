@@ -28,6 +28,16 @@ is its only public surface; import another module through it, never from its
 files. Route files end in `.routes.ts`, and `routes.ts` at the root composes
 them into the `/api/user`, `/api/admin` and `/internal` groups.
 
+`apps/call-controller/src` follows the same shape: `config.ts` validates the
+environment once at startup, `infra/` holds Redis and Twilio signature
+validation, `routing/` the cache lookup with its API fallback, business hours
+and the pure inbound call plan, `calls/` the call state in Redis, the Twilio
+telephony service, the call flow the webhooks drive, the voice and webhook
+routes and the Redis command and event bridges, `realtime/` the Socket.IO
+server, its auth, presence and the call-ended broadcast, and `health/` the
+health routes. `calls` never imports `realtime`; `app.ts` passes it in behind
+the `CallRealtime` interface.
+
 Design rule that must hold: **the call controller never touches Postgres.** It reads routing from the Redis cache the API writes, with an HTTP fallback to the API's `/internal` routes.
 
 ## Commands

@@ -51,3 +51,6 @@ docker-compose.override.yml
 .cursor/
 .aider*
 CLAUDE.local.md
+
+# Codegraph index (local, rebuilt with `codegraph index .`)
+.codegraph/

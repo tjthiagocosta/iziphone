@@ -212,7 +212,7 @@ importers:
         version: link:../../packages/events
       '@socket.io/redis-adapter':
         specifier: ^8.3.0
-        version: 8.3.0(socket.io-adapter@2.5.8)
+        version: 8.3.0
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
@@ -225,18 +225,15 @@ importers:
       ioredis:
         specifier: ^6.0.0
         version: 6.0.0
-      jose:
-        specifier: ^6.2.12
-        version: 6.2.12
       socket.io:
         specifier: ^4.8.3
         version: 4.8.3
-      socket.io-adapter:
-        specifier: ^2.5.5
-        version: 2.5.8
       twilio:
         specifier: ^6.1.0
         version: 6.1.0
+      zod:
+        specifier: ^4.5.4
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: ^26.5.0
@@ -4792,11 +4789,10 @@ snapshots:
 
   '@socket.io/component-emitter@3.1.2': {}
 
-  '@socket.io/redis-adapter@8.3.0(socket.io-adapter@2.5.8)':
+  '@socket.io/redis-adapter@8.3.0':
     dependencies:
       debug: 4.3.7
       notepack.io: 3.0.1
-      socket.io-adapter: 2.5.8
       uid2: 1.0.0
     transitivePeerDependencies:
       - supports-color
