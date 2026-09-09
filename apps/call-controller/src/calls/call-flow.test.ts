@@ -692,7 +692,7 @@ describe('CallFlow', () => {
         conversationUuid: 'CAcall1',
         recordingUrl: 'https://api.twilio.example.com/recordings/RE1',
         duration: 18,
-        context: 'missing-routing',
+        context: 'voicemail',
       });
       expect(events.callEnded).toHaveBeenCalledWith(
         expect.objectContaining({ conversationUuid: 'CAcall1' }),
@@ -713,8 +713,43 @@ describe('CallFlow', () => {
         conversationUuid: 'CAcall1',
         transcript: 'Please call me back.',
         recordingUrl: undefined,
-        context: 'closed-hours',
+        context: 'voicemail',
       });
+    });
+
+    test('a recording of the call itself is handed over without ending the call', async () => {
+      const { flow, events, telephony } = buildFlow({ online: ['user-1'] });
+      await flow.acceptInboundCall({
+        callSid: 'CAcall1',
+        from: caller,
+        to: businessNumber,
+      });
+
+      await flow.handleRecordingReady({
+        conversationUuid: 'CAcall1',
+        recordingUrl: 'https://api.twilio.example.com/recordings/RE2',
+        duration: 240,
+        context: 'conference',
+      });
+
+      expect(events.callRecordingReady).toHaveBeenCalledWith(
+        expect.objectContaining({ context: 'conference' }),
+      );
+      expect(events.callEnded).not.toHaveBeenCalled();
+      await expect(telephony.getCallState('CAcall1')).resolves.not.toBeNull();
+    });
+
+    test('ignores a recording callback without a context', async () => {
+      const { flow, events } = buildFlow();
+
+      await flow.handleRecordingReady({
+        conversationUuid: 'CAcall1',
+        recordingUrl: 'https://api.twilio.example.com/recordings/RE3',
+        duration: 5,
+        context: undefined,
+      });
+
+      expect(events.callRecordingReady).not.toHaveBeenCalled();
     });
   });
 

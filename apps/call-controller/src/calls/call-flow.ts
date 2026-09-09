@@ -287,21 +287,25 @@ export class CallFlow {
 
   /** Twilio finished a recording; only voicemail recordings end the call. */
   async handleRecordingReady(notice: RecordingReadyNotice): Promise<void> {
-    if (!notice.context || notice.context === 'conference') {
+    if (!notice.context) {
+      return;
+    }
+
+    const context = recordingContextOf(notice.context);
+    await this.deps.events.callRecordingReady({
+      conversationUuid: notice.conversationUuid,
+      recordingUrl: notice.recordingUrl,
+      duration: notice.duration,
+      context,
+    });
+
+    if (context !== 'voicemail') {
       return;
     }
 
     const state = await this.deps.telephony.getCallState(
       notice.conversationUuid,
     );
-
-    await this.deps.events.callRecordingReady({
-      conversationUuid: notice.conversationUuid,
-      recordingUrl: notice.recordingUrl,
-      duration: notice.duration,
-      context: notice.context,
-    });
-
     if (state) {
       await this.finalize(state, 'completed');
     }
@@ -314,7 +318,7 @@ export class CallFlow {
       conversationUuid: notice.conversationUuid,
       transcript: notice.transcript.trim(),
       recordingUrl: notice.recordingUrl,
-      context: notice.context,
+      context: notice.context ? recordingContextOf(notice.context) : undefined,
     });
   }
 
@@ -934,6 +938,14 @@ export class CallFlow {
       this.deps.log.error({ err: error }, `Background ${description} failed`);
     });
   }
+}
+
+/**
+ * Recording callbacks carry the voicemail reason or `conference`. The API
+ * only distinguishes voicemails from recordings of the call itself.
+ */
+function recordingContextOf(context: string): 'voicemail' | 'conference' {
+  return context === 'conference' ? 'conference' : 'voicemail';
 }
 
 function incomingCallOf(state: CallState): IncomingCall {
