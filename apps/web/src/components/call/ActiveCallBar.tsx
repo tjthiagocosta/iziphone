@@ -19,6 +19,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import type { CallStatus } from '@/hooks/use-telephony-client';
+import { formatPhoneNumber } from '@/lib/phone-number';
 import { cn } from '@/lib/utils';
 import { KeypadModal } from './KeypadModal';
 
@@ -37,23 +39,9 @@ function formatDuration(seconds: number): string {
 }
 
 /**
- * Format phone number for display
- */
-function formatPhoneNumber(phone: string): string {
-  const cleaned = phone.replace(/\D/g, '');
-  if (cleaned.length === 11 && cleaned.startsWith('1')) {
-    return `(${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7)}`;
-  }
-  if (cleaned.length === 10) {
-    return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
-  }
-  return phone;
-}
-
-/**
  * Get call status display text
  */
-function getCallStatusText(status: string, duration: number): string {
+function getCallStatusText(status: CallStatus, duration: number): string {
   switch (status) {
     case 'connecting':
       return 'Connecting...';
@@ -65,7 +53,7 @@ function getCallStatusText(status: string, duration: number): string {
       return formatDuration(duration);
     case 'disconnected':
       return 'Call ended';
-    default:
+    case 'idle':
       return '';
   }
 }
@@ -86,11 +74,6 @@ export function ActiveCallBar() {
   } = useCall();
 
   const [isKeypadOpen, setIsKeypadOpen] = useState(false);
-
-  // Don't render if no active call
-  if (callStatus === 'idle') {
-    return null;
-  }
 
   const displayNumber = remoteNumber
     ? formatPhoneNumber(remoteNumber)

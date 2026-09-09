@@ -74,16 +74,7 @@ export function getAvatarColor(identifier: string): string {
 }
 
 // Format phone number for display
-export function formatPhoneNumber(phone: string): string {
-  const cleaned = phone.replace(/\D/g, '');
-  if (cleaned.length === 10) {
-    return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
-  }
-  if (cleaned.length === 11 && cleaned[0] === '1') {
-    return `(${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7)}`;
-  }
-  return phone;
-}
+export { formatPhoneNumber } from '@/lib/phone-number';
 
 // Mock departments
 // Note: phone numbers use the NANP-reserved fictional range (555-0100 to 555-0199)

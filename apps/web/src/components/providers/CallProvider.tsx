@@ -9,36 +9,26 @@ import {
   useEffect,
   useState,
 } from 'react';
-import { useCallSocket } from '@/hooks/useCallSocket';
+import { useCallSocket } from '@/hooks/use-call-socket';
 import {
   type CallStatus,
   type DeviceStatus,
   useTelephonyClient,
-} from '@/hooks/useTelephonyClient';
+} from '@/hooks/use-telephony-client';
 import { useAuth } from './AuthProvider';
 
-/**
- * Call context value - provides global call state and actions
- */
-interface CallContextValue {
-  // Device state
+export interface CallContextValue {
   deviceStatus: DeviceStatus;
-  error: string | null;
-
-  // Call state
   callStatus: CallStatus;
   remoteNumber: string | null;
+  /** Seconds since the current call connected. */
   callDuration: number;
   isMuted: boolean;
   isEndingCall: boolean;
-
-  // Incoming call (from socket)
+  error: string | null;
+  /** A call the controller offered this user and Twilio may be about to ring. */
   incomingCall: IncomingCall | null;
-
-  // Socket connection
   isSocketConnected: boolean;
-
-  // Actions
   makeCall: (to: string) => Promise<void>;
   hangUp: () => void;
   sendDigits: (digits: string) => void;
@@ -50,137 +40,74 @@ interface CallContextValue {
 const CallContext = createContext<CallContextValue | null>(null);
 
 /**
- * Call provider component
- * Manages the Twilio client session, socket connection, and call state globally
+ * Owns the phone for the signed-in user: the Twilio device and the socket
+ * over which the call controller offers calls. Calls arrive on both; the
+ * socket shows the offer, and the device carries the audio.
  */
 export function CallProvider({ children }: { children: ReactNode }) {
-  const { user, getToken } = useAuth();
-
-  // Call duration timer
+  const { user, getRealtimeToken } = useAuth();
+  const telephony = useTelephonyClient({
+    identity: user?.id,
+    getRealtimeToken,
+  });
+  const socket = useCallSocket({ userId: user?.id, getRealtimeToken });
   const [callDuration, setCallDuration] = useState(0);
 
-  // Remote party number
-  const [remoteNumber, setRemoteNumber] = useState<string | null>(null);
+  const { callStatus } = telephony;
+  const { incomingCall, clearIncomingCall, rejectCall } = socket;
 
-  // Initialize the telephony client
-  const {
-    deviceStatus,
-    callStatus,
-    error,
-    isEndingCall,
-    makeCall: telephonyMakeCall,
-    hangUp: telephonyHangUp,
-    sendDigits,
-    answerIncoming: telephonyAnswerIncoming,
-    rejectIncoming: telephonyRejectIncoming,
-    toggleMute,
-    isMuted,
-  } = useTelephonyClient({
-    identity: user?.id,
-    getToken,
-  });
-
-  // Initialize socket connection to call-controller
-  const {
-    isConnected: isSocketConnected,
-    incomingCall,
-    rejectCall: socketRejectCall,
-    clearIncomingCall,
-  } = useCallSocket(user?.id, getToken);
-
-  // Track call duration when connected
   useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
-
-    if (callStatus === 'connected') {
-      timer = setInterval(() => {
-        setCallDuration((d) => d + 1);
-      }, 1000);
-    } else if (callStatus === 'idle' || callStatus === 'disconnected') {
+    if (callStatus !== 'connected') {
       setCallDuration(0);
-      setRemoteNumber(null);
+      return;
     }
-
-    return () => {
-      if (timer) clearInterval(timer);
-    };
+    const timer = window.setInterval(() => {
+      setCallDuration((seconds) => seconds + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
   }, [callStatus]);
 
-  // Clear the socket incoming state once the client-side call has fully ended.
+  // An offer the device never rang for, or that ended, must not linger.
   useEffect(() => {
     if (callStatus === 'idle' && incomingCall) {
-      console.log(
-        '[CallProvider] Telephony call idle, clearing socket incomingCall',
-      );
       clearIncomingCall();
     }
   }, [callStatus, incomingCall, clearIncomingCall]);
 
-  // Make an outgoing call
-  const makeCall = useCallback(
-    async (to: string) => {
-      setRemoteNumber(to);
-      await telephonyMakeCall(to);
-    },
-    [telephonyMakeCall],
-  );
-
-  // Hang up the current call
-  const hangUp = useCallback(() => {
-    void telephonyHangUp();
-  }, [telephonyHangUp]);
-
-  const sendDigitsToCall = useCallback(
-    (digits: string) => {
-      void sendDigits(digits);
-    },
-    [sendDigits],
-  );
-
-  const toggleMuteForCall = useCallback(() => {
-    void toggleMute();
-  }, [toggleMute]);
-
-  // Accept incoming call
   const answerIncoming = useCallback(() => {
-    if (incomingCall) {
-      setRemoteNumber(incomingCall.from);
-    }
-    void telephonyAnswerIncoming();
+    telephony.answerIncoming();
     clearIncomingCall();
-  }, [incomingCall, telephonyAnswerIncoming, clearIncomingCall]);
+  }, [telephony.answerIncoming, clearIncomingCall]);
 
-  // Reject incoming call
   const rejectIncoming = useCallback(() => {
+    telephony.rejectIncoming();
     if (incomingCall) {
-      void telephonyRejectIncoming();
-      socketRejectCall(incomingCall.conversationUuid);
+      rejectCall(incomingCall.conversationUuid);
     }
-  }, [incomingCall, telephonyRejectIncoming, socketRejectCall]);
+  }, [telephony.rejectIncoming, incomingCall, rejectCall]);
+
+  const hangUp = useCallback(() => {
+    if (incomingCall) {
+      rejectIncoming();
+      return;
+    }
+    void telephony.hangUp();
+  }, [incomingCall, rejectIncoming, telephony.hangUp]);
 
   const value: CallContextValue = {
-    // Device state
-    deviceStatus,
-    error,
-
-    // Call state
+    deviceStatus: telephony.deviceStatus,
     callStatus,
-    remoteNumber,
+    remoteNumber: telephony.remoteNumber,
     callDuration,
-    isMuted,
-    isEndingCall,
-
-    // Incoming call
+    isMuted: telephony.isMuted,
+    isEndingCall: telephony.isEndingCall,
+    error: telephony.error,
     incomingCall,
-
-    // Socket
-    isSocketConnected,
-
-    // Actions
-    makeCall,
+    isSocketConnected: socket.isConnected,
+    makeCall: telephony.makeCall,
     hangUp,
-    sendDigits: sendDigitsToCall,
-    toggleMute: toggleMuteForCall,
+    sendDigits: telephony.sendDigits,
+    toggleMute: telephony.toggleMute,
     answerIncoming,
     rejectIncoming,
   };
@@ -188,16 +115,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
   return <CallContext.Provider value={value}>{children}</CallContext.Provider>;
 }
 
-/**
- * Hook to access call context
- * Must be used within CallProvider
- */
 export function useCall(): CallContextValue {
   const context = useContext(CallContext);
-
   if (!context) {
     throw new Error('useCall must be used within CallProvider');
   }
-
   return context;
 }

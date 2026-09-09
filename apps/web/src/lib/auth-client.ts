@@ -1,19 +1,9 @@
 'use client';
 
 import { createAuthClient } from 'better-auth/react';
+import { API_URL } from './api/client';
 
-/**
- * Better Auth client for React
- *
- * Provides hooks and methods for authentication:
- * - useSession: Get current session state
- * - signIn: Sign in with email/password
- * - signUp: Register new account
- * - signOut: Sign out current session
- */
-export const authClient = createAuthClient({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
-});
+/** Better Auth's browser client: sign in, sign up and sign out against the API. */
+export const authClient = createAuthClient({ baseURL: API_URL });
 
-// Export typed hooks and methods
-export const { useSession, signIn, signUp, signOut } = authClient;
+export const { signIn, signUp } = authClient;

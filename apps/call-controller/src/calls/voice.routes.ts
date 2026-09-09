@@ -1,4 +1,4 @@
-import type { Role } from '@repo/dto';
+import type { Role, VoiceHangupResponse, VoiceTokenResponse } from '@repo/dto';
 import { verifyJWT } from '@repo/events';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { TelephonyService } from './telephony.service.js';
@@ -74,7 +74,11 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
 
       request.log.info({ userId: user.id }, 'Issued a Twilio client token');
 
-      return { jwt, identity: user.id, provider: 'twilio' };
+      return {
+        jwt,
+        identity: user.id,
+        provider: 'twilio',
+      } satisfies VoiceTokenResponse;
     },
   );
 
@@ -102,7 +106,7 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
 
       if (!state) {
         await telephony.safeHangup(legUuid);
-        return { success: true, legUuid };
+        return { success: true, legUuid } satisfies VoiceHangupResponse;
       }
 
       const ending = await telephony.requestConversationHangup(
@@ -123,7 +127,7 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
         success: true,
         legUuid,
         conversationUuid: ending?.conversationUuid,
-      };
+      } satisfies VoiceHangupResponse;
     },
   );
 };

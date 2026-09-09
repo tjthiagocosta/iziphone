@@ -40,11 +40,17 @@ the `CallRealtime` interface.
 
 `apps/web/src` follows the app router: `app/` holds the routes, grouped into
 `(auth)`, `(app)` and `(admin)`, `components/` the views and the shadcn/ui
-primitives in `components/ui`, `hooks/` the data hooks over the API and the
-telephony and socket clients, `lib/api` the typed fetch clients, and
-`proxy.ts` the session guard that keeps signed-out visitors on the login
-page. Permissions come from `@repo/events`; response shapes from
-`@repo/dto`. Several views still render `lib/mock-data`.
+primitives in `components/ui`, and `hooks/` the data hooks over the API plus
+the telephony and socket hooks. The plumbing under them lives in `lib/`:
+`lib/api` is the typed fetch layer (`client.ts` does the request, error
+mapping and response validation with the `@repo/dto` schemas; `auth.ts`,
+`user.ts`, `admin.ts` and `call-controller.ts` are the endpoint functions),
+`lib/telephony` holds the pure `TelephonySession` state machine the Twilio
+Device hook drives, and `lib/session-guard.ts` the cookie and redirect rules
+that `proxy.ts` enforces. `AuthProvider` loads the user once and redirects
+signed-out visitors; `AdminGuard` keeps non-admins out of `(admin)`.
+Permissions come from `@repo/events`; response shapes from `@repo/dto`.
+Several views still render `lib/mock-data`.
 
 Design rule that must hold: **the call controller never touches Postgres.** It reads routing from the Redis cache the API writes, with an HTTP fallback to the API's `/internal` routes.
 

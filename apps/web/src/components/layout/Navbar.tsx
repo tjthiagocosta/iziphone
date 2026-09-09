@@ -21,7 +21,17 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { mockCurrentUser } from '@/lib/mock-data';
+
+/** Up to two letters from the name, or the first letter of the email. */
+function initialsOf(name: string | null, email: string): string {
+  const fromName = (name ?? '')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('');
+  return (fromName || email[0] || '').toUpperCase();
+}
 
 interface NavbarProps {
   onOpenDialer: () => void;
@@ -36,30 +46,10 @@ export function Navbar({ onOpenDialer }: NavbarProps) {
     router.push('/app/messages/new');
   };
 
-  const handleSignOut = async () => {
-    await signOut();
-    router.push('/login');
-  };
-
-  // Use real user data if available, otherwise fall back to mock
-  const displayUser = user
-    ? {
-        name: user.name || user.email?.split('@')[0] || 'User',
-        email: user.email || '',
-        initials:
-          user.name
-            ?.split(' ')
-            .map((n) => n[0])
-            .join('')
-            .toUpperCase() ||
-          user.email?.[0]?.toUpperCase() ||
-          'U',
-      }
-    : {
-        name: mockCurrentUser.name,
-        email: mockCurrentUser.email,
-        initials: mockCurrentUser.initials,
-      };
+  const displayName = user
+    ? user.name || user.email.split('@')[0] || user.email
+    : '';
+  const initials = user ? initialsOf(user.name, user.email) : '';
 
   return (
     <header className="h-14 border-b border-border bg-background flex items-center px-4 gap-4">
@@ -121,17 +111,15 @@ export function Navbar({ onOpenDialer }: NavbarProps) {
             <Button variant="ghost" className="h-9 w-9 rounded-full p-0">
               <Avatar className="h-8 w-8">
                 <AvatarFallback className="bg-green-500 text-white text-sm">
-                  {displayUser.initials}
+                  {initials}
                 </AvatarFallback>
               </Avatar>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             <div className="px-2 py-1.5">
-              <p className="text-sm font-medium">{displayUser.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {displayUser.email}
-              </p>
+              <p className="text-sm font-medium">{displayName}</p>
+              <p className="text-xs text-muted-foreground">{user?.email}</p>
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => router.push('/settings/sessions')}>
@@ -145,7 +133,7 @@ export function Navbar({ onOpenDialer }: NavbarProps) {
             )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={handleSignOut}
+              onClick={() => void signOut()}
               className="text-destructive"
             >
               Sign out

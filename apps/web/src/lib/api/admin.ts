@@ -1,364 +1,345 @@
-import type {
-  AddAgent,
-  AdminStatsResponse,
-  AssignDepartment,
-  AssignPhoneNumber,
-  AvailableNumbersResponse,
-  BusinessHoursItem,
-  CreateDepartment,
-  CreateHoliday,
-  CreateUser,
-  DepartmentListQuery,
-  DepartmentListResponse,
-  DepartmentResponse,
-  PhoneNumberListQuery,
-  PhoneNumberListResponse,
-  PhoneNumberResponse,
-  PurchasePhoneNumber,
-  SearchAvailableNumbers,
-  UpdateAgentOrder,
-  UpdateDepartment,
-  UpdateDepartmentSettings,
-  UpdateHoliday,
-  UpdatePhoneNumber,
-  UpdateUser,
-  UserListQuery,
-  UserListResponse,
-  UserResponse,
+import {
+  type AddAgent,
+  type AdminStatsResponse,
+  AdminStatsResponseSchema,
+  type AssignDepartment,
+  type AssignPhoneNumber,
+  type AvailableNumbersResponse,
+  AvailableNumbersResponseSchema,
+  type BusinessHoursItem,
+  type CreateDepartment,
+  type CreateHoliday,
+  type CreateUser,
+  type DepartmentListQuery,
+  type DepartmentListResponse,
+  DepartmentListResponseSchema,
+  type DepartmentResponse,
+  DepartmentResponseSchema,
+  type HolidayCreatedResponse,
+  HolidayCreatedResponseSchema,
+  type PhoneNumberListQuery,
+  type PhoneNumberListResponse,
+  PhoneNumberListResponseSchema,
+  type PhoneNumberResponse,
+  PhoneNumberResponseSchema,
+  type PurchasePhoneNumber,
+  type SearchAvailableNumbers,
+  type UpdateAgentOrder,
+  type UpdateDepartment,
+  type UpdateDepartmentSettings,
+  type UpdateHoliday,
+  type UpdatePhoneNumber,
+  type UpdateUser,
+  type UserListQuery,
+  type UserListResponse,
+  UserListResponseSchema,
+  type UserResponse,
+  UserResponseSchema,
 } from '@repo/dto';
+import { requestApi, withQuery } from './client';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+/* Routes under `/api/admin`; the API rejects anyone but an ADMIN. */
 
-async function fetchApi<T>(
-  endpoint: string,
-  options?: RequestInit,
-): Promise<T> {
-  const headers = new Headers(options?.headers);
+const id = encodeURIComponent;
 
-  // Only set Content-Type for requests with a body
-  if (options?.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    credentials: 'include',
-    headers,
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.message || `API error: ${response.status}`);
-  }
-
-  // Handle 204 No Content responses
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json();
-}
-
-// ============================================
 // Stats
-// ============================================
 
-export async function getAdminStats(): Promise<AdminStatsResponse> {
-  return fetchApi('/api/admin/stats');
+export function getAdminStats(): Promise<AdminStatsResponse> {
+  return requestApi('/api/admin/stats', { schema: AdminStatsResponseSchema });
 }
 
-// ============================================
 // Users
-// ============================================
 
-export async function getUsers(
+export function getUsers(
   query: Partial<UserListQuery> = {},
 ): Promise<UserListResponse> {
-  const params = new URLSearchParams();
-  if (query.page) params.set('page', String(query.page));
-  if (query.limit) params.set('limit', String(query.limit));
-  if (query.search) params.set('search', query.search);
-  if (query.role) params.set('role', query.role);
-  if (query.includeDeleted) params.set('includeDeleted', 'true');
-  if (query.deletedOnly) params.set('deletedOnly', 'true');
-
-  return fetchApi(`/api/admin/users?${params.toString()}`);
-}
-
-export async function getUser(id: string): Promise<UserResponse> {
-  return fetchApi(`/api/admin/users/${id}`);
-}
-
-export async function createUser(data: CreateUser): Promise<UserResponse> {
-  return fetchApi('/api/admin/users', {
-    method: 'POST',
-    body: JSON.stringify(data),
+  return requestApi(withQuery('/api/admin/users', query), {
+    schema: UserListResponseSchema,
   });
 }
 
-export async function updateUser(
-  id: string,
+export function getUser(userId: string): Promise<UserResponse> {
+  return requestApi(`/api/admin/users/${id(userId)}`, {
+    schema: UserResponseSchema,
+  });
+}
+
+export function createUser(data: CreateUser): Promise<UserResponse> {
+  return requestApi('/api/admin/users', {
+    method: 'POST',
+    body: data,
+    schema: UserResponseSchema,
+  });
+}
+
+export function updateUser(
+  userId: string,
   data: UpdateUser,
 ): Promise<UserResponse> {
-  return fetchApi(`/api/admin/users/${id}`, {
+  return requestApi(`/api/admin/users/${id(userId)}`, {
     method: 'PATCH',
-    body: JSON.stringify(data),
+    body: data,
+    schema: UserResponseSchema,
   });
 }
 
-export async function deleteUser(id: string): Promise<void> {
-  await fetchApi(`/api/admin/users/${id}`, { method: 'DELETE' });
+export function deleteUser(userId: string): Promise<void> {
+  return requestApi(`/api/admin/users/${id(userId)}`, { method: 'DELETE' });
 }
 
-export async function restoreUser(id: string): Promise<UserResponse> {
-  return fetchApi(`/api/admin/users/${id}/restore`, { method: 'POST' });
+export function restoreUser(userId: string): Promise<UserResponse> {
+  return requestApi(`/api/admin/users/${id(userId)}/restore`, {
+    method: 'POST',
+    schema: UserResponseSchema,
+  });
 }
 
-export async function assignUserPhoneNumber(
+export function assignUserPhoneNumber(
   userId: string,
   data: AssignPhoneNumber,
 ): Promise<void> {
-  await fetchApi(`/api/admin/users/${userId}/phone-numbers`, {
+  return requestApi(`/api/admin/users/${id(userId)}/phone-numbers`, {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
   });
 }
 
-export async function removeUserPhoneNumber(
+export function removeUserPhoneNumber(
   userId: string,
   phoneNumberId: string,
 ): Promise<void> {
-  await fetchApi(`/api/admin/users/${userId}/phone-numbers/${phoneNumberId}`, {
-    method: 'DELETE',
-  });
+  return requestApi(
+    `/api/admin/users/${id(userId)}/phone-numbers/${id(phoneNumberId)}`,
+    { method: 'DELETE' },
+  );
 }
 
-export async function assignUserDepartment(
+export function assignUserDepartment(
   userId: string,
   data: AssignDepartment,
 ): Promise<void> {
-  await fetchApi(`/api/admin/users/${userId}/departments`, {
+  return requestApi(`/api/admin/users/${id(userId)}/departments`, {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
   });
 }
 
-export async function removeUserDepartment(
+export function removeUserDepartment(
   userId: string,
   departmentId: string,
 ): Promise<void> {
-  await fetchApi(`/api/admin/users/${userId}/departments/${departmentId}`, {
+  return requestApi(
+    `/api/admin/users/${id(userId)}/departments/${id(departmentId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+// Departments
+
+export function getDepartments(
+  query: Partial<DepartmentListQuery> = {},
+): Promise<DepartmentListResponse> {
+  return requestApi(withQuery('/api/admin/departments', query), {
+    schema: DepartmentListResponseSchema,
+  });
+}
+
+export function getDepartment(
+  departmentId: string,
+): Promise<DepartmentResponse> {
+  return requestApi(`/api/admin/departments/${id(departmentId)}`, {
+    schema: DepartmentResponseSchema,
+  });
+}
+
+export function createDepartment(
+  data: CreateDepartment,
+): Promise<DepartmentResponse> {
+  return requestApi('/api/admin/departments', {
+    method: 'POST',
+    body: data,
+    schema: DepartmentResponseSchema,
+  });
+}
+
+export function updateDepartment(
+  departmentId: string,
+  data: UpdateDepartment,
+): Promise<DepartmentResponse> {
+  return requestApi(`/api/admin/departments/${id(departmentId)}`, {
+    method: 'PATCH',
+    body: data,
+    schema: DepartmentResponseSchema,
+  });
+}
+
+export function deleteDepartment(departmentId: string): Promise<void> {
+  return requestApi(`/api/admin/departments/${id(departmentId)}`, {
     method: 'DELETE',
   });
 }
 
-// ============================================
-// Departments
-// ============================================
-
-export async function getDepartments(
-  query: Partial<DepartmentListQuery> = {},
-): Promise<DepartmentListResponse> {
-  const params = new URLSearchParams();
-  if (query.page) params.set('page', String(query.page));
-  if (query.limit) params.set('limit', String(query.limit));
-  if (query.search) params.set('search', query.search);
-  if (query.includeDeleted) params.set('includeDeleted', 'true');
-  if (query.deletedOnly) params.set('deletedOnly', 'true');
-
-  return fetchApi(`/api/admin/departments?${params.toString()}`);
-}
-
-export async function getDepartment(id: string): Promise<DepartmentResponse> {
-  return fetchApi(`/api/admin/departments/${id}`);
-}
-
-export async function createDepartment(
-  data: CreateDepartment,
+export function restoreDepartment(
+  departmentId: string,
 ): Promise<DepartmentResponse> {
-  return fetchApi('/api/admin/departments', {
+  return requestApi(`/api/admin/departments/${id(departmentId)}/restore`, {
     method: 'POST',
-    body: JSON.stringify(data),
+    schema: DepartmentResponseSchema,
   });
 }
 
-export async function updateDepartment(
-  id: string,
-  data: UpdateDepartment,
-): Promise<DepartmentResponse> {
-  return fetchApi(`/api/admin/departments/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(data),
-  });
-}
-
-export async function deleteDepartment(id: string): Promise<void> {
-  await fetchApi(`/api/admin/departments/${id}`, { method: 'DELETE' });
-}
-
-export async function restoreDepartment(
-  id: string,
-): Promise<DepartmentResponse> {
-  return fetchApi(`/api/admin/departments/${id}/restore`, { method: 'POST' });
-}
-
-export async function updateDepartmentSettings(
-  id: string,
+export function updateDepartmentSettings(
+  departmentId: string,
   data: UpdateDepartmentSettings,
 ): Promise<void> {
-  await fetchApi(`/api/admin/departments/${id}/settings`, {
+  return requestApi(`/api/admin/departments/${id(departmentId)}/settings`, {
     method: 'PATCH',
-    body: JSON.stringify(data),
+    body: data,
   });
 }
 
-export async function updateBusinessHours(
+export function updateBusinessHours(
   departmentId: string,
   hours: BusinessHoursItem[],
 ): Promise<void> {
-  await fetchApi(`/api/admin/departments/${departmentId}/business-hours`, {
-    method: 'PUT',
-    body: JSON.stringify({ hours }),
-  });
+  return requestApi(
+    `/api/admin/departments/${id(departmentId)}/business-hours`,
+    { method: 'PUT', body: { hours } },
+  );
 }
 
-export async function addHoliday(
+export function addHoliday(
   departmentId: string,
   data: CreateHoliday,
-): Promise<{ id: string }> {
-  return fetchApi(`/api/admin/departments/${departmentId}/holidays`, {
+): Promise<HolidayCreatedResponse> {
+  return requestApi(`/api/admin/departments/${id(departmentId)}/holidays`, {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
+    schema: HolidayCreatedResponseSchema,
   });
 }
 
-export async function updateHoliday(
+export function updateHoliday(
   departmentId: string,
   holidayId: string,
   data: UpdateHoliday,
 ): Promise<void> {
-  await fetchApi(
-    `/api/admin/departments/${departmentId}/holidays/${holidayId}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(data),
-    },
+  return requestApi(
+    `/api/admin/departments/${id(departmentId)}/holidays/${id(holidayId)}`,
+    { method: 'PATCH', body: data },
   );
 }
 
-export async function deleteHoliday(
+export function deleteHoliday(
   departmentId: string,
   holidayId: string,
 ): Promise<void> {
-  await fetchApi(
-    `/api/admin/departments/${departmentId}/holidays/${holidayId}`,
+  return requestApi(
+    `/api/admin/departments/${id(departmentId)}/holidays/${id(holidayId)}`,
     { method: 'DELETE' },
   );
 }
 
-export async function addDepartmentAgent(
+export function addDepartmentAgent(
   departmentId: string,
   data: AddAgent,
 ): Promise<void> {
-  await fetchApi(`/api/admin/departments/${departmentId}/agents`, {
+  return requestApi(`/api/admin/departments/${id(departmentId)}/agents`, {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
   });
 }
 
-export async function updateAgentOrder(
+export function updateAgentOrder(
   departmentId: string,
   data: UpdateAgentOrder,
 ): Promise<void> {
-  await fetchApi(`/api/admin/departments/${departmentId}/agents/order`, {
+  return requestApi(`/api/admin/departments/${id(departmentId)}/agents/order`, {
     method: 'PATCH',
-    body: JSON.stringify(data),
+    body: data,
   });
 }
 
-export async function removeDepartmentAgent(
+export function removeDepartmentAgent(
   departmentId: string,
   userId: string,
 ): Promise<void> {
-  await fetchApi(`/api/admin/departments/${departmentId}/agents/${userId}`, {
-    method: 'DELETE',
-  });
+  return requestApi(
+    `/api/admin/departments/${id(departmentId)}/agents/${id(userId)}`,
+    { method: 'DELETE' },
+  );
 }
 
-export async function assignDepartmentPhoneNumber(
+export function assignDepartmentPhoneNumber(
   departmentId: string,
   phoneNumberId: string,
   isPrimary: boolean,
 ): Promise<void> {
-  await fetchApi(`/api/admin/departments/${departmentId}/phone-numbers`, {
-    method: 'POST',
-    body: JSON.stringify({ phoneNumberId, isPrimary }),
-  });
+  return requestApi(
+    `/api/admin/departments/${id(departmentId)}/phone-numbers`,
+    { method: 'POST', body: { phoneNumberId, isPrimary } },
+  );
 }
 
-export async function removeDepartmentPhoneNumber(
+export function removeDepartmentPhoneNumber(
   departmentId: string,
   phoneNumberId: string,
 ): Promise<void> {
-  await fetchApi(
-    `/api/admin/departments/${departmentId}/phone-numbers/${phoneNumberId}`,
+  return requestApi(
+    `/api/admin/departments/${id(departmentId)}/phone-numbers/${id(phoneNumberId)}`,
     { method: 'DELETE' },
   );
 }
 
-// ============================================
-// Phone Numbers
-// ============================================
+// Phone numbers
 
-export async function getPhoneNumbers(
+export function getPhoneNumbers(
   query: Partial<PhoneNumberListQuery> = {},
 ): Promise<PhoneNumberListResponse> {
-  const params = new URLSearchParams();
-  if (query.page) params.set('page', String(query.page));
-  if (query.limit) params.set('limit', String(query.limit));
-  if (query.status) params.set('status', query.status);
-  if (query.type) params.set('type', query.type);
-  if (query.unassigned) params.set('unassigned', 'true');
-  if (query.search) params.set('search', query.search);
-
-  return fetchApi(`/api/admin/phone-numbers?${params.toString()}`);
+  return requestApi(withQuery('/api/admin/phone-numbers', query), {
+    schema: PhoneNumberListResponseSchema,
+  });
 }
 
-export async function getPhoneNumber(id: string): Promise<PhoneNumberResponse> {
-  return fetchApi(`/api/admin/phone-numbers/${id}`);
+export function getPhoneNumber(
+  phoneNumberId: string,
+): Promise<PhoneNumberResponse> {
+  return requestApi(`/api/admin/phone-numbers/${id(phoneNumberId)}`, {
+    schema: PhoneNumberResponseSchema,
+  });
 }
 
-export async function searchAvailableNumbers(
+export function searchAvailableNumbers(
   query: SearchAvailableNumbers,
 ): Promise<AvailableNumbersResponse> {
-  const params = new URLSearchParams();
-  params.set('type', query.type);
-  if (query.areaCode) params.set('areaCode', query.areaCode);
-  if (query.contains) params.set('contains', query.contains);
-  if (query.limit) params.set('limit', String(query.limit));
-
-  return fetchApi(`/api/admin/phone-numbers/available?${params.toString()}`);
+  return requestApi(withQuery('/api/admin/phone-numbers/available', query), {
+    schema: AvailableNumbersResponseSchema,
+  });
 }
 
-export async function purchasePhoneNumber(
+export function purchasePhoneNumber(
   data: PurchasePhoneNumber,
 ): Promise<PhoneNumberResponse> {
-  return fetchApi('/api/admin/phone-numbers/purchase', {
+  return requestApi('/api/admin/phone-numbers/purchase', {
     method: 'POST',
-    body: JSON.stringify(data),
+    body: data,
+    schema: PhoneNumberResponseSchema,
   });
 }
 
-export async function updatePhoneNumber(
-  id: string,
+export function updatePhoneNumber(
+  phoneNumberId: string,
   data: UpdatePhoneNumber,
 ): Promise<PhoneNumberResponse> {
-  return fetchApi(`/api/admin/phone-numbers/${id}`, {
+  return requestApi(`/api/admin/phone-numbers/${id(phoneNumberId)}`, {
     method: 'PATCH',
-    body: JSON.stringify(data),
+    body: data,
+    schema: PhoneNumberResponseSchema,
   });
 }
 
-export async function releasePhoneNumber(id: string): Promise<void> {
-  await fetchApi(`/api/admin/phone-numbers/${id}`, { method: 'DELETE' });
+export function releasePhoneNumber(phoneNumberId: string): Promise<void> {
+  return requestApi(`/api/admin/phone-numbers/${id(phoneNumberId)}`, {
+    method: 'DELETE',
+  });
 }

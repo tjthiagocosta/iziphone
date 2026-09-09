@@ -1,5 +1,6 @@
 'use client';
 
+import type { UserSession } from '@repo/dto';
 import { LogOut, Monitor, Smartphone, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@/components/providers/AuthProvider';
@@ -11,17 +12,13 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import {
+  listSessions,
+  revokeOtherSessions,
+  revokeSession,
+} from '@/lib/api/auth';
 
-interface Session {
-  id: string;
-  createdAt: string;
-  expiresAt: string;
-  ipAddress: string | null;
-  userAgent: string | null;
-  isCurrent: boolean;
-}
-
-function parseUserAgent(userAgent: string | null): {
+function describeClient(userAgent: string | null): {
   browser: string;
   device: string;
 } {
@@ -29,15 +26,13 @@ function parseUserAgent(userAgent: string | null): {
     return { browser: 'Unknown', device: 'Unknown device' };
   }
 
-  // Simple UA parsing
   let browser = 'Unknown';
-  let device = 'Desktop';
-
-  if (userAgent.includes('Chrome')) browser = 'Chrome';
+  if (userAgent.includes('Edg')) browser = 'Edge';
+  else if (userAgent.includes('Chrome')) browser = 'Chrome';
   else if (userAgent.includes('Firefox')) browser = 'Firefox';
   else if (userAgent.includes('Safari')) browser = 'Safari';
-  else if (userAgent.includes('Edge')) browser = 'Edge';
 
+  let device = 'Desktop';
   if (userAgent.includes('Mobile')) device = 'Mobile';
   else if (userAgent.includes('Tablet')) device = 'Tablet';
 
@@ -45,8 +40,7 @@ function parseUserAgent(userAgent: string | null): {
 }
 
 function formatDate(dateString: string): string {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('en-US', {
+  return new Date(dateString).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -55,30 +49,23 @@ function formatDate(dateString: string): string {
   });
 }
 
+function messageOf(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export default function SessionsPage() {
   const { user, isLoading: authLoading } = useAuth();
-  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessions, setSessions] = useState<UserSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchSessions = useCallback(async () => {
+  const loadSessions = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
-
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/sessions`,
-        { credentials: 'include' },
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch sessions');
-      }
-
-      const data = await response.json();
-      setSessions(data.sessions);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch sessions');
+      setSessions(await listSessions());
+    } catch (loadError) {
+      setError(messageOf(loadError, 'Failed to load sessions'));
     } finally {
       setIsLoading(false);
     }
@@ -86,51 +73,27 @@ export default function SessionsPage() {
 
   useEffect(() => {
     if (user) {
-      fetchSessions();
+      void loadSessions();
     }
-  }, [user, fetchSessions]);
+  }, [user, loadSessions]);
 
-  const revokeSession = async (sessionId: string) => {
+  const handleRevoke = async (sessionId: string) => {
     try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/sessions/${sessionId}`,
-        {
-          method: 'DELETE',
-          credentials: 'include',
-        },
+      await revokeSession(sessionId);
+      setSessions((current) =>
+        current.filter((session) => session.id !== sessionId),
       );
-
-      if (!response.ok) {
-        throw new Error('Failed to revoke session');
-      }
-
-      // Remove from local state
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to revoke session');
+    } catch (revokeError) {
+      setError(messageOf(revokeError, 'Failed to revoke the session'));
     }
   };
 
-  const revokeAllOtherSessions = async () => {
+  const handleRevokeOthers = async () => {
     try {
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/sessions/revoke-all`,
-        {
-          method: 'POST',
-          credentials: 'include',
-        },
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to revoke sessions');
-      }
-
-      // Refresh the list
-      fetchSessions();
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to revoke sessions',
-      );
+      await revokeOtherSessions();
+      await loadSessions();
+    } catch (revokeError) {
+      setError(messageOf(revokeError, 'Failed to revoke the other sessions'));
     }
   };
 
@@ -173,7 +136,7 @@ export default function SessionsPage() {
             <Button
               variant="outline"
               className="w-full"
-              onClick={revokeAllOtherSessions}
+              onClick={() => void handleRevokeOthers()}
             >
               <LogOut className="w-4 h-4 mr-2" />
               Sign out from all other devices
@@ -191,7 +154,7 @@ export default function SessionsPage() {
           ) : (
             <div className="space-y-3">
               {sessions.map((session) => {
-                const { browser, device } = parseUserAgent(session.userAgent);
+                const { browser, device } = describeClient(session.userAgent);
                 const DeviceIcon = device === 'Mobile' ? Smartphone : Monitor;
 
                 return (
@@ -211,7 +174,7 @@ export default function SessionsPage() {
                           )}
                         </p>
                         <p className="text-sm text-muted-foreground">
-                          {session.ipAddress || 'Unknown IP'} &bull; Last active{' '}
+                          {session.ipAddress || 'Unknown IP'} &bull; Signed in{' '}
                           {formatDate(session.createdAt)}
                         </p>
                       </div>
@@ -220,7 +183,7 @@ export default function SessionsPage() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => revokeSession(session.id)}
+                        onClick={() => void handleRevoke(session.id)}
                         title="Revoke session"
                       >
                         <Trash2 className="w-4 h-4 text-red-500" />

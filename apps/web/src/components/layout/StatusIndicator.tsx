@@ -6,71 +6,32 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import {
+  type ConnectionStatus,
+  connectionStatus,
+} from '@/lib/telephony/connection-status';
 import { cn } from '@/lib/utils';
 
-type ConnectionStatus = 'online' | 'connecting' | 'offline';
+const DOT_CLASS: Record<ConnectionStatus, string> = {
+  online: 'bg-green-500',
+  connecting: 'bg-yellow-500 animate-pulse',
+  offline: 'bg-gray-400',
+};
 
-/**
- * Determine overall connection status from device and socket state
- */
-function getStatus(
-  deviceStatus: string,
-  isSocketConnected: boolean,
-): ConnectionStatus {
-  // Both device ready AND socket connected = online
-  if (deviceStatus === 'ready' && isSocketConnected) {
-    return 'online';
-  }
-  // Either one is connecting/ready but not both = connecting
-  if (
-    deviceStatus === 'connecting' ||
-    (deviceStatus === 'ready' && !isSocketConnected) ||
-    (deviceStatus !== 'ready' && isSocketConnected)
-  ) {
-    return 'connecting';
-  }
-  // Both offline
-  return 'offline';
-}
+const LABEL: Record<ConnectionStatus, string> = {
+  online: 'Online - Ready to receive calls',
+  connecting: 'Connecting...',
+  offline: 'Offline - Cannot receive calls',
+};
 
-/**
- * Get the CSS class for the status indicator dot
- */
-function getStatusColor(status: ConnectionStatus): string {
-  switch (status) {
-    case 'online':
-      return 'bg-green-500';
-    case 'connecting':
-      return 'bg-yellow-500 animate-pulse';
-    case 'offline':
-      return 'bg-gray-400';
-  }
-}
-
-/**
- * Get the tooltip label for the status
- */
-function getStatusLabel(status: ConnectionStatus): string {
-  switch (status) {
-    case 'online':
-      return 'Online - Ready to receive calls';
-    case 'connecting':
-      return 'Connecting...';
-    case 'offline':
-      return 'Offline - Cannot receive calls';
-  }
-}
-
-/**
- * StatusIndicator - Shows connection status as a small colored dot
- *
- * - Green: Online (socket connected + telephony client ready)
- * - Yellow (pulsing): Connecting
- * - Gray: Offline
- */
+/** A colored dot in the navbar: green online, pulsing yellow connecting, gray offline. */
 export function StatusIndicator() {
-  const { deviceStatus, isSocketConnected } = useCall();
-  const status = getStatus(deviceStatus, isSocketConnected);
+  const { deviceStatus, isSocketConnected, error } = useCall();
+  const status = connectionStatus(deviceStatus, isSocketConnected);
+  const label =
+    status === 'offline' && error
+      ? `${LABEL[status]}: ${error}`
+      : LABEL[status];
 
   return (
     <Tooltip>
@@ -78,18 +39,18 @@ export function StatusIndicator() {
         <button
           type="button"
           className="relative flex items-center justify-center p-1 rounded-full hover:bg-secondary/50 transition-colors"
-          aria-label={getStatusLabel(status)}
+          aria-label={label}
         >
           <div
             className={cn(
               'w-2.5 h-2.5 rounded-full transition-colors',
-              getStatusColor(status),
+              DOT_CLASS[status],
             )}
           />
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="text-xs">
-        {getStatusLabel(status)}
+        {label}
       </TooltipContent>
     </Tooltip>
   );

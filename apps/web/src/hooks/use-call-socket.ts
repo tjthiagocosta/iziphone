@@ -1,0 +1,162 @@
+'use client';
+
+import {
+  CallEndedSchema,
+  type ClientToServerEvents,
+  type IncomingCall,
+  IncomingCallSchema,
+  type ServerToClientEvents,
+} from '@repo/dto';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { io, type Socket } from 'socket.io-client';
+import { CALL_CONTROLLER_URL } from '@/lib/api/client';
+
+type CallSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
+
+export interface CallSocketOptions {
+  /** Absent while signed out; the socket is then closed. */
+  userId: string | undefined;
+  getRealtimeToken: () => Promise<string>;
+}
+
+export interface CallSocketState {
+  isConnected: boolean;
+  /** A call the controller offered this user, until it is taken or ends. */
+  incomingCall: IncomingCall | null;
+  rejectCall: (conversationUuid: string) => void;
+  clearIncomingCall: () => void;
+}
+
+/** The realtime token lives an hour; a long-lived socket renews it before then. */
+const TOKEN_REFRESH_MS = 45 * 60 * 1000;
+
+/** Backoff for retrying a handshake the controller rejected. */
+const RETRY_MIN_MS = 1000;
+const RETRY_MAX_MS = 30_000;
+
+/**
+ * The socket the call controller uses to offer calls to this user. It carries
+ * a fresh realtime token on every connection attempt, so a reconnect after
+ * the token expired needs no special handling.
+ */
+export function useCallSocket({
+  userId,
+  getRealtimeToken,
+}: CallSocketOptions): CallSocketState {
+  const [isConnected, setIsConnected] = useState(false);
+  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const socketRef = useRef<CallSocket | null>(null);
+  const getRealtimeTokenRef = useRef(getRealtimeToken);
+
+  useEffect(() => {
+    getRealtimeTokenRef.current = getRealtimeToken;
+  }, [getRealtimeToken]);
+
+  useEffect(() => {
+    if (!userId) {
+      return;
+    }
+
+    let retryDelay = RETRY_MIN_MS;
+    let retryTimer: number | null = null;
+
+    const socket: CallSocket = io(CALL_CONTROLLER_URL, {
+      transports: ['websocket', 'polling'],
+      auth: (provide) => {
+        getRealtimeTokenRef.current().then(
+          (token) => provide({ token }),
+          // Without a token the controller rejects the handshake, which
+          // schedules a retry below; the API may be back by then.
+          () => provide({}),
+        );
+      },
+    });
+
+    socket.on('connect', () => {
+      retryDelay = RETRY_MIN_MS;
+      setIsConnected(true);
+      socket.emit('register_user', {
+        deviceInfo: { userAgent: navigator.userAgent.slice(0, 512) },
+      });
+    });
+
+    socket.on('disconnect', () => {
+      setIsConnected(false);
+    });
+
+    socket.on('connect_error', (error) => {
+      // A handshake the server refused is final for Socket.IO; it retries
+      // network failures on its own.
+      if (socket.active) {
+        return;
+      }
+      console.error(`Call controller refused the socket: ${error.message}`);
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        socket.connect();
+      }, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+    });
+
+    socket.on('incoming_call', (data) => {
+      const parsed = IncomingCallSchema.safeParse(data);
+      if (!parsed.success) {
+        console.error('Ignored an incoming call with an unexpected payload');
+        return;
+      }
+      setIncomingCall(parsed.data);
+    });
+
+    socket.on('call_ended', (data) => {
+      const parsed = CallEndedSchema.safeParse(data);
+      if (!parsed.success) {
+        console.error('Ignored a call ended event with an unexpected payload');
+        return;
+      }
+      setIncomingCall((current) =>
+        current?.conversationUuid === parsed.data.conversationUuid
+          ? null
+          : current,
+      );
+    });
+
+    socket.on('error', (data) => {
+      console.error(`Call controller reported an error: ${data.message}`);
+    });
+
+    const refreshTimer = window.setInterval(() => {
+      if (!socket.connected) {
+        return;
+      }
+      getRealtimeTokenRef.current().then(
+        (token) => socket.emit('auth:refresh', { token }),
+        // The next reconnect fetches a token anyway.
+        () => undefined,
+      );
+    }, TOKEN_REFRESH_MS);
+
+    socketRef.current = socket;
+
+    return () => {
+      window.clearInterval(refreshTimer);
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
+      socket.disconnect();
+      socketRef.current = null;
+      setIsConnected(false);
+      setIncomingCall(null);
+    };
+  }, [userId]);
+
+  const rejectCall = useCallback((conversationUuid: string) => {
+    socketRef.current?.emit('call_reject', { conversationUuid });
+    setIncomingCall(null);
+  }, []);
+
+  const clearIncomingCall = useCallback(() => {
+    setIncomingCall(null);
+  }, []);
+
+  return { isConnected, incomingCall, rejectCall, clearIncomingCall };
+}

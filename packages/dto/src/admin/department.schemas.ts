@@ -207,6 +207,11 @@ export const HolidayResponseSchema = z.object({
   routingValue: z.string().nullable(),
 });
 
+/** What `POST /api/admin/departments/:id/holidays` answers. */
+export const HolidayCreatedResponseSchema = z.object({
+  id: z.string(),
+});
+
 export const DepartmentAgentResponseSchema = z.object({
   id: z.string(),
   userId: z.string(),
@@ -287,6 +292,9 @@ export type DepartmentSettingsResponse = z.infer<
 >;
 export type BusinessHoursResponse = z.infer<typeof BusinessHoursResponseSchema>;
 export type HolidayResponse = z.infer<typeof HolidayResponseSchema>;
+export type HolidayCreatedResponse = z.infer<
+  typeof HolidayCreatedResponseSchema
+>;
 export type DepartmentAgentResponse = z.infer<
   typeof DepartmentAgentResponseSchema
 >;

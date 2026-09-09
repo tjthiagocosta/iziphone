@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { signUp } from '@/lib/auth-client';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -41,8 +42,6 @@ export default function RegisterPage() {
     setIsLoading(true);
 
     try {
-      // Dynamic import to avoid SSR bundling issues with better-auth
-      const { signUp } = await import('@/lib/auth-client');
       const result = await signUp.email({
         email,
         password,

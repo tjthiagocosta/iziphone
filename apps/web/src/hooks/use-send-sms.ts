@@ -2,7 +2,8 @@
 
 import type { SendSmsResponse } from '@repo/dto';
 import { useCallback, useState } from 'react';
-import { ApiError, sendSms } from '@/lib/api/user';
+import { ApiError } from '@/lib/api/client';
+import { sendSms } from '@/lib/api/user';
 
 interface SendSmsInput {
   fromPhoneNumberId: string;

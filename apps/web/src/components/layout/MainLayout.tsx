@@ -16,7 +16,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   const [isDialerOpen, setIsDialerOpen] = useState(false);
   const { callStatus, incomingCall } = useCall();
 
-  const isInCall = callStatus !== 'idle' && callStatus !== 'disconnected';
+  const isInCall = callStatus !== 'idle';
 
   return (
     <TooltipProvider>

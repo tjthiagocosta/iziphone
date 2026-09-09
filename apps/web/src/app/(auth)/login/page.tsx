@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
@@ -12,18 +12,15 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { signIn } from '@/lib/auth-client';
+import { safeRedirectTarget } from '@/lib/session-guard';
 
 export default function LoginPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-
-  const redirect = searchParams.get('redirect');
-  const redirectTarget =
-    redirect?.startsWith('/') && !redirect.startsWith('//') ? redirect : '/';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,8 +28,6 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      // Dynamic import to avoid SSR bundling issues with better-auth
-      const { signIn } = await import('@/lib/auth-client');
       const result = await signIn.email({
         email,
         password,
@@ -41,7 +36,12 @@ export default function LoginPage() {
       if (result.error) {
         setError(result.error.message || 'Login failed');
       } else {
-        router.push(redirectTarget);
+        // Read at submit time so the form prerenders; useSearchParams would
+        // bail the whole page out of static rendering.
+        const redirect = new URLSearchParams(window.location.search).get(
+          'redirect',
+        );
+        router.push(safeRedirectTarget(redirect));
         router.refresh();
       }
     } catch (caughtError) {

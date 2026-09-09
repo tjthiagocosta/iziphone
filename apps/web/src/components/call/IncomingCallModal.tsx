@@ -4,20 +4,7 @@ import { Phone, PhoneOff } from 'lucide-react';
 import { useCall } from '@/components/providers/CallProvider';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-
-/**
- * Format phone number for display
- */
-function formatPhoneNumber(phone: string): string {
-  const cleaned = phone.replace(/\D/g, '');
-  if (cleaned.length === 11 && cleaned.startsWith('1')) {
-    return `+1 (${cleaned.slice(1, 4)}) ${cleaned.slice(4, 7)}-${cleaned.slice(7)}`;
-  }
-  if (cleaned.length === 10) {
-    return `(${cleaned.slice(0, 3)}) ${cleaned.slice(3, 6)}-${cleaned.slice(6)}`;
-  }
-  return phone;
-}
+import { formatPhoneNumber } from '@/lib/phone-number';
 
 /**
  * IncomingCallModal - Full-screen modal for incoming call notifications
