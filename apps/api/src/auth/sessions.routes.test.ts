@@ -121,7 +121,7 @@ describe('sessionRoutes', () => {
     expect(response.json()).toEqual({ success: true });
   });
 
-  test('should revoke all sessions and return the number of revoked records', async () => {
+  test('should revoke every session except the current one and return the count', async () => {
     deleteMany.mockImplementation(async () => ({ count: 3 }));
 
     const response = await app.inject({
@@ -131,7 +131,7 @@ describe('sessionRoutes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(deleteMany).toHaveBeenCalledWith({
-      where: { userId: 'user-1' },
+      where: { userId: 'user-1', id: { not: 'session-1' } },
     });
     expect(response.json()).toEqual({
       success: true,

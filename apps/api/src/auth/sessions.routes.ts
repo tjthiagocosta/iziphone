@@ -59,14 +59,18 @@ export const sessionRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: [fastify.requireAuth] },
     async (request) => {
       const user = authenticatedUser(request);
+      const currentSessionId = request.session?.session.id;
 
+      // The caller stays signed in; only the other devices are signed out.
       const result = await fastify.db.session.deleteMany({
-        where: { userId: user.id },
+        where: currentSessionId
+          ? { userId: user.id, id: { not: currentSessionId } }
+          : { userId: user.id },
       });
 
       fastify.log.info(
         { userId: user.id, count: result.count },
-        'All sessions revoked',
+        'Other sessions revoked',
       );
 
       return { success: true, revokedCount: result.count };
