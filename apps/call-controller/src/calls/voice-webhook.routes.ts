@@ -136,11 +136,14 @@ export const voiceWebhookRoutes: FastifyPluginAsync<
     }
 
     const payload = body.data;
+    // Twilio's number-level status callback carries no conversation id. It
+    // reports the leg that started the call, whose sid names the conversation.
     const conversationUuid =
       query.data.conversationUuid ??
       (payload.FriendlyName
         ? parseConversationName(payload.FriendlyName)
-        : undefined);
+        : undefined) ??
+      (payload.CallStatus ? payload.CallSid : undefined);
 
     if (!conversationUuid) {
       return reply.status(204).send();

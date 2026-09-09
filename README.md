@@ -123,7 +123,6 @@ Working today:
 
 Known issues:
 
-- Voicemail: when nobody answers, the caller is routed to voicemail but can be disconnected before the greeting plays. Tracked as a bug in the call controller.
 - Production cookies: the web app's route guard does not yet recognize the `__Secure-` session cookie the API sets in production.
 
 Planned or incomplete:

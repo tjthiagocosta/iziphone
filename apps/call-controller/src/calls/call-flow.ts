@@ -369,6 +369,16 @@ export class CallFlow {
       return;
     }
 
+    // Leaving the conference for voicemail is not hanging up: the caller is
+    // still on the line recording. Their own status callback ends the call.
+    if (
+      participant.participantType === 'caller' &&
+      state.voicemail &&
+      !state.ending
+    ) {
+      return;
+    }
+
     await this.publishParticipantStatus(
       state,
       legUuid,
@@ -596,7 +606,7 @@ export class CallFlow {
   ): Promise<void> {
     const { telephony, events } = this.deps;
 
-    if (!state.callerLegUuid || state.ending) {
+    if (!state.callerLegUuid || state.ending || state.voicemail) {
       return;
     }
 

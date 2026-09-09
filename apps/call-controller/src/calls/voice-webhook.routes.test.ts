@@ -116,11 +116,28 @@ describe('voiceWebhookRoutes', () => {
     test('ignores callbacks it cannot tie to a call', async () => {
       const response = await post(
         '/webhooks/twilio/voice/status',
-        'CallSid=CAleg1&CallStatus=completed',
+        'CallSid=CAleg1&RecordingStatus=in-progress',
       );
 
       expect(response.statusCode).toBe(204);
       expect(flow.handleCallStatus).not.toHaveBeenCalled();
+      expect(flow.handleRecordingReady).not.toHaveBeenCalled();
+    });
+
+    test('treats a status callback without a conversation as the leg that started the call', async () => {
+      const response = await post(
+        '/webhooks/twilio/voice/status',
+        'CallSid=CAcall1&CallStatus=completed&CallDuration=42',
+      );
+
+      expect(response.statusCode).toBe(204);
+      expect(flow.handleCallStatus).toHaveBeenCalledWith({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAcall1',
+        participantLabel: undefined,
+        status: 'completed',
+        duration: 42,
+      });
     });
 
     test('hands a completed voicemail recording to the flow', async () => {

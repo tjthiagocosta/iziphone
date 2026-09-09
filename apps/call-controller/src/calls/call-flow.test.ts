@@ -409,6 +409,91 @@ describe('CallFlow', () => {
     });
   });
 
+  describe('voicemail', () => {
+    async function callInVoicemail() {
+      const context = buildFlow({ online: ['user-1'] });
+      await context.flow.acceptInboundCall({
+        callSid: 'CAcall1',
+        from: caller,
+        to: businessNumber,
+      });
+      await context.flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'no-answer',
+      });
+      expect(context.twilio.redirects()).toHaveLength(1);
+      // Twilio pulls the caller out of the conference to play the greeting.
+      await context.flow.handleConferenceEvent({
+        conversationUuid: 'CAcall1',
+        event: 'participant-leave',
+        legUuid: 'CAcall1',
+        participantLabel: 'caller|%2B15555550101|nonce',
+        duration: 20,
+      });
+      return context;
+    }
+
+    test('keeps the caller connected while the voicemail records', async () => {
+      const { events, twilio, telephony } = await callInVoicemail();
+
+      expect(twilio.hangups()).toEqual([]);
+      expect(events.callEnded).not.toHaveBeenCalled();
+      expect(events.callParticipantStatus).not.toHaveBeenCalledWith(
+        expect.objectContaining({ legUuid: 'CAcall1', status: 'completed' }),
+      );
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        voicemail: true,
+        callerLegUuid: 'CAcall1',
+      });
+    });
+
+    test('does not send the caller to voicemail twice', async () => {
+      const { flow, twilio } = await callInVoicemail();
+
+      // A late timeout for a leg that was already hung up.
+      await flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'no-answer',
+      });
+
+      expect(twilio.redirects()).toHaveLength(1);
+    });
+
+    test('ends the call when the recording is ready', async () => {
+      const { flow, events, telephony } = await callInVoicemail();
+
+      await flow.handleRecordingReady({
+        conversationUuid: 'CAcall1',
+        recordingUrl: 'https://api.twilio.example.com/recordings/RE1',
+        duration: 12,
+        context: 'routing-timeout',
+      });
+
+      expect(events.callRecordingReady).toHaveBeenCalledTimes(1);
+      expect(events.callEnded).toHaveBeenCalledTimes(1);
+      await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
+    });
+
+    test('ends the call when the caller hangs up before leaving a message', async () => {
+      const { flow, events, telephony } = await callInVoicemail();
+
+      await flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAcall1',
+        status: 'completed',
+        duration: 25,
+      });
+
+      expect(events.callEnded).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationUuid: 'CAcall1', duration: 25 }),
+      );
+      await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
+      await expect(telephony.getLegMetadata('CAcall1')).resolves.toBeNull();
+    });
+  });
+
   describe('answered calls', () => {
     async function answeredCall() {
       const context = buildFlow({ online: ['user-1'] });
