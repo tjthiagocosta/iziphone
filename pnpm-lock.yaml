@@ -313,12 +313,12 @@ importers:
       '@radix-ui/react-tooltip':
         specifier: ^1.2.16
         version: 1.2.16(@types/react-dom@19.2.7(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@repo/db':
-        specifier: workspace:*
-        version: link:../../packages/db
       '@repo/dto':
         specifier: workspace:*
         version: link:../../packages/dto
+      '@repo/events':
+        specifier: workspace:*
+        version: link:../../packages/events
       '@twilio/voice-sdk':
         specifier: ^2.18.4
         version: 2.18.4

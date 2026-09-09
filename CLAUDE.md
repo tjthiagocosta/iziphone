@@ -11,7 +11,7 @@ See `README.md` for the architecture and `LICENSE` for terms (PolyForm Shield 1.
 ## Layout
 
 ```
-apps/web              Next.js 15 app router, Tailwind, shadcn/ui
+apps/web              Next.js 16 app router, Tailwind, shadcn/ui                :3000
 apps/api              Fastify, Prisma, Better Auth, SMS/MMS, admin CRUD   :3001
 apps/call-controller  Fastify, Twilio webhooks, Socket.IO, DB-free         :3002
 packages/db           Prisma schema, client
@@ -37,6 +37,14 @@ routes and the Redis command and event bridges, `realtime/` the Socket.IO
 server, its auth, presence and the call-ended broadcast, and `health/` the
 health routes. `calls` never imports `realtime`; `app.ts` passes it in behind
 the `CallRealtime` interface.
+
+`apps/web/src` follows the app router: `app/` holds the routes, grouped into
+`(auth)`, `(app)` and `(admin)`, `components/` the views and the shadcn/ui
+primitives in `components/ui`, `hooks/` the data hooks over the API and the
+telephony and socket clients, `lib/api` the typed fetch clients, and
+`proxy.ts` the session guard that keeps signed-out visitors on the login
+page. Permissions come from `@repo/events`; response shapes from
+`@repo/dto`. Several views still render `lib/mock-data`.
 
 Design rule that must hold: **the call controller never touches Postgres.** It reads routing from the Redis cache the API writes, with an HTTP fallback to the API's `/internal` routes.
 

@@ -121,10 +121,6 @@ Working today:
 - Shared SMS/MMS conversations with inbound and outbound messages
 - Admin console for users, departments and phone numbers, with soft delete and restore
 
-Known issues:
-
-- Production cookies: the web app's route guard does not yet recognize the `__Secure-` session cookie the API sets in production.
-
 Planned or incomplete:
 
 - Mobile apps

@@ -1,16 +1,8 @@
-import { RoleSchema } from '@repo/dto';
+import { AuthenticatedUserSchema } from '@repo/dto';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import fp from 'fastify-plugin';
 import { z } from 'zod';
 import { type Auth, createAuth } from './better-auth.js';
-
-const AuthUserSchema = z.object({
-  id: z.string(),
-  email: z.string(),
-  name: z.string().nullable(),
-  role: RoleSchema,
-  emailVerified: z.boolean(),
-});
 
 /** What Better Auth hands back; validated because `role` is a free-form field there. */
 const AuthSessionSchema = z.object({
@@ -20,10 +12,10 @@ const AuthSessionSchema = z.object({
     expiresAt: z.coerce.date(),
     token: z.string(),
   }),
-  user: AuthUserSchema,
+  user: AuthenticatedUserSchema,
 });
 
-export type AuthUser = z.infer<typeof AuthUserSchema>;
+export type AuthUser = z.infer<typeof AuthenticatedUserSchema>;
 export type AuthSession = z.infer<typeof AuthSessionSchema>;
 export type Role = AuthUser['role'];
 
