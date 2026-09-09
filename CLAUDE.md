@@ -19,6 +19,15 @@ packages/dto          Zod schemas shared by API, web, and controller
 packages/events       Redis channels, event schemas, cache types, JWT verify
 ```
 
+`apps/api/src` is organized by feature, not by layer: `auth/`, `calls/`,
+`departments/`, `users/`, `phone-numbers/`, `messaging/`, `routing/` (the
+cache the call controller reads and the `/internal` routing lookups), `admin/`
+(audit log, service errors, dashboard stats), `health/`, and `infra/` (Prisma,
+Redis, rate limiting, the error handler). Each module has an `index.ts` that
+is its only public surface; import another module through it, never from its
+files. Route files end in `.routes.ts`, and `routes.ts` at the root composes
+them into the `/api/user`, `/api/admin` and `/internal` groups.
+
 Design rule that must hold: **the call controller never touches Postgres.** It reads routing from the Redis cache the API writes, with an HTTP fallback to the API's `/internal` routes.
 
 ## Commands
@@ -29,7 +38,7 @@ from `docker compose -f docker-compose.dev.yml up -d`.
 - Install: `pnpm install`
 - Typecheck: `pnpm typecheck`
 - Lint: `pnpm lint` (`pnpm lint:fix` to apply fixes)
-- Test (single file): `pnpm --filter @repo/api exec vitest run src/routes/auth.test.ts`
+- Test (single file): `pnpm --filter @repo/api exec vitest run src/auth/auth.routes.test.ts`
   (swap the workspace name and path; on a fresh clone run `pnpm turbo run build --filter='./packages/*'` first)
 - Test (all): `pnpm test`
 - Run locally: `pnpm db:push` once, then `pnpm dev` (web :3000, api :3001, call controller :3002)

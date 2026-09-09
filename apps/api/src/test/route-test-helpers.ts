@@ -4,10 +4,9 @@ import Fastify, {
   type FastifyPluginAsync,
 } from 'fastify';
 import type { Redis } from 'ioredis';
+import type { Auth, AuthUser, Role } from '../auth/index.js';
 import { type ApiConfig, loadApiConfig } from '../config.js';
-import type { Auth } from '../lib/auth.js';
-import type { AuthUser, Role } from '../plugins/auth.js';
-import { apiErrorHandler } from '../plugins/error-handler.js';
+import { apiErrorHandler } from '../infra/index.js';
 
 export const defaultAuthUser: AuthUser = {
   id: 'user-1',

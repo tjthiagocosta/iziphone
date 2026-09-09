@@ -1,25 +1,17 @@
 import cors from '@fastify/cors';
 import formbody from '@fastify/formbody';
 import Fastify from 'fastify';
+import { authPlugin } from './auth/index.js';
+import { CallEventSubscriberService } from './calls/index.js';
 import type { ApiConfig } from './config.js';
-import authPlugin from './plugins/auth.js';
-import { apiErrorHandler } from './plugins/error-handler.js';
-import { internalAuthHook } from './plugins/internal-auth.js';
-import prismaPlugin from './plugins/prisma.js';
-import { rateLimitPlugin } from './plugins/rate-limit.js';
-import redisPlugin from './plugins/redis.js';
-import adminRoutes from './routes/admin/index.js';
-import authRoutes from './routes/auth.js';
-import callRoutes from './routes/calls.js';
-import healthRoutes from './routes/health.js';
-import internalDepartmentRoutes from './routes/internal/departments.js';
-import internalUserRoutes from './routes/internal/users.js';
-import messageMediaRoutes from './routes/message-media.js';
-import sessionRoutes from './routes/sessions.js';
-import userRoutes from './routes/user/index.js';
-import twilioMessagesWebhookRoutes from './routes/webhooks/twilio/messages.js';
-import { CallEventSubscriberService } from './services/call-event-subscriber.service.js';
-import { RoutingCacheService } from './services/routing-cache.service.js';
+import {
+  apiErrorHandler,
+  prismaPlugin,
+  rateLimitPlugin,
+  redisPlugin,
+} from './infra/index.js';
+import { registerRoutes } from './routes.js';
+import { RoutingCacheService } from './routing/index.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -88,21 +80,7 @@ export async function buildApp(config: ApiConfig) {
     await callEventSubscriber.close();
   });
 
-  await fastify.register(healthRoutes);
-  await fastify.register(messageMediaRoutes);
-  await fastify.register(authRoutes);
-  await fastify.register(sessionRoutes);
-  await fastify.register(async (internal) => {
-    internal.addHook('onRequest', internalAuthHook(config.internalApiToken));
-    await internal.register(internalDepartmentRoutes);
-    await internal.register(internalUserRoutes);
-  });
-  await fastify.register(callRoutes);
-  await fastify.register(twilioMessagesWebhookRoutes, {
-    prefix: '/webhooks/twilio/messages',
-  });
-  await fastify.register(userRoutes, { prefix: '/api/user' });
-  await fastify.register(adminRoutes, { prefix: '/api/admin' });
+  await registerRoutes(fastify, config);
 
   return fastify;
 }
