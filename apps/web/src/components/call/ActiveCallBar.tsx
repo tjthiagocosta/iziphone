@@ -20,23 +20,10 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import type { CallStatus } from '@/hooks/use-telephony-client';
+import { formatDuration } from '@/lib/duration';
 import { formatPhoneNumber } from '@/lib/phone-number';
 import { cn } from '@/lib/utils';
 import { KeypadModal } from './KeypadModal';
-
-/**
- * Format seconds into MM:SS or HH:MM:SS
- */
-function formatDuration(seconds: number): string {
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-
-  if (hrs > 0) {
-    return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  }
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
 
 /**
  * Get call status display text

@@ -21,17 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-
-/** Up to two letters from the name, or the first letter of the email. */
-function initialsOf(name: string | null, email: string): string {
-  const fromName = (name ?? '')
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join('');
-  return (fromName || email[0] || '').toUpperCase();
-}
+import { initialsOf } from '@/lib/initials';
 
 interface NavbarProps {
   onOpenDialer: () => void;
