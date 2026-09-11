@@ -1,0 +1,49 @@
+import type { MessageConversation, MessageSender } from '@repo/dto';
+
+/** Whether a reply can leave this thread, and what to say when it cannot. */
+export type SendEligibility =
+  | { canSend: true }
+  | { canSend: false; reason: string };
+
+type Thread = Pick<MessageConversation, 'isSuppressed' | 'sourcePhoneNumber'>;
+
+/**
+ * Decided before the composer is enabled rather than after the text is typed.
+ *
+ * A thread can be readable and still not writable: an agent sees a
+ * department's conversations but may only send from the numbers they are a
+ * sender for, and the API refuses that with `sender_mismatch` only once the
+ * message is submitted. A reply always leaves from the thread's own line, so
+ * that line is the one to check.
+ */
+export function sendEligibility(
+  conversation: Thread,
+  senders: readonly MessageSender[],
+): SendEligibility {
+  const { sourcePhoneNumber } = conversation;
+
+  if (conversation.isSuppressed) {
+    return {
+      canSend: false,
+      reason: 'This contact has opted out of messages from this number.',
+    };
+  }
+
+  const sender = senders.find((option) => option.id === sourcePhoneNumber.id);
+
+  if (!sender) {
+    return {
+      canSend: false,
+      reason: 'You cannot send from the number this conversation is on.',
+    };
+  }
+
+  if (!sender.smsEnabled) {
+    return {
+      canSend: false,
+      reason: 'This number cannot send text messages.',
+    };
+  }
+
+  return { canSend: true };
+}
