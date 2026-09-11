@@ -46,11 +46,14 @@ the telephony and socket hooks. The plumbing under them lives in `lib/`:
 mapping and response validation with the `@repo/dto` schemas; `auth.ts`,
 `user.ts`, `admin.ts` and `call-controller.ts` are the endpoint functions),
 `lib/telephony` holds the pure `TelephonySession` state machine the Twilio
-Device hook drives, and `lib/session-guard.ts` the cookie and redirect rules
-that `proxy.ts` enforces. `AuthProvider` loads the user once and redirects
-signed-out visitors; `AdminGuard` keeps non-admins out of `(admin)`.
-Permissions come from `@repo/events`; response shapes from `@repo/dto`.
-Several views still render `lib/mock-data`.
+Device hook drives, `lib/inbox` and `lib/conversation` the merging, paging
+and grouping rules the inbox and the thread are built from, `lib/messaging`
+whether a message can be sent here and what a failure means, and
+`lib/session-guard.ts` the cookie and redirect rules that `proxy.ts`
+enforces. `AuthProvider` loads the user once and redirects signed-out
+visitors; `AdminGuard` keeps non-admins out of `(admin)`. Permissions come
+from `@repo/events`; response shapes from `@repo/dto`. Every view reads the
+real API.
 
 Design rule that must hold: **the call controller never touches Postgres.** It reads routing from the Redis cache the API writes, with an HTTP fallback to the API's `/internal` routes.
 
@@ -91,7 +94,7 @@ rules below refine them.
 
 ## Data and privacy rules
 
-- Use only fictional data in tests, fixtures, and docs: phone numbers in the reserved 555-01xx range, emails at `example.com`, made-up people and businesses. `apps/web/src/lib/mock-data` shows the pattern.
+- Use only fictional data in tests, fixtures, and docs: phone numbers in the reserved 555-01xx range, emails at `example.com`, made-up people and businesses.
 - Never commit `.env` files, credentials, real phone numbers, customer or contact data, recordings, or transcripts.
 - Do not log message bodies, transcripts, or full phone numbers at info level.
 - Do not add default admin credentials, demo logins, seed scripts, or auth bypasses. The first admin is created by registering and promoting the user in the database (see README).

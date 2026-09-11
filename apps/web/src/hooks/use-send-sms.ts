@@ -10,6 +10,13 @@ interface SendSmsInput {
   conversationId?: string;
   to?: string;
   body: string;
+  /**
+   * Identifies the draft, not the attempt. Retrying after a 502 must carry
+   * the key the first attempt used, or the retry sends a second message
+   * instead of resolving the first; the caller therefore holds it for as long
+   * as the text sits in the box.
+   */
+  idempotencyKey: string;
 }
 
 interface UseSendSmsReturn {
@@ -28,10 +35,7 @@ export function useSendSms(): UseSendSmsReturn {
       setIsSending(true);
       setError(null);
 
-      const result = await sendSms({
-        ...input,
-        idempotencyKey: crypto.randomUUID(),
-      });
+      const result = await sendSms(input);
 
       return result;
     } catch (err) {

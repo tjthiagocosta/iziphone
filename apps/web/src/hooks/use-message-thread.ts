@@ -15,6 +15,7 @@ interface UseMessageThreadOptions {
 
 interface UseMessageThreadReturn {
   conversation: MessageConversation | null;
+  /** Oldest first, the order a thread is read in. */
   messages: Message[];
   hasMore: boolean;
   isLoading: boolean;
@@ -52,7 +53,8 @@ export function useMessageThread(
       ]);
 
       setConversation(conv);
-      setMessages(messageResult.messages);
+      // The endpoint answers newest first, because it pages backwards.
+      setMessages([...messageResult.messages].reverse());
       setHasMore(messageResult.hasMore);
 
       if (autoMarkRead && conv.unreadCount > 0) {
@@ -83,7 +85,7 @@ export function useMessageThread(
         beforeMessageId: oldestMessage.id,
       });
 
-      setMessages((prev) => [...result.messages, ...prev]);
+      setMessages((prev) => [...[...result.messages].reverse(), ...prev]);
       setHasMore(result.hasMore);
     } catch (err) {
       setError(

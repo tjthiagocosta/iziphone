@@ -1,5 +1,6 @@
 'use client';
 
+import type { MessageConversationListItem } from '@repo/dto';
 import { ChevronDown, ChevronRight, Inbox, Users } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -7,9 +8,15 @@ import { useState } from 'react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { useMessageConversations } from '@/hooks/use-message-conversations';
 import { useUserDepartments } from '@/hooks/use-user-departments';
-import { formatPhoneNumber, mockRecentInteractions } from '@/lib/mock-data';
+import { avatarColorFor } from '@/lib/avatar-color';
+import { initialsOf } from '@/lib/initials';
+import { lineName } from '@/lib/line';
+import { formatPhoneNumber } from '@/lib/phone-number';
 import { cn } from '@/lib/utils';
+
+const RECENTS_LIMIT = 15;
 
 interface SidebarItemProps {
   href: string;
@@ -45,27 +52,22 @@ function SidebarItem({ href, icon, label, badge, isActive }: SidebarItemProps) {
 }
 
 interface RecentItemProps {
-  id: string;
-  name: string | null;
-  phoneNumber: string;
-  avatarColor: string;
-  initials: string;
-  status?: 'available' | 'dnd' | 'offline';
+  /** The conversation, not the contact: one contact has one per line. */
+  conversationId: string;
+  contact: MessageConversationListItem['contact'];
+  line: string;
   isActive?: boolean;
 }
 
 function RecentItem({
-  id,
-  name,
-  phoneNumber,
-  avatarColor,
-  initials,
-  status,
+  conversationId,
+  contact,
+  line,
   isActive,
 }: RecentItemProps) {
   return (
     <Link
-      href={`/app/conversations/${id}`}
+      href={`/app/conversations/${conversationId}`}
       className={cn(
         'flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
         isActive
@@ -73,19 +75,20 @@ function RecentItem({
           : 'text-sidebar-foreground hover:bg-sidebar-hover hover:text-foreground',
       )}
     >
-      <div className="relative">
-        <Avatar className="h-7 w-7">
-          <AvatarFallback className={cn(avatarColor, 'text-white text-xs')}>
-            {initials}
-          </AvatarFallback>
-        </Avatar>
-        {status === 'dnd' && (
-          <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-warning border-2 border-sidebar" />
-        )}
-      </div>
+      <Avatar className="h-7 w-7">
+        <AvatarFallback
+          className={cn(avatarColorFor(contact.id), 'text-white text-xs')}
+        >
+          {initialsOf(contact.name, contact.phoneNumber.slice(-2))}
+        </AvatarFallback>
+      </Avatar>
       <div className="flex-1 min-w-0">
-        <p className="truncate">{name || formatPhoneNumber(phoneNumber)}</p>
-        {status === 'dnd' && <p className="text-xs text-warning">DND</p>}
+        <p className="truncate">
+          {contact.name ?? formatPhoneNumber(contact.phoneNumber)}
+        </p>
+        {/* Which of our numbers the thread is on: the same person can be
+            here twice, once per line. */}
+        <p className="truncate text-xs text-muted-foreground">{line}</p>
       </div>
     </Link>
   );
@@ -96,19 +99,7 @@ export function Sidebar() {
   const [departmentsExpanded, setDepartmentsExpanded] = useState(true);
   const { departments, isLoading: departmentsLoading } = useUserDepartments();
 
-  // Get unique contacts from recent interactions
-  const recentContacts = mockRecentInteractions
-    .reduce(
-      (acc, interaction) => {
-        const existing = acc.find((c) => c.id === interaction.contact.id);
-        if (!existing) {
-          acc.push(interaction.contact);
-        }
-        return acc;
-      },
-      [] as (typeof mockRecentInteractions)[0]['contact'][],
-    )
-    .slice(0, 15);
+  const { conversations } = useMessageConversations({ limit: RECENTS_LIMIT });
 
   return (
     <aside className="w-60 bg-sidebar border-r border-border flex flex-col h-full">
@@ -181,18 +172,23 @@ export function Sidebar() {
               Recents
             </div>
             <div className="mt-1 space-y-0.5">
-              {recentContacts.map((contact) => (
+              {conversations.map((conversation) => (
                 <RecentItem
-                  key={contact.id}
-                  id={contact.id}
-                  name={contact.name}
-                  phoneNumber={contact.phoneNumber}
-                  avatarColor={contact.avatarColor}
-                  initials={contact.initials}
-                  status={contact.status}
-                  isActive={pathname === `/app/conversations/${contact.id}`}
+                  key={conversation.id}
+                  conversationId={conversation.id}
+                  contact={conversation.contact}
+                  line={lineName(conversation.sourcePhoneNumber)}
+                  isActive={
+                    pathname === `/app/conversations/${conversation.id}`
+                  }
                 />
               ))}
+
+              {conversations.length === 0 && (
+                <p className="px-3 py-2 text-sm text-muted-foreground">
+                  No conversations yet
+                </p>
+              )}
             </div>
           </div>
         </div>

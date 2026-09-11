@@ -1,4 +1,7 @@
 import {
+  type ContactListQuery,
+  type ContactListResponse,
+  ContactListResponseSchema,
   type MessageConversation,
   type MessageConversationListQuery,
   type MessageConversationListResponse,
@@ -29,6 +32,15 @@ export function getUserDepartments(): Promise<UserDepartmentsResponse> {
 export function getMessageSenders(): Promise<MessageSendersResponse> {
   return requestApi('/api/user/message-senders', {
     schema: MessageSendersResponseSchema,
+  });
+}
+
+/** Everyone the caller has a conversation with, alphabetically. */
+export function listContacts(
+  query: Partial<ContactListQuery> = {},
+): Promise<ContactListResponse> {
+  return requestApi(withQuery('/api/user/contacts', query), {
+    schema: ContactListResponseSchema,
   });
 }
 

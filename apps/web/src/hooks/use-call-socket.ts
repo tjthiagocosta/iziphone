@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  type CallEnded,
   CallEndedSchema,
   type ClientToServerEvents,
   type IncomingCall,
@@ -23,6 +24,11 @@ export interface CallSocketState {
   isConnected: boolean;
   /** A call the controller offered this user, until it is taken or ends. */
   incomingCall: IncomingCall | null;
+  /**
+   * The call that ended most recently. History is written by the API from the
+   * same Redis event, so anything showing call history can refetch on it.
+   */
+  lastEndedCall: CallEnded | null;
   rejectCall: (conversationUuid: string) => void;
   clearIncomingCall: () => void;
 }
@@ -45,6 +51,7 @@ export function useCallSocket({
 }: CallSocketOptions): CallSocketState {
   const [isConnected, setIsConnected] = useState(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const [lastEndedCall, setLastEndedCall] = useState<CallEnded | null>(null);
   const socketRef = useRef<CallSocket | null>(null);
   const getRealtimeTokenRef = useRef(getRealtimeToken);
 
@@ -118,6 +125,7 @@ export function useCallSocket({
           ? null
           : current,
       );
+      setLastEndedCall(parsed.data);
     });
 
     socket.on('error', (data) => {
@@ -146,6 +154,7 @@ export function useCallSocket({
       socketRef.current = null;
       setIsConnected(false);
       setIncomingCall(null);
+      setLastEndedCall(null);
     };
   }, [userId]);
 
@@ -158,5 +167,11 @@ export function useCallSocket({
     setIncomingCall(null);
   }, []);
 
-  return { isConnected, incomingCall, rejectCall, clearIncomingCall };
+  return {
+    isConnected,
+    incomingCall,
+    lastEndedCall,
+    rejectCall,
+    clearIncomingCall,
+  };
 }

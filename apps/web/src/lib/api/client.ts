@@ -17,10 +17,9 @@ export interface ResponseSchema<T> {
   parse(data: unknown): T;
 }
 
-export type QueryParams = Record<
-  string,
-  string | number | boolean | null | undefined
->;
+type QueryValue = string | number | boolean | null | undefined;
+
+export type QueryParams = Record<string, QueryValue | readonly QueryValue[]>;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -43,20 +42,25 @@ export interface RequestOptions<T> {
   schema?: ResponseSchema<T>;
 }
 
-/** Builds `path?key=value`, leaving out empty, false and undefined values. */
+/**
+ * Builds `path?key=value`, leaving out empty, false and undefined values.
+ * An array repeats its key, which is how the API reads a multi-valued filter.
+ */
 export function withQuery(path: string, params: QueryParams): string {
   const query = new URLSearchParams();
 
   for (const [key, value] of Object.entries(params)) {
-    if (
-      value === undefined ||
-      value === null ||
-      value === '' ||
-      value === false
-    ) {
-      continue;
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (
+        item === undefined ||
+        item === null ||
+        item === '' ||
+        item === false
+      ) {
+        continue;
+      }
+      query.append(key, String(item));
     }
-    query.set(key, String(value));
   }
 
   const encoded = query.toString();

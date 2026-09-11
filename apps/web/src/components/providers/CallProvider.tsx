@@ -1,6 +1,6 @@
 'use client';
 
-import type { IncomingCall } from '@repo/dto';
+import type { CallEnded, IncomingCall } from '@repo/dto';
 import {
   createContext,
   type ReactNode,
@@ -28,6 +28,11 @@ export interface CallContextValue {
   error: string | null;
   /** A call the controller offered this user and Twilio may be about to ring. */
   incomingCall: IncomingCall | null;
+  /**
+   * The call that ended most recently, for views that show call history: the
+   * API writes that history from the same event, so it is the cue to refetch.
+   */
+  lastEndedCall: CallEnded | null;
   isSocketConnected: boolean;
   makeCall: (to: string) => Promise<void>;
   hangUp: () => void;
@@ -103,6 +108,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     isEndingCall: telephony.isEndingCall,
     error: telephony.error,
     incomingCall,
+    lastEndedCall: socket.lastEndedCall,
     isSocketConnected: socket.isConnected,
     makeCall: telephony.makeCall,
     hangUp,

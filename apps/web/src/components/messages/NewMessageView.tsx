@@ -1,10 +1,11 @@
 'use client';
 
-import { Check, ChevronDown } from 'lucide-react';
-import { useState } from 'react';
-import { MessageInput } from '@/components/conversation/MessageInput';
+import type { MessageConversationListItem, MessageSender } from '@repo/dto';
+import { isDialablePhoneNumber, SMS_BODY_MAX_LENGTH } from '@repo/dto';
+import { ChevronDown, Send, X } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useRef, useState } from 'react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -14,308 +15,304 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  formatPhoneNumber,
-  mockContacts,
-  mockCurrentUser,
-  mockDepartments,
-} from '@/lib/mock-data';
+import { useMessageConversations } from '@/hooks/use-message-conversations';
+import { useMessageSenders } from '@/hooks/use-message-senders';
+import { useSendSms } from '@/hooks/use-send-sms';
+import { ApiError } from '@/lib/api/client';
+import { avatarColorFor } from '@/lib/avatar-color';
+import { initialsOf } from '@/lib/initials';
+import { lineDescription, lineName } from '@/lib/line';
+import { sendFailureFrom } from '@/lib/messaging/send-failure';
+import { formatPhoneNumber } from '@/lib/phone-number';
 import { cn } from '@/lib/utils';
 
-type FromSelection = {
-  type: 'personal' | 'department';
-  id: string;
-  name: string;
+/** A destination is a contact already messaged, or a number typed in. */
+interface Recipient {
   phoneNumber: string;
-};
+  name: string | null;
+}
 
 export function NewMessageView() {
-  const [selectedFrom, setSelectedFrom] = useState<FromSelection>({
-    type: 'personal',
-    id: mockCurrentUser.id,
-    name: mockCurrentUser.name,
-    phoneNumber: mockCurrentUser.phoneNumber,
+  const router = useRouter();
+  const { senders, isLoading: loadingSenders } = useMessageSenders();
+  const { send, isSending } = useSendSms();
+
+  const [senderId, setSenderId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [recipient, setRecipient] = useState<Recipient | null>(null);
+  const [body, setBody] = useState('');
+  const [failure, setFailure] = useState<string | null>(null);
+  const draftKey = useRef(crypto.randomUUID());
+
+  const sendable = senders.filter((sender) => sender.smsEnabled);
+  const sender =
+    sendable.find((option) => option.id === senderId) ?? sendable[0];
+
+  /*
+   * The search runs against conversations rather than a contact list: the API
+   * already matches it on both the name and the digits of the number, and a
+   * new message to somebody never messaged is served by typing the number.
+   */
+  const { conversations } = useMessageConversations({
+    search: search.trim() || undefined,
+    limit: 20,
+    autoFetch: search.trim().length > 0,
   });
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedRecipient, setSelectedRecipient] = useState<
-    (typeof mockContacts)[0] | null
-  >(null);
 
-  // Split contacts into personal and group (department members)
-  const personalContacts = mockContacts.filter((c) => !c.departmentBadge);
-  const groupContacts = mockContacts.filter((c) => c.departmentBadge);
+  const typedNumber = isDialablePhoneNumber(search.trim())
+    ? search.trim()
+    : null;
 
-  // Filter contacts based on search
-  const filterContacts = (contacts: typeof mockContacts) => {
-    if (!searchQuery) return contacts;
-    const query = searchQuery.toLowerCase();
-    return contacts.filter(
-      (c) =>
-        c.name?.toLowerCase().includes(query) || c.phoneNumber.includes(query),
-    );
-  };
+  const handleSend = async () => {
+    if (!recipient || !sender || !body.trim() || isSending) {
+      return;
+    }
 
-  const filteredPersonal = filterContacts(personalContacts);
-  const filteredGroup = filterContacts(groupContacts);
+    try {
+      const result = await send({
+        fromPhoneNumberId: sender.id,
+        to: recipient.phoneNumber,
+        body,
+        idempotencyKey: draftKey.current,
+      });
 
-  const handleSelectRecipient = (contact: (typeof mockContacts)[0]) => {
-    setSelectedRecipient(contact);
-    setSearchQuery('');
-  };
+      router.push(`/app/conversations/${result.conversationId}`);
+    } catch (cause) {
+      if (!(cause instanceof ApiError)) {
+        setFailure(
+          cause instanceof Error ? cause.message : 'The message was not sent',
+        );
+        return;
+      }
 
-  const handleSendMessage = (message: string) => {
-    if (!selectedRecipient) return;
-    console.log('Sending message to:', selectedRecipient.phoneNumber, message);
-    // TODO: Integrate with API
+      /*
+       * A failed first message does create the conversation, but the error
+       * body's conversation id does not survive the client's error mapping,
+       * so there is nowhere to send the reader: the draft stays here with the
+       * reason, and the inbox will show the thread on its next refresh.
+       */
+      setFailure(sendFailureFrom(cause.status, cause.message).message);
+    }
   };
 
   return (
     <div className="h-full flex flex-col bg-background">
-      {/* Header */}
       <div className="p-6 border-b border-border">
-        <h1 className="text-xl font-semibold mb-4">New Message</h1>
+        <h1 className="text-xl font-semibold mb-4">New message</h1>
 
-        {/* From selector */}
         <div className="flex items-center gap-4 mb-4">
           <span className="text-sm text-muted-foreground w-12">From:</span>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                className="h-auto p-0 hover:bg-transparent justify-start gap-2 text-base"
-              >
-                {selectedFrom.name} (
-                {formatPhoneNumber(selectedFrom.phoneNumber)})
-                <ChevronDown className="h-4 w-4 text-muted-foreground" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-80">
-              {/* Personal option */}
-              <DropdownMenuItem
-                onClick={() =>
-                  setSelectedFrom({
-                    type: 'personal',
-                    id: mockCurrentUser.id,
-                    name: mockCurrentUser.name,
-                    phoneNumber: mockCurrentUser.phoneNumber,
-                  })
-                }
-              >
-                {mockCurrentUser.name} (
-                {formatPhoneNumber(mockCurrentUser.phoneNumber)})
-              </DropdownMenuItem>
-
-              {/* Department options */}
-              {mockDepartments.map((dept) => (
-                <DropdownMenuItem
-                  key={dept.id}
-                  onClick={() =>
-                    setSelectedFrom({
-                      type: 'department',
-                      id: dept.id,
-                      name: dept.name,
-                      phoneNumber: dept.phoneNumbers[0]?.number || '',
-                    })
-                  }
-                >
-                  {dept.name} (
-                  {formatPhoneNumber(dept.phoneNumbers[0]?.number || '')})
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {loadingSenders ? (
+            <span className="text-sm text-muted-foreground">Loading…</span>
+          ) : sender ? (
+            <SenderPicker
+              senders={sendable}
+              selected={sender}
+              onSelect={(option) => setSenderId(option.id)}
+            />
+          ) : (
+            <span className="text-sm text-muted-foreground">
+              You have no number that can send text messages.
+            </span>
+          )}
         </div>
 
-        {/* To selector */}
         <div className="flex items-center gap-4">
           <span className="text-sm text-muted-foreground w-12">To:</span>
-          <div className="flex-1 flex items-center gap-2">
-            {selectedRecipient ? (
-              <div className="flex items-center gap-2 bg-secondary rounded-full px-3 py-1">
-                <span className="text-sm">
-                  {selectedRecipient.name ||
-                    formatPhoneNumber(selectedRecipient.phoneNumber)}
-                </span>
-                <Check className="h-4 w-4 text-success" />
-                <button
-                  type="button"
-                  onClick={() => setSelectedRecipient(null)}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  ×
-                </button>
-              </div>
-            ) : (
-              <div className="relative flex-1">
-                <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Type a name or number"
-                  className="bg-transparent border-0 border-b border-border rounded-none focus-visible:ring-0 px-0"
-                />
-              </div>
-            )}
-          </div>
+          {recipient ? (
+            <div className="flex items-center gap-2 bg-secondary rounded-full px-3 py-1">
+              <span className="text-sm">
+                {recipient.name ?? formatPhoneNumber(recipient.phoneNumber)}
+              </span>
+              <button
+                type="button"
+                onClick={() => setRecipient(null)}
+                className="text-muted-foreground hover:text-foreground"
+                aria-label="Choose someone else"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Type a name or number"
+              className="bg-transparent border-0 border-b border-border rounded-none focus-visible:ring-0 px-0"
+            />
+          )}
         </div>
       </div>
 
-      {/* Content area */}
-      {selectedRecipient ? (
-        // Show message compose area
+      {recipient ? (
         <div className="flex-1 flex flex-col">
-          <div className="flex-1 flex items-center justify-center text-muted-foreground">
-            <div className="text-center">
+          <div className="flex-1 flex items-center justify-center text-center text-muted-foreground">
+            <div>
               <p className="text-lg font-medium">
                 Message to{' '}
-                {selectedRecipient.name ||
-                  formatPhoneNumber(selectedRecipient.phoneNumber)}
+                {recipient.name ?? formatPhoneNumber(recipient.phoneNumber)}
               </p>
-              <p className="text-sm">Start typing your message below</p>
+              {sender && <p className="text-sm">from {lineName(sender)}</p>}
             </div>
           </div>
-          <MessageInput onSend={handleSendMessage} />
+
+          <div className="border-t border-border p-4">
+            {failure && (
+              <p className="mb-2 text-sm text-destructive">{failure}</p>
+            )}
+            <div className="flex items-end gap-2">
+              <textarea
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void handleSend();
+                  }
+                }}
+                placeholder="New message"
+                maxLength={SMS_BODY_MAX_LENGTH}
+                rows={1}
+                className="flex-1 bg-card rounded-lg border border-border px-4 py-3 text-sm resize-none focus:outline-hidden placeholder:text-muted-foreground"
+                style={{ minHeight: '44px', maxHeight: '120px' }}
+              />
+              <Button
+                onClick={() => void handleSend()}
+                disabled={!body.trim() || !sender || isSending}
+                size="icon"
+                className="h-11 w-11 rounded-full bg-info hover:bg-info/90 disabled:bg-muted disabled:text-muted-foreground"
+              >
+                <Send className="h-5 w-5" />
+              </Button>
+            </div>
+          </div>
         </div>
       ) : (
-        // Show contact search
-        <div className="flex-1 flex flex-col">
-          {/* Contact tabs */}
-          <Tabs defaultValue="personal" className="flex-1 flex flex-col">
-            <div className="border-b border-border px-6">
-              <TabsList className="h-auto bg-transparent gap-6 p-0">
-                <TabsTrigger
-                  value="personal"
-                  className="px-0 py-3 text-sm font-normal data-[state=active]:font-medium data-[state=active]:text-foreground data-[state=active]:shadow-none rounded-none border-b-2 border-transparent data-[state=active]:border-info"
-                >
-                  Personal Contacts{' '}
-                  <span className="ml-2 text-muted-foreground">
-                    {filteredPersonal.length}
-                  </span>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="group"
-                  className="px-0 py-3 text-sm font-normal data-[state=active]:font-medium data-[state=active]:text-foreground data-[state=active]:shadow-none rounded-none border-b-2 border-transparent data-[state=active]:border-info"
-                >
-                  Group Contacts{' '}
-                  <span className="ml-2 text-muted-foreground">
-                    {filteredGroup.length}
-                  </span>
-                </TabsTrigger>
-              </TabsList>
-            </div>
+        <ScrollArea className="flex-1">
+          <div className="p-2">
+            {typedNumber && (
+              <RecipientItem
+                identity={typedNumber}
+                name={null}
+                phoneNumber={typedNumber}
+                onClick={() =>
+                  setRecipient({ phoneNumber: typedNumber, name: null })
+                }
+              />
+            )}
 
-            <TabsContent value="personal" className="flex-1 mt-0">
-              <ScrollArea className="h-full">
-                <div className="p-2">
-                  {filteredPersonal.length === 0 ? (
-                    <p className="text-sm text-muted-foreground text-center py-8">
-                      No contacts found
-                    </p>
-                  ) : (
-                    filteredPersonal.map((contact) => (
-                      <ContactItem
-                        key={contact.id}
-                        contact={contact}
-                        onClick={() => handleSelectRecipient(contact)}
-                      />
-                    ))
-                  )}
-                </div>
-              </ScrollArea>
-            </TabsContent>
+            {conversations.map((conversation) => (
+              <ConversationRecipient
+                key={conversation.id}
+                conversation={conversation}
+                onClick={() =>
+                  setRecipient({
+                    phoneNumber: conversation.contact.phoneNumber,
+                    name: conversation.contact.name,
+                  })
+                }
+              />
+            ))}
 
-            <TabsContent value="group" className="flex-1 mt-0">
-              <ScrollArea className="h-full">
-                <div className="p-2">
-                  {filteredGroup.length === 0 ? (
-                    <p className="text-sm text-muted-foreground text-center py-8">
-                      No contacts found
-                    </p>
-                  ) : (
-                    filteredGroup.map((contact) => (
-                      <ContactItem
-                        key={contact.id}
-                        contact={contact}
-                        onClick={() => handleSelectRecipient(contact)}
-                      />
-                    ))
-                  )}
-                </div>
-              </ScrollArea>
-            </TabsContent>
-          </Tabs>
+            {search.trim() && !typedNumber && conversations.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-8">
+                Nobody found. Type a full phone number to start a conversation.
+              </p>
+            )}
 
-          {/* Empty state illustration placeholder */}
-          {!searchQuery && (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center">
-                <div className="w-48 h-48 mx-auto mb-4 bg-secondary/50 rounded-lg flex items-center justify-center">
-                  <span className="text-6xl text-muted-foreground/30">💬</span>
-                </div>
-                <p className="text-lg font-medium">What's on your mind?</p>
-                <p className="text-sm text-muted-foreground">
-                  Enter a name or number to start chatting
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
+            {!search.trim() && (
+              <p className="text-sm text-muted-foreground text-center py-8">
+                Enter a name or number to start a conversation.
+              </p>
+            )}
+          </div>
+        </ScrollArea>
       )}
     </div>
   );
 }
 
-interface ContactItemProps {
-  contact: (typeof mockContacts)[0];
+interface SenderPickerProps {
+  senders: readonly MessageSender[];
+  selected: MessageSender;
+  onSelect: (sender: MessageSender) => void;
+}
+
+function SenderPicker({ senders, selected, onSelect }: SenderPickerProps) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          className="h-auto p-0 hover:bg-transparent justify-start gap-2 text-base"
+        >
+          {lineDescription(selected)}
+          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-80">
+        {senders.map((sender) => (
+          <DropdownMenuItem key={sender.id} onClick={() => onSelect(sender)}>
+            {lineDescription(sender)}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ConversationRecipient({
+  conversation,
+  onClick,
+}: {
+  conversation: MessageConversationListItem;
+  onClick: () => void;
+}) {
+  return (
+    <RecipientItem
+      identity={conversation.contact.id}
+      name={conversation.contact.name}
+      phoneNumber={conversation.contact.phoneNumber}
+      onClick={onClick}
+    />
+  );
+}
+
+interface RecipientItemProps {
+  identity: string;
+  name: string | null;
+  phoneNumber: string;
   onClick: () => void;
 }
 
-function ContactItem({ contact, onClick }: ContactItemProps) {
+function RecipientItem({
+  identity,
+  name,
+  phoneNumber,
+  onClick,
+}: RecipientItemProps) {
   return (
     <button
       type="button"
       onClick={onClick}
       className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-secondary transition-colors text-left"
     >
-      <div className="relative">
-        <Avatar className="h-10 w-10">
-          <AvatarFallback className={cn(contact.avatarColor, 'text-white')}>
-            {contact.initials}
-          </AvatarFallback>
-        </Avatar>
-        {contact.status === 'available' && (
-          <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-success border-2 border-background" />
-        )}
-      </div>
+      <Avatar className="h-10 w-10">
+        <AvatarFallback className={cn(avatarColorFor(identity), 'text-white')}>
+          {initialsOf(name, phoneNumber.slice(-2))}
+        </AvatarFallback>
+      </Avatar>
 
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="font-medium truncate">
-            {contact.name || formatPhoneNumber(contact.phoneNumber)}
-          </span>
-          {contact.departmentBadge && (
-            <Badge
-              variant="secondary"
-              className="text-[10px] bg-purple/10 text-purple border-purple/20"
-            >
-              {contact.departmentBadge}
-            </Badge>
-          )}
-        </div>
-        {contact.name && (
+        <span className="font-medium truncate">
+          {name ?? formatPhoneNumber(phoneNumber)}
+        </span>
+        {name && (
           <p className="text-sm text-muted-foreground truncate">
-            {formatPhoneNumber(contact.phoneNumber)}
+            {formatPhoneNumber(phoneNumber)}
           </p>
         )}
       </div>
-
-      <span className="text-sm text-muted-foreground">
-        {contact.status === 'available'
-          ? 'Available'
-          : contact.status === 'dnd'
-            ? 'DND'
-            : ''}
-      </span>
     </button>
   );
 }
