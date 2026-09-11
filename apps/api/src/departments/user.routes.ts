@@ -47,6 +47,7 @@ export const userDepartmentRoutes: FastifyPluginAsync = async (fastify) => {
               select: {
                 phoneNumber: true,
                 isPrimary: true,
+                label: true,
               },
               orderBy: { isPrimary: 'desc' },
             },
@@ -62,6 +63,7 @@ export const userDepartmentRoutes: FastifyPluginAsync = async (fastify) => {
       phoneNumbers: ud.department.phoneNumbers.map((pn) => ({
         number: pn.phoneNumber,
         isDefault: pn.isPrimary,
+        label: pn.label,
       })),
     }));
 

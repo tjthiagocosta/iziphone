@@ -48,8 +48,8 @@ describe('userDepartmentRoutes', () => {
           id: 'dept-1',
           name: 'Support',
           phoneNumbers: [
-            { phoneNumber: '+15555550101', isPrimary: true },
-            { phoneNumber: '+15555550102', isPrimary: false },
+            { phoneNumber: '+15555550101', isPrimary: true, label: 'Support' },
+            { phoneNumber: '+15555550102', isPrimary: false, label: null },
           ],
         },
       },
@@ -75,6 +75,7 @@ describe('userDepartmentRoutes', () => {
               select: {
                 phoneNumber: true,
                 isPrimary: true,
+                label: true,
               },
               orderBy: { isPrimary: 'desc' },
             },
@@ -90,9 +91,11 @@ describe('userDepartmentRoutes', () => {
       id: 'dept-1',
       name: 'Support',
       color: expect.any(String),
+      // The label travels with the number: a voice-only line has no message
+      // sender to read one from, and the picker still has to name it.
       phoneNumbers: [
-        { number: '+15555550101', isDefault: true },
-        { number: '+15555550102', isDefault: false },
+        { number: '+15555550101', isDefault: true, label: 'Support' },
+        { number: '+15555550102', isDefault: false, label: null },
       ],
     });
   });

@@ -4,6 +4,12 @@ import { z } from 'zod';
 export const UserDepartmentPhoneNumberSchema = z.object({
   number: z.string(),
   isDefault: z.boolean(),
+  /**
+   * What the line is called. Here rather than only on a message sender,
+   * because a department answers on voice-only numbers too and they need a
+   * name in the same picker.
+   */
+  label: z.string().nullable(),
 });
 
 export const UserDepartmentItemSchema = z.object({
