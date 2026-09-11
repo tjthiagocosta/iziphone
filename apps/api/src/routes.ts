@@ -10,6 +10,7 @@ import {
 import { healthRoutes } from './health/index.js';
 import { internalAuthHook } from './infra/index.js';
 import {
+  contactRoutes,
   messageConversationRoutes,
   messageMediaRoutes,
   messageRoutes,
@@ -25,6 +26,7 @@ export const userApiRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.requireAuth);
 
   await fastify.register(userDepartmentRoutes, { prefix: '/departments' });
+  await fastify.register(contactRoutes, { prefix: '/contacts' });
   await fastify.register(messageRoutes, { prefix: '/messages' });
   await fastify.register(messageSenderRoutes, { prefix: '/message-senders' });
   await fastify.register(messageConversationRoutes, {

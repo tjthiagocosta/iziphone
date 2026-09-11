@@ -1,3 +1,4 @@
+export { contactRoutes } from './contacts.routes.js';
 export { messageConversationRoutes } from './conversations.routes.js';
 export { messageMediaRoutes } from './media.routes.js';
 export { messageRoutes } from './messages.routes.js';

@@ -8,6 +8,11 @@ import type {
   MessageOwner,
 } from '@repo/dto';
 import { MessagingContactService } from './contact.service.js';
+import {
+  buildConversationScope,
+  canAccessConversation,
+  loadDepartmentIds,
+} from './conversation-scope.js';
 import { messageRecordInclude, toMessageDto } from './message-record.js';
 
 type MessageConversationDbClient = PrismaClient | Prisma.TransactionClient;
@@ -313,23 +318,11 @@ export class MessageConversationService {
     return conversation;
   }
 
-  private async getDepartmentIds(
+  private getDepartmentIds(
     userId: string,
     dbClient: MessageConversationDbClient = this.db,
   ): Promise<string[]> {
-    const memberships = await dbClient.userDepartment.findMany({
-      where: {
-        userId,
-        department: {
-          deletedAt: null,
-        },
-      },
-      select: {
-        departmentId: true,
-      },
-    });
-
-    return memberships.map((membership) => membership.departmentId);
+    return loadDepartmentIds(dbClient, userId);
   }
 
   private async getSuppressionKeys(
@@ -355,22 +348,6 @@ export class MessageConversationService {
 
     return new Set(suppressions.map(suppressionKey));
   }
-}
-
-/** A user sees conversations they own and those owned by their departments. */
-export function canAccessConversation(
-  conversation: ConversationScope,
-  userId: string,
-  departmentIds: string[],
-): boolean {
-  if (conversation.userId === userId) {
-    return true;
-  }
-
-  return (
-    conversation.departmentId !== null &&
-    departmentIds.includes(conversation.departmentId)
-  );
 }
 
 export function buildMessagePreview(
@@ -403,14 +380,7 @@ function buildAccessibleWhere(
     sourcePhoneNumberId?: string | undefined;
   },
 ): Prisma.MessageConversationWhereInput {
-  const where: Prisma.MessageConversationWhereInput = {
-    OR: [
-      { userId },
-      ...(departmentIds.length
-        ? [{ departmentId: { in: departmentIds } }]
-        : []),
-    ],
-  };
+  const where = buildConversationScope(userId, departmentIds);
 
   if (filters.unreadOnly) {
     where.unreadCount = { gt: 0 };
