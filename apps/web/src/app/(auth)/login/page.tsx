@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -13,14 +13,21 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { signIn } from '@/lib/auth-client';
-import { safeRedirectTarget } from '@/lib/session-guard';
+import { loginNoticeFor, safeRedirectTarget } from '@/lib/session-guard';
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // After hydration, so the form still prerenders: `useSearchParams` would
+  // bail the whole page out of static rendering.
+  useEffect(() => {
+    setNotice(loginNoticeFor(window.location.search));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -36,8 +43,6 @@ export default function LoginPage() {
       if (result.error) {
         setError(result.error.message || 'Login failed');
       } else {
-        // Read at submit time so the form prerenders; useSearchParams would
-        // bail the whole page out of static rendering.
         const redirect = new URLSearchParams(window.location.search).get(
           'redirect',
         );
@@ -63,6 +68,14 @@ export default function LoginPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
+            {notice && (
+              <div
+                role="status"
+                className="p-3 text-sm text-amber-700 bg-amber-50 rounded-md dark:bg-amber-900/20 dark:text-amber-400"
+              >
+                {notice}
+              </div>
+            )}
             {error && (
               <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md dark:bg-red-900/20 dark:text-red-400">
                 {error}

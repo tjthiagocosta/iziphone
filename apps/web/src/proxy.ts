@@ -23,7 +23,9 @@ export function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  return NextResponse.redirect(new URL(loginPathFor(pathname), request.url));
+  return NextResponse.redirect(
+    new URL(loginPathFor({ redirect: pathname }), request.url),
+  );
 }
 
 export const config = {

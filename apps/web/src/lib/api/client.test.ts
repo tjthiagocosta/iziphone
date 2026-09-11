@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   ApiError,
+  onSessionExpired,
   requestApi,
   requestCallController,
   withQuery,
@@ -148,6 +149,40 @@ describe('requestApi', () => {
 
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).message).toContain('unexpected shape');
+  });
+});
+
+describe('onSessionExpired', () => {
+  test('announces a session the API no longer accepts', async () => {
+    stubFetch(jsonResponse(401, { message: 'Unauthorized' }));
+    const expired = vi.fn();
+    const unsubscribe = onSessionExpired(expired);
+
+    await requestApi('/api/user/conversations').catch(() => undefined);
+
+    expect(expired).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  test('says nothing about a request that failed for another reason', async () => {
+    stubFetch(jsonResponse(403, { message: 'Forbidden' }));
+    const expired = vi.fn();
+    const unsubscribe = onSessionExpired(expired);
+
+    await requestApi('/api/admin/users').catch(() => undefined);
+
+    expect(expired).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  test('stops after unsubscribing', async () => {
+    stubFetch(jsonResponse(401, { message: 'Unauthorized' }));
+    const expired = vi.fn();
+
+    onSessionExpired(expired)();
+    await requestApi('/api/user/conversations').catch(() => undefined);
+
+    expect(expired).not.toHaveBeenCalled();
   });
 });
 

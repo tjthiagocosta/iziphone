@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  loginNoticeFor,
   loginPathFor,
   requiresSession,
   safeRedirectTarget,
@@ -35,16 +36,45 @@ describe('requiresSession', () => {
 
 describe('loginPathFor', () => {
   test('keeps the path as a query parameter', () => {
-    expect(loginPathFor('/app/conversations/1')).toBe(
+    expect(loginPathFor({ redirect: '/app/conversations/1' })).toBe(
       '/login?redirect=%2Fapp%2Fconversations%2F1',
     );
   });
 
   test('encodes a path that would otherwise change the target', () => {
-    expect(loginPathFor('//evil.example.com')).toBe(
+    expect(loginPathFor({ redirect: '//evil.example.com' })).toBe(
       '/login?redirect=%2F%2Fevil.example.com',
     );
   });
+
+  test('carries the reason the visitor lost the session', () => {
+    expect(
+      loginPathFor({ redirect: '/app/inbox', reason: 'session-expired' }),
+    ).toBe('/login?redirect=%2Fapp%2Finbox&reason=session-expired');
+  });
+
+  test('is the bare login page when there is nothing to carry', () => {
+    expect(loginPathFor()).toBe('/login');
+  });
+});
+
+describe('loginNoticeFor', () => {
+  test.each(['session-expired', 'sign-out-failed'])('explains %s', (reason) => {
+    expect(loginNoticeFor(`?reason=${reason}`)).toEqual(expect.any(String));
+  });
+
+  test('tells the visitor the session may still be open after a failed sign out', () => {
+    expect(loginNoticeFor('?reason=sign-out-failed')).toContain(
+      'may still be open',
+    );
+  });
+
+  test.each(['', '?redirect=%2Fapp', '?reason=made-up', '?reason=toString'])(
+    'has nothing to say for %s',
+    (search) => {
+      expect(loginNoticeFor(search)).toBeNull();
+    },
+  );
 });
 
 describe('safeRedirectTarget', () => {

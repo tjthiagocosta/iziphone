@@ -49,6 +49,16 @@ export const SESSION_COOKIE_NAMES = [
   '__Secure-iziphone.session_token',
 ];
 
+/** Why a visitor is on the login page, when it was not their own choice. */
+export type LoginReason = 'session-expired' | 'sign-out-failed';
+
+const LOGIN_NOTICES: Record<LoginReason, string> = {
+  'session-expired':
+    'Your session ended. Sign in again to pick up where you left off.',
+  'sign-out-failed':
+    'We could not reach the server to end your session, so it may still be open on this device. Sign in again to close it.',
+};
+
 function isStaticFile(pathname: string): boolean {
   const segment = pathname.slice(pathname.lastIndexOf('/') + 1);
   const dot = segment.lastIndexOf('.');
@@ -73,9 +83,38 @@ export function requiresSession(pathname: string): boolean {
   );
 }
 
-/** Where to send a visitor so they come back to `pathname` after signing in. */
-export function loginPathFor(pathname: string): string {
-  return `/login?redirect=${encodeURIComponent(pathname)}`;
+export interface LoginTarget {
+  /** Where to send the visitor once they have signed in. */
+  redirect?: string;
+  /** What to tell them about the session they just lost. */
+  reason?: LoginReason;
+}
+
+/** The login page, carrying where the visitor came from and why. */
+export function loginPathFor(target: LoginTarget = {}): string {
+  const query = new URLSearchParams();
+  if (target.redirect) {
+    query.set('redirect', target.redirect);
+  }
+  if (target.reason) {
+    query.set('reason', target.reason);
+  }
+
+  const encoded = query.toString();
+  return encoded ? `/login?${encoded}` : '/login';
+}
+
+// `in` would answer yes for `toString` and hand back a function.
+function isLoginReason(value: string): value is LoginReason {
+  return Object.hasOwn(LOGIN_NOTICES, value);
+}
+
+/** What the login page tells a visitor it did not send there itself. */
+export function loginNoticeFor(search: string): string | null {
+  const reason = new URLSearchParams(search).get('reason');
+  return reason !== null && isLoginReason(reason)
+    ? LOGIN_NOTICES[reason]
+    : null;
 }
 
 /*

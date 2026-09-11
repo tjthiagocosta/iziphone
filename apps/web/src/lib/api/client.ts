@@ -63,12 +63,42 @@ export function withQuery(path: string, params: QueryParams): string {
   return encoded ? `${path}?${encoded}` : path;
 }
 
+/*
+ * A session can end while a tab stays open: it expires, or someone revokes it
+ * from another device. The API then refuses every request with a 401, which
+ * without this would look like data that quietly stopped arriving under a
+ * shell that still appears signed in. The session belongs to the tab rather
+ * than to any component that asks for data, so the listeners live here, next
+ * to the one place that sees every answer the API gives.
+ */
+const SESSION_EXPIRED = 'session-expired';
+const sessionExpiry = new EventTarget();
+
+/**
+ * Runs when the API refuses a request because the session is gone. Returns the
+ * unsubscribe function. Callers that are not signed in should not listen: a
+ * rejected sign-in is a 401 too.
+ */
+export function onSessionExpired(listener: () => void): () => void {
+  sessionExpiry.addEventListener(SESSION_EXPIRED, listener);
+  return () => sessionExpiry.removeEventListener(SESSION_EXPIRED, listener);
+}
+
 /** Calls the business API as the signed-in user. */
-export function requestApi<T = void>(
+export async function requestApi<T = void>(
   path: string,
   options: RequestOptions<T> = {},
 ): Promise<T> {
-  return request(`${API_URL}${path}`, options, { credentials: 'include' });
+  try {
+    return await request(`${API_URL}${path}`, options, {
+      credentials: 'include',
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      sessionExpiry.dispatchEvent(new Event(SESSION_EXPIRED));
+    }
+    throw error;
+  }
 }
 
 /** Calls the call controller with the realtime JWT. */
