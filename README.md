@@ -136,7 +136,7 @@ Planned or incomplete:
 - pnpm 12 or newer (`corepack enable` installs the pinned version automatically)
 - PostgreSQL 18 and Redis 8, running locally or reachable from your machine
 - A Twilio account with a phone number, an API key and secret, and a TwiML application
-- A public HTTPS URL for Twilio webhooks during development, for example an [ngrok](https://ngrok.com) tunnel
+- A public HTTPS URL for Twilio webhooks during development. A [Nouva.sh](https://nouva.sh/docs/tunnels) tunnel needs nothing installed: it runs over `ssh`, and the first connection prints a link to authorise in the browser
 
 If you have Docker, the quickest way to get the databases is the dev compose file:
 
@@ -200,7 +200,17 @@ pnpm clean               # Remove build outputs
    - Voice status callback: `${WEBHOOK_BASE_URL}/webhooks/twilio/voice/status`
    - Messaging: `<api url>/webhooks/twilio/messages/inbound`
    - Messaging status callback: `<api url>/webhooks/twilio/messages/status`
-4. Expose the call controller and API over HTTPS. With ngrok, start one tunnel per service and put the tunnel URLs in `WEBHOOK_BASE_URL` and `BETTER_AUTH_URL`.
+4. Expose the call controller and API over HTTPS. One Nouva.sh session carries both, and each `-R` names the alias it answers on (up to five per session):
+
+   ```bash
+   ssh -R izi-calls:80:localhost:3002 \
+       -R izi-api:80:localhost:3001 \
+       tunnel@ssh.nouva.cloud
+   ```
+
+   That serves `https://izi-calls.nouva.cloud` and `https://izi-api.nouva.cloud` while the terminal stays open. Set `WEBHOOK_BASE_URL` to the calls alias; voice-only work needs only that first `-R`.
+
+   Messaging and MMS need the API public as well, because Twilio fetches media from it. Point `BETTER_AUTH_URL` and `NEXT_PUBLIC_API_URL` at the API alias — the session cookie is issued for the API's own origin, so they must agree. Add a third `-R` for the web app on 3000 and set `CORS_ORIGIN` to it; keeping every origin under `nouva.cloud` keeps the cookie same-site.
 5. Optionally set `TWILIO_HOLD_AUDIO_URL` to a public MP3 or WAV for hold music. A Twilio-hosted classical track is used when it is empty.
 
 Twilio signs every webhook. Signature validation is enforced when `NODE_ENV` is anything other than `development`, and skipped in development so local tunnels are easy to work with. Never run with `NODE_ENV=development` on a public host.
