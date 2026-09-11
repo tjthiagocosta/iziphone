@@ -7,12 +7,8 @@ import {
 import { createCommandPublisher } from '@repo/events';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { authenticatedUser } from '../auth/index.js';
+import { CallHistoryService } from './call-history.service.js';
 import { loadCallScope } from './call-scope.js';
-
-const CALL_INCLUDE = {
-  user: { select: { id: true, email: true } },
-  department: { select: { id: true, name: true } },
-} as const;
 
 /**
  * Call history reads from the database; call commands are published to
@@ -21,6 +17,7 @@ const CALL_INCLUDE = {
  */
 export const callRoutes: FastifyPluginAsync = async (fastify) => {
   const commands = createCommandPublisher(fastify.redis);
+  const history = new CallHistoryService(fastify.db);
 
   /** Resolves the conversation to a call the user may act on, or answers 404. */
   async function visibleCall(request: FastifyRequest, reply: FastifyReply) {
@@ -28,10 +25,10 @@ export const callRoutes: FastifyPluginAsync = async (fastify) => {
     const { conversationUuid } = CallConversationParamsSchema.parse(
       request.params,
     );
-    const call = await fastify.db.call.findFirst({
-      where: { conversationUuid, ...(await loadCallScope(fastify.db, user)) },
-      include: CALL_INCLUDE,
-    });
+    const call = await history.findInScope(
+      await loadCallScope(fastify.db, user),
+      conversationUuid,
+    );
 
     if (!call) {
       reply.status(404).send({ error: 'Call not found' });
@@ -127,21 +124,10 @@ export const callRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: [fastify.requireAuth] },
     async (request) => {
       const user = authenticatedUser(request);
-      const { limit, offset } = CallListQuerySchema.parse(request.query);
+      const query = CallListQuerySchema.parse(request.query);
       const scope = await loadCallScope(fastify.db, user);
 
-      const [calls, total] = await Promise.all([
-        fastify.db.call.findMany({
-          where: scope,
-          take: limit,
-          skip: offset,
-          orderBy: { createdAt: 'desc' },
-          include: CALL_INCLUDE,
-        }),
-        fastify.db.call.count({ where: scope }),
-      ]);
-
-      return { calls, total, limit, offset };
+      return history.listForUser(scope, query);
     },
   );
 

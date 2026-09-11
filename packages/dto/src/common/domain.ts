@@ -61,6 +61,20 @@ export const CallEndStatusSchema = z.enum([
 ]);
 export type CallEndStatus = z.infer<typeof CallEndStatusSchema>;
 
+/**
+ * Every status a call record can hold, including the in-flight ones the call
+ * event subscriber writes. Wider than {@link CallEndStatusSchema}, which
+ * covers only how a call finished. Filters use this; `CallRecord.status`
+ * stays a plain string so an unrecognised legacy row still reads back.
+ */
+export const CallStatusSchema = z.enum([
+  ...CallEndStatusSchema.options,
+  'ringing',
+  'in-progress',
+  'missed',
+]);
+export type CallStatus = z.infer<typeof CallStatusSchema>;
+
 export const MessageDirectionSchema = z.enum(['INBOUND', 'OUTBOUND']);
 export type MessageDirection = z.infer<typeof MessageDirectionSchema>;
 

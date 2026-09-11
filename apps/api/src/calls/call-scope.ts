@@ -1,5 +1,13 @@
 import type { Prisma, PrismaClient } from '@repo/db';
+import type { CallListQuery } from '@repo/dto';
 import type { AuthUser } from '../auth/index.js';
+
+/**
+ * The timeline entry the API writes once a voicemail recording exists. A
+ * plain `recordingUrl` does not mean voicemail; a conference recording sets
+ * it as well.
+ */
+const VOICEMAIL_EVENT = 'VOICEMAIL_COMPLETED';
 
 /**
  * Which call records a user may see and command. Supervisors and admins
@@ -38,4 +46,50 @@ export async function loadCallScope(
     user,
     memberships.map((membership) => membership.departmentId),
   );
+}
+
+/**
+ * The `where` for a call list: the role scope narrowed by what the query
+ * asked for.
+ *
+ * The filters go inside an `AND` rather than being merged into the scope
+ * object, because an agent's scope is an `OR` over their own calls and their
+ * departments'. A filter set as a sibling key of that `OR` reads as another
+ * alternative and widens the scope instead of narrowing it.
+ *
+ * `linePhone` and `contactPhone` are each matched against both legs: which
+ * leg holds our number depends on the call's direction, and the pair of them
+ * selects one conversation's calls.
+ */
+export function buildCallListWhere(
+  scope: Prisma.CallWhereInput,
+  query: Pick<
+    CallListQuery,
+    'linePhone' | 'contactPhone' | 'status' | 'direction' | 'hasVoicemail'
+  >,
+): Prisma.CallWhereInput {
+  const filters: Prisma.CallWhereInput[] = [];
+
+  for (const phone of [query.linePhone, query.contactPhone]) {
+    if (phone) {
+      filters.push({ OR: [{ from: phone }, { to: phone }] });
+    }
+  }
+
+  if (query.status) {
+    filters.push({ status: { in: [...query.status] } });
+  }
+
+  if (query.direction) {
+    filters.push({ direction: query.direction });
+  }
+
+  if (query.hasVoicemail !== undefined) {
+    const leftAVoicemail = {
+      events: { some: { eventType: VOICEMAIL_EVENT } },
+    } as const;
+    filters.push(query.hasVoicemail ? leftAVoicemail : { NOT: leftAVoicemail });
+  }
+
+  return filters.length > 0 ? { AND: [scope, ...filters] } : scope;
 }
