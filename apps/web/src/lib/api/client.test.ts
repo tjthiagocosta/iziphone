@@ -3,6 +3,7 @@ import {
   ApiError,
   onSessionExpired,
   requestApi,
+  requestApiBlob,
   requestCallController,
   withQuery,
 } from './client';
@@ -149,6 +150,71 @@ describe('requestApi', () => {
 
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).message).toContain('unexpected shape');
+  });
+});
+
+describe('requestApiBlob', () => {
+  test('downloads a body as the signed-in user and keeps its type', async () => {
+    const fetchMock = stubFetch(
+      new Response(new Uint8Array([0x49, 0x44, 0x33]), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/mpeg' },
+      }),
+    );
+    const { signal } = new AbortController();
+
+    const audio = await requestApiBlob('/api/calls/call-1/voicemail', signal);
+
+    expect(audio.type).toBe('audio/mpeg');
+    expect(audio.size).toBe(3);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:3001/api/calls/call-1/voicemail',
+      { credentials: 'include', signal },
+    );
+  });
+
+  test('turns a refusal into an ApiError with its status', async () => {
+    stubFetch(
+      jsonResponse(410, {
+        error: 'Gone',
+        message: 'This voicemail is no longer available',
+      }),
+    );
+
+    const failure = await requestApiBlob('/api/calls/call-1/voicemail').catch(
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure).toMatchObject({
+      status: 410,
+      message: 'This voicemail is no longer available',
+    });
+  });
+
+  test('announces a session the API no longer accepts', async () => {
+    stubFetch(jsonResponse(401, { message: 'Unauthorized' }));
+    const expired = vi.fn();
+    const unsubscribe = onSessionExpired(expired);
+
+    await requestApiBlob('/api/calls/call-1/voicemail').catch(() => undefined);
+
+    expect(expired).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  test('passes on a download that was dropped or never answered', async () => {
+    const dropped = new DOMException('The download was dropped', 'AbortError');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw dropped;
+      }),
+    );
+
+    await expect(requestApiBlob('/api/calls/call-1/voicemail')).rejects.toBe(
+      dropped,
+    );
   });
 });
 

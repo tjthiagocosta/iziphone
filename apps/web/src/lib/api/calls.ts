@@ -3,7 +3,7 @@ import {
   type CallListResponse,
   CallListResponseSchema,
 } from '@repo/dto';
-import { requestApi, withQuery } from './client';
+import { requestApi, requestApiBlob, withQuery } from './client';
 
 /* Call history, under `/api/calls`. */
 
@@ -17,4 +17,18 @@ export function listCalls(
   return requestApi(withQuery('/api/calls', query), {
     schema: CallListResponseSchema,
   });
+}
+
+/**
+ * The audio of the voicemail a call left. The API fetches the recording from
+ * the provider itself; the recording's own URL never reaches the browser.
+ */
+export function fetchVoicemail(
+  conversationUuid: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  return requestApiBlob(
+    `/api/calls/${encodeURIComponent(conversationUuid)}/voicemail`,
+    signal,
+  );
 }

@@ -89,14 +89,42 @@ export function onSessionExpired(listener: () => void): () => void {
 }
 
 /** Calls the business API as the signed-in user. */
-export async function requestApi<T = void>(
+export function requestApi<T = void>(
   path: string,
   options: RequestOptions<T> = {},
 ): Promise<T> {
-  try {
-    return await request(`${API_URL}${path}`, options, {
+  return announcingExpiry(() =>
+    request(`${API_URL}${path}`, options, { credentials: 'include' }),
+  );
+}
+
+/**
+ * Downloads a binary body from the business API as the signed-in user: audio
+ * the API will only hand to a session, which an element pointed at the URL
+ * could not report a refusal for. The blob keeps the response's content type.
+ * `signal` drops a download whose caller has gone away.
+ */
+export function requestApiBlob(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  return announcingExpiry(async () => {
+    const response = await fetch(`${API_URL}${path}`, {
       credentials: 'include',
+      signal,
     });
+
+    if (!response.ok) {
+      throw await errorFrom(response);
+    }
+
+    return response.blob();
+  });
+}
+
+async function announcingExpiry<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       sessionExpiry.dispatchEvent(new Event(SESSION_EXPIRED));

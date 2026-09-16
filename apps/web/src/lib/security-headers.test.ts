@@ -58,6 +58,19 @@ describe('contentSecurityPolicy', () => {
     );
   });
 
+  test('lets a voicemail be downloaded from the API and played as a blob', () => {
+    const policy = contentSecurityPolicy(production);
+
+    expect(directive(policy, 'connect-src')).toContain(
+      'https://api.example.com',
+    );
+    expect(directive(policy, 'media-src')).toContain('blob:');
+    // The audio element never points at the API, so the API stays out of it.
+    expect(directive(policy, 'media-src')).not.toContain(
+      'https://api.example.com',
+    );
+  });
+
   test('lets no one frame the app and no one be framed by it', () => {
     const policy = contentSecurityPolicy(production);
 

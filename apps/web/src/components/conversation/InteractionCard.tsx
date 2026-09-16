@@ -18,6 +18,7 @@ import { initialsOf } from '@/lib/initials';
 import { lineName } from '@/lib/line';
 import { formatPhoneNumber } from '@/lib/phone-number';
 import { cn } from '@/lib/utils';
+import { VoicemailPlayer } from './VoicemailPlayer';
 
 interface InteractionCardProps {
   entry: TimelineEntry;
@@ -146,6 +147,10 @@ export function InteractionCard({ entry, conversation }: InteractionCardProps) {
             )}
           </div>
         </div>
+
+        {call.hasVoicemail && (
+          <VoicemailPlayer conversationUuid={call.conversationUuid} />
+        )}
 
         {call.transcript && (
           <div className="mt-3 pt-3 border-t border-border">
