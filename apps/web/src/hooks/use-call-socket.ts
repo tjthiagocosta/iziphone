@@ -30,7 +30,8 @@ export interface CallSocketState {
    */
   lastEndedCall: CallEnded | null;
   rejectCall: (conversationUuid: string) => void;
-  clearIncomingCall: () => void;
+  /** Forgets this offer, unless a newer one has already taken its place. */
+  clearIncomingCall: (offer: IncomingCall) => void;
 }
 
 /** The realtime token lives an hour; a long-lived socket renews it before then. */
@@ -158,13 +159,17 @@ export function useCallSocket({
     };
   }, [userId]);
 
+  // Both forget only the offer they were asked about: a newer one can be
+  // queued behind the render that decided this, and must not go with it.
   const rejectCall = useCallback((conversationUuid: string) => {
     socketRef.current?.emit('call_reject', { conversationUuid });
-    setIncomingCall(null);
+    setIncomingCall((current) =>
+      current?.conversationUuid === conversationUuid ? null : current,
+    );
   }, []);
 
-  const clearIncomingCall = useCallback(() => {
-    setIncomingCall(null);
+  const clearIncomingCall = useCallback((offer: IncomingCall) => {
+    setIncomingCall((current) => (current === offer ? null : current));
   }, []);
 
   return {

@@ -5,13 +5,20 @@ import { useCall } from '@/components/providers/CallProvider';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { formatPhoneNumber } from '@/lib/phone-number';
+import type { EarlyAnswer } from '@/lib/telephony/incoming-offer';
+
+const EARLY_ANSWER_TEXT: Record<EarlyAnswer, string> = {
+  connecting: 'Connecting...',
+  'phone-not-ready': 'The phone is not ready',
+};
 
 /**
  * IncomingCallModal - Full-screen modal for incoming call notifications
  * Uses CallProvider context for state and actions
  */
 export function IncomingCallModal() {
-  const { incomingCall, answerIncoming, rejectIncoming } = useCall();
+  const { incomingCall, earlyAnswer, answerIncoming, rejectIncoming } =
+    useCall();
 
   // Don't render if no incoming call
   if (!incomingCall) {
@@ -34,7 +41,9 @@ export function IncomingCallModal() {
 
           {/* Caller info */}
           <div className="space-y-2">
-            <p className="text-sm text-muted-foreground">Incoming Call</p>
+            <p className="text-sm text-muted-foreground">
+              {earlyAnswer ? EARLY_ANSWER_TEXT[earlyAnswer] : 'Incoming Call'}
+            </p>
             <p className="text-2xl font-semibold">
               {formatPhoneNumber(incomingCall.from)}
             </p>
@@ -62,6 +71,7 @@ export function IncomingCallModal() {
               size="lg"
               className="w-24 h-14 rounded-full bg-green-600 hover:bg-green-700"
               onClick={answerIncoming}
+              disabled={earlyAnswer === 'connecting'}
             >
               <Phone className="w-6 h-6" />
             </Button>

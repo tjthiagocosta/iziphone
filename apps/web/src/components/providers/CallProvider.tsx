@@ -7,6 +7,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
+  useRef,
   useState,
 } from 'react';
 import { useCallSocket } from '@/hooks/use-call-socket';
@@ -15,6 +17,14 @@ import {
   type DeviceStatus,
   useTelephonyClient,
 } from '@/hooks/use-telephony-client';
+import {
+  type EarlyAnswer,
+  earlyAnswerOf,
+  NO_OFFER_MEMORY,
+  OFFER_EXPIRY_MS,
+  offerFate,
+} from '@/lib/telephony/incoming-offer';
+import { PENDING_ANSWER_TTL_MS } from '@/lib/telephony/telephony-session';
 import { useAuth } from './AuthProvider';
 
 export interface CallContextValue {
@@ -28,6 +38,8 @@ export interface CallContextValue {
   error: string | null;
   /** A call the controller offered this user and Twilio may be about to ring. */
   incomingCall: IncomingCall | null;
+  /** What an Answer pressed before the device rang has come to, if one was. */
+  earlyAnswer: EarlyAnswer | null;
   /**
    * The call that ended most recently, for views that show call history: the
    * API writes that history from the same event, so it is the cue to refetch.
@@ -59,7 +71,18 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [callDuration, setCallDuration] = useState(0);
 
   const { callStatus } = telephony;
-  const { incomingCall, clearIncomingCall, rejectCall } = socket;
+  const { incomingCall: offeredCall, clearIncomingCall, rejectCall } = socket;
+  const [heldOffer, setHeldOffer] = useState<IncomingCall | null>(null);
+  // A new object on every press: pressing Answer again makes the session
+  // remember for longer, and the clock here has to restart with it.
+  const [answerPress, setAnswerPress] = useState<{
+    offer: IncomingCall | null;
+  } | null>(null);
+  const answeredOffer = answerPress?.offer ?? null;
+  const [expiredOffer, setExpiredOffer] = useState<IncomingCall | null>(null);
+  const offerMemory = useRef(NO_OFFER_MEMORY);
+  // An offer that arrived during a call waits off screen for the device to ring.
+  const incomingCall = offeredCall === heldOffer ? null : offeredCall;
 
   useEffect(() => {
     if (callStatus !== 'connected') {
@@ -72,17 +95,58 @@ export function CallProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [callStatus]);
 
-  // An offer the device never rang for, or that ended, must not linger.
+  // The controller says a call ended only once the whole conversation is
+  // over, so an offer the device never rings for needs a deadline of its own.
   useEffect(() => {
-    if (callStatus === 'idle' && incomingCall) {
-      clearIncomingCall();
+    if (!offeredCall) {
+      return;
     }
-  }, [callStatus, incomingCall, clearIncomingCall]);
+    const timer = window.setTimeout(
+      () => setExpiredOffer(offeredCall),
+      OFFER_EXPIRY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [offeredCall]);
+
+  // The offer arrives while the phone is still idle, before Twilio rings the
+  // device, so the rule keeps what it saw last time to tell a ring that
+  // stopped from one that has not started. A layout effect, so that an offer
+  // that arrives during a call is held back before the browser paints it.
+  useLayoutEffect(() => {
+    const { fate, memory } = offerFate({
+      memory: offerMemory.current,
+      callStatus,
+      offer: offeredCall,
+      answeredOffer,
+      expiredOffer,
+    });
+    offerMemory.current = memory;
+
+    if (fate === 'dismiss' && offeredCall) {
+      clearIncomingCall(offeredCall);
+    }
+    setHeldOffer(memory.heldOffer);
+  }, [callStatus, offeredCall, answeredOffer, expiredOffer, clearIncomingCall]);
+
+  // The session forgets an early answer the device does not ring for in time;
+  // the offer must stop saying "connecting" when it does.
+  useEffect(() => {
+    if (!answerPress) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setAnswerPress(null),
+      PENDING_ANSWER_TTL_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [answerPress]);
 
   const answerIncoming = useCallback(() => {
     telephony.answerIncoming();
-    clearIncomingCall();
-  }, [telephony.answerIncoming, clearIncomingCall]);
+    // Before the device rings the session can only remember the answer, so
+    // the offer stays up to say so; it is dismissed once the call connects.
+    setAnswerPress({ offer: incomingCall });
+  }, [telephony.answerIncoming, incomingCall]);
 
   const rejectIncoming = useCallback(() => {
     telephony.rejectIncoming();
@@ -108,6 +172,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     isEndingCall: telephony.isEndingCall,
     error: telephony.error,
     incomingCall,
+    earlyAnswer: earlyAnswerOf(
+      incomingCall,
+      answeredOffer,
+      telephony.deviceStatus,
+    ),
     lastEndedCall: socket.lastEndedCall,
     isSocketConnected: socket.isConnected,
     makeCall: telephony.makeCall,
