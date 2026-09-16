@@ -30,6 +30,8 @@ export interface UseConversationThreadReturn {
   isLoading: boolean;
   error: Error | null;
   hasMore: boolean;
+  /** Goes up when the messages start over from their newest page. */
+  restarts: number;
   loadOlder: () => void;
   refetch: () => void;
 }
@@ -131,9 +133,9 @@ export function useConversationThread(
   }, [thread.loadOlder, loadCalls]);
 
   const refetch = useCallback(() => {
-    void thread.refetch();
+    void thread.refresh();
     void loadCalls('start');
-  }, [thread.refetch, loadCalls]);
+  }, [thread.refresh, loadCalls]);
 
   const oldestMessage = thread.messages[0];
   const oldestCall = history.calls[history.calls.length - 1];
@@ -160,6 +162,7 @@ export function useConversationThread(
     isLoading: thread.isLoading,
     error: thread.error ?? callError,
     hasMore: thread.hasMore || !history.exhausted,
+    restarts: thread.restarts,
     loadOlder,
     refetch,
   };

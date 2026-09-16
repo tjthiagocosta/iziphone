@@ -1,106 +1,94 @@
 'use client';
 
 import type { Message, MessageConversation } from '@repo/dto';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getConversationMessages,
   getMessageConversation,
   markMessageConversationRead,
 } from '@/lib/api/user';
-
-interface UseMessageThreadOptions {
-  autoFetch?: boolean;
-  autoMarkRead?: boolean;
-}
+import {
+  type MessageThreadDeps,
+  MessageThreadSession,
+  type MessageThreadState,
+  shownThread,
+} from '@/lib/conversation/message-thread-session';
 
 interface UseMessageThreadReturn {
   conversation: MessageConversation | null;
   /** Oldest first, the order a thread is read in. */
-  messages: Message[];
+  messages: readonly Message[];
   hasMore: boolean;
   isLoading: boolean;
   error: Error | null;
+  /** Goes up when the thread starts over from its newest page; see the session. */
+  restarts: number;
   loadOlder: () => Promise<void>;
-  refetch: () => Promise<void>;
+  /** For after a send: reads the thread again without disturbing what is on screen. */
+  refresh: () => Promise<void>;
 }
 
+/*
+ * `document` is only reached when a session calls these, which happens inside
+ * an effect: a client component is prerendered on the server as well, where
+ * there is no page to ask.
+ */
+const browserDeps: MessageThreadDeps = {
+  fetchConversation: getMessageConversation,
+  fetchMessages: getConversationMessages,
+  markRead: markMessageConversationRead,
+  isVisible: () => document.visibilityState === 'visible',
+  onVisibilityChange: (listener) => {
+    document.addEventListener('visibilitychange', listener);
+    return () => document.removeEventListener('visibilitychange', listener);
+  },
+};
+
+/** Runs a message thread session for the open conversation and mirrors its state into React. */
 export function useMessageThread(
   conversationId: string | null,
-  options: UseMessageThreadOptions = {},
 ): UseMessageThreadReturn {
-  const { autoFetch = true, autoMarkRead = true } = options;
-
-  const [conversation, setConversation] = useState<MessageConversation | null>(
-    null,
-  );
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [isLoading, setIsLoading] = useState(
-    autoFetch && Boolean(conversationId),
-  );
-  const [error, setError] = useState<Error | null>(null);
-
-  const fetchThread = useCallback(async () => {
-    if (!conversationId) return;
-
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      const [conv, messageResult] = await Promise.all([
-        getMessageConversation(conversationId),
-        getConversationMessages(conversationId),
-      ]);
-
-      setConversation(conv);
-      // The endpoint answers newest first, because it pages backwards.
-      setMessages([...messageResult.messages].reverse());
-      setHasMore(messageResult.hasMore);
-
-      if (autoMarkRead && conv.unreadCount > 0) {
-        await markMessageConversationRead(conversationId);
-      }
-    } catch (err) {
-      setError(
-        err instanceof Error ? err : new Error('Failed to fetch thread'),
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [conversationId, autoMarkRead]);
+  const [state, setState] = useState<MessageThreadState | null>(null);
+  const sessionRef = useRef<MessageThreadSession | null>(null);
 
   useEffect(() => {
-    if (autoFetch && conversationId) {
-      fetchThread();
+    if (!conversationId) {
+      return;
     }
-  }, [autoFetch, conversationId, fetchThread]);
 
-  const loadOlder = useCallback(async () => {
-    if (!conversationId || !messages.length || !hasMore) return;
+    const session = new MessageThreadSession(
+      conversationId,
+      browserDeps,
+      setState,
+    );
+    sessionRef.current = session;
+    session.start();
 
-    try {
-      const oldestMessage = messages[0];
-      if (!oldestMessage) return;
-      const result = await getConversationMessages(conversationId, {
-        beforeMessageId: oldestMessage.id,
-      });
+    return () => {
+      session.dispose();
+      sessionRef.current = null;
+    };
+  }, [conversationId]);
 
-      setMessages((prev) => [...[...result.messages].reverse(), ...prev]);
-      setHasMore(result.hasMore);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err : new Error('Failed to load older messages'),
-      );
-    }
-  }, [conversationId, messages, hasMore]);
+  const loadOlder = useCallback(
+    () => sessionRef.current?.loadOlder() ?? Promise.resolve(),
+    [],
+  );
+  const refresh = useCallback(
+    () => sessionRef.current?.refresh() ?? Promise.resolve(),
+    [],
+  );
+
+  const thread = shownThread(state, conversationId);
 
   return {
-    conversation,
-    messages,
-    hasMore,
-    isLoading,
-    error,
+    conversation: thread.conversation,
+    messages: thread.messages,
+    hasMore: thread.hasMore,
+    isLoading: thread.isLoading,
+    error: thread.error,
+    restarts: thread.restarts,
     loadOlder,
-    refetch: fetchThread,
+    refresh,
   };
 }

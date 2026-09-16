@@ -1,5 +1,12 @@
 'use client';
 
+import {
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+} from 'react';
 import { useCall } from '@/components/providers/CallProvider';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -15,8 +22,17 @@ interface ConversationViewProps {
 
 export function ConversationView({ conversationId }: ConversationViewProps) {
   const { makeCall } = useCall();
-  const { conversation, days, isLoading, error, hasMore, loadOlder, refetch } =
-    useConversationThread(conversationId);
+  const {
+    conversation,
+    days,
+    isLoading,
+    error,
+    hasMore,
+    restarts,
+    loadOlder,
+    refetch,
+  } = useConversationThread(conversationId);
+  const scrollRef = useRef<ThreadScrollHandle>(null);
 
   if (isLoading && !conversation) {
     return <Notice>Loading…</Notice>;
@@ -28,6 +44,9 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
     );
   }
 
+  const newestDay = days[days.length - 1];
+  const newestEntry = newestDay?.entries[newestDay.entries.length - 1];
+
   return (
     <TooltipProvider>
       <div className="h-full flex flex-col bg-background">
@@ -36,7 +55,15 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
           onCall={() => void makeCall(conversation.contact.phoneNumber)}
         />
 
-        <ScrollArea className="flex-1">
+        {/*
+          Keyed: where the reader is belongs to the thread they are in, and to
+          the messages it had. One that started over opens like a new one.
+        */}
+        <ThreadScroll
+          key={`${conversation.id}:${restarts}`}
+          ref={scrollRef}
+          newestKey={newestEntry?.key}
+        >
           <div className="p-4 space-y-6">
             {hasMore && (
               <div className="flex justify-center">
@@ -78,16 +105,98 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
               </p>
             )}
           </div>
-        </ScrollArea>
+        </ThreadScroll>
 
         {/* Keyed: a draft belongs to the thread it was typed in. */}
         <MessageInput
           key={conversation.id}
           conversation={conversation}
-          onSent={refetch}
+          onSent={() => {
+            // Sending is asking to see the message, wherever the reader was.
+            scrollRef.current?.showNewest();
+            refetch();
+          }}
         />
       </div>
     </TooltipProvider>
+  );
+}
+
+interface ThreadScrollHandle {
+  /** Goes to the newest entry and stays with it, wherever the reader was. */
+  showNewest(): void;
+}
+
+/**
+ * The scrolling part of a thread. It opens at the newest entry and follows a
+ * new one only while the reader is already down there; one that arrives while
+ * they read further up does not move them. Where the reader ends up after an
+ * older page is put in front is not handled here.
+ */
+function ThreadScroll({
+  ref,
+  newestKey,
+  children,
+}: {
+  ref: Ref<ThreadScrollHandle>;
+  newestKey: string | undefined;
+  children: React.ReactNode;
+}) {
+  const endRef = useRef<HTMLDivElement>(null);
+  // True from the start, which is what opens the thread at its newest entry.
+  const atEndRef = useRef(true);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      showNewest() {
+        // Set here as well: the entry can arrive before the observer reports
+        // the scroll, and it has to be followed.
+        atEndRef.current = true;
+        endRef.current?.scrollIntoView({ block: 'end' });
+      },
+    }),
+    [],
+  );
+
+  useEffect(() => {
+    const end = endRef.current;
+    if (!end) {
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      const latest = entries[entries.length - 1];
+      if (latest) {
+        atEndRef.current = latest.isIntersecting;
+      }
+    });
+    observer.observe(end);
+    return () => observer.disconnect();
+  }, []);
+
+  // A layout effect, so the new entry is never painted below the fold first.
+  // It runs before the observer hears about the taller thread, so what it
+  // reads is where the reader was before the entry came.
+  useLayoutEffect(() => {
+    if (newestKey && atEndRef.current) {
+      endRef.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [newestKey]);
+
+  return (
+    <ScrollArea className="flex-1">
+      {children}
+      {/*
+        Covers the last stretch of the thread without adding to its height,
+        so being near the end counts as being there.
+      */}
+      <div
+        ref={endRef}
+        aria-hidden
+        className="-mt-12 h-12 pointer-events-none"
+      />
+    </ScrollArea>
   );
 }
 
