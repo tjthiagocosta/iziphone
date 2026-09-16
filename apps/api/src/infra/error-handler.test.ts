@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import Fastify from 'fastify';
 import { describe, expect, test } from 'vitest';
 import { ZodError } from 'zod';
@@ -35,6 +36,7 @@ describe('apiErrorHandler', () => {
 
   test.each([
     [new HttpError('Email already in use', 409), 409, 'Conflict'],
+    [new HttpError('This voicemail is no longer available', 410), 410, 'Gone'],
     [new HttpError('Twilio rejected the number', 502), 502, 'Bad Gateway'],
   ])(
     'keeps the status of a service error (%s)',
@@ -64,6 +66,34 @@ describe('apiErrorHandler', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'Bad Request' });
+    await app.close();
+  });
+
+  test('keeps the error shape when a streamed reply fails before its first byte', async () => {
+    const app = Fastify({ logger: false });
+    app.setErrorHandler(apiErrorHandler);
+    app.get('/', async (_request, reply) => {
+      reply.header('content-type', 'audio/mpeg').header('content-length', 512);
+      return reply.send(
+        new Readable({
+          read() {
+            this.destroy(
+              new HttpError('The voicemail could not be loaded', 502),
+            );
+          },
+        }),
+      );
+    });
+    await app.ready();
+
+    const response = await app.inject({ method: 'GET', url: '/' });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.headers['content-type']).toContain('application/json');
+    expect(response.json()).toEqual({
+      error: 'Bad Gateway',
+      message: 'The voicemail could not be loaded',
+    });
     await app.close();
   });
 

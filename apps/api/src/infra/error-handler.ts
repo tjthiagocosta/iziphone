@@ -8,6 +8,7 @@ const STATUS_LABELS: Record<number, string> = {
   403: 'Forbidden',
   404: 'Not Found',
   409: 'Conflict',
+  410: 'Gone',
   413: 'Payload Too Large',
   415: 'Unsupported Media Type',
   429: 'Too Many Requests',
@@ -29,6 +30,15 @@ export function apiErrorHandler(
   request: FastifyRequest,
   reply: FastifyReply,
 ) {
+  /*
+   * A route that streams has already put its own content type on the raw
+   * response when the stream fails before its first byte. Fastify then reads
+   * that type back, takes the body below for something other than JSON and
+   * answers a 500 of its own instead; naming the type is what its
+   * documentation asks of an error handler behind stream replies.
+   */
+  reply.type('application/json');
+
   if (error instanceof ZodError) {
     return reply.status(400).send({
       error: STATUS_LABELS[400],

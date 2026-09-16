@@ -55,7 +55,7 @@ const CallStatusFilterSchema = z
  * conversation, which is a (contact, line) pair.
  *
  * `hasVoicemail` selects the calls that left one. It is not the same as
- * having a recording: a conference recording sets `recordingUrl` too.
+ * having a recording: a conference recording is stored on the call too.
  */
 export const CallListQuerySchema = z.object({
   limit: z.coerce
@@ -117,7 +117,6 @@ export const CallRecordSchema = z.object({
   to: z.string(),
   status: z.string(),
   duration: z.number().int().nonnegative().nullable(),
-  recordingUrl: z.string().nullable(),
   transcript: z.string().nullable(),
   direction: CallDirectionSchema,
   provider: TelephonyProviderSchema,
@@ -128,8 +127,10 @@ export const CallRecordSchema = z.object({
   contact: CallContactSchema.nullable(),
   line: CallLineSchema.nullable(),
   /**
-   * The caller left a voicemail. Not the same as holding a recording: a
-   * conference recording sets `recordingUrl` without being one.
+   * The caller left a voicemail, which `GET /api/calls/:conversationUuid/voicemail`
+   * plays. Not the same as holding a recording: a conference recording is
+   * stored on the call without being one. No recording URL is published:
+   * it is the provider's, and the API serves the audio itself.
    */
   hasVoicemail: z.boolean(),
   createdAt: IsoDateTimeSchema,

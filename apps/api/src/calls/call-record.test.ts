@@ -11,7 +11,6 @@ const persisted: PersistedCall = {
   to: '+15155550101',
   status: 'completed',
   duration: 42,
-  recordingUrl: null,
   transcript: null,
   direction: 'inbound',
   provider: 'TWILIO',
@@ -22,6 +21,16 @@ const persisted: PersistedCall = {
   events: [],
   createdAt: new Date('2026-03-20T00:00:00.000Z'),
   updatedAt: new Date('2026-03-20T00:04:12.000Z'),
+};
+
+/**
+ * The row as Prisma returns it once Twilio has recorded the call: the column
+ * is still read from the database, although the mapper has no use for it.
+ */
+const recorded = {
+  ...persisted,
+  recordingUrl:
+    'https://api.twilio.com/2010-04-01/Accounts/ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Recordings/REaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 };
 
 /** The phone number row for our own leg, which the service resolves. */
@@ -58,15 +67,15 @@ describe('toCallRecordDto', () => {
     ).toMatchObject({ direction: 'outbound' });
   });
 
+  test('never publishes the recording URL the row holds', () => {
+    expect(toCallRecordDto(recorded, null, line)).not.toHaveProperty(
+      'recordingUrl',
+    );
+  });
+
   test('reports a voicemail from the timeline entry, not the recording', () => {
     expect(toCallRecordDto(persisted, null, line).hasVoicemail).toBe(false);
-    expect(
-      toCallRecordDto(
-        { ...persisted, recordingUrl: 'https://example.com/a.mp3' },
-        null,
-        line,
-      ).hasVoicemail,
-    ).toBe(false);
+    expect(toCallRecordDto(recorded, null, line).hasVoicemail).toBe(false);
     expect(
       toCallRecordDto({ ...persisted, events: [{ id: 'event-1' }] }, null, line)
         .hasVoicemail,

@@ -31,7 +31,6 @@ export interface PersistedCall {
   to: string;
   status: string;
   duration: number | null;
-  recordingUrl: string | null;
   transcript: string | null;
   direction: string;
   provider: CallRecord['provider'];
@@ -75,7 +74,6 @@ export function toCallRecordDto(
     to: call.to,
     status: call.status,
     duration: call.duration,
-    recordingUrl: call.recordingUrl,
     transcript: call.transcript,
     direction: toCallDirection(call.direction),
     provider: call.provider,

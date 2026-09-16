@@ -13,7 +13,6 @@ const call: CallRecord = {
   to: '+15155550101',
   status: 'completed',
   duration: 125,
-  recordingUrl: null,
   transcript: null,
   direction: 'inbound',
   provider: 'TWILIO',

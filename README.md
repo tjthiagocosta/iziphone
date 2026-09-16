@@ -212,6 +212,7 @@ pnpm clean               # Remove build outputs
 
    Messaging and MMS need the API public as well, because Twilio fetches media from it. Point `BETTER_AUTH_URL` and `NEXT_PUBLIC_API_URL` at the API alias — the session cookie is issued for the API's own origin, so they must agree. Add a third `-R` for the web app on 3000 and set `CORS_ORIGIN` to it; keeping every origin under `nouva.cloud` keeps the cookie same-site.
 5. Optionally set `TWILIO_HOLD_AUDIO_URL` to a public MP3 or WAV for hold music. A Twilio-hosted classical track is used when it is empty.
+6. Turn on **Enforce HTTP Auth on Media URLs** in the console's Voice settings, as Twilio recommends. The API already fetches a voicemail with the account's credentials and serves the audio to the softphone itself, so nothing here relies on recording URLs being public; while the setting is off, anyone who holds a recording's URL can download it without signing in.
 
 Twilio signs every webhook. Signature validation is enforced when `NODE_ENV` is anything other than `development`, and skipped in development so local tunnels are easy to work with. Never run with `NODE_ENV=development` on a public host.
 

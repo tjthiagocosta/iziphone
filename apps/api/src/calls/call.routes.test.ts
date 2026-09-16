@@ -43,7 +43,6 @@ const callFields = {
   to: '+15155550101',
   status: 'completed',
   duration: 42,
-  recordingUrl: null,
   transcript: null,
   direction: 'inbound',
   provider: 'TWILIO' as const,
@@ -56,6 +55,9 @@ const callFields = {
 /** A row as Prisma hands it back: timestamps as dates, timeline included. */
 const storedCall = {
   ...callFields,
+  // Twilio's URL for the recording stays in the database.
+  recordingUrl:
+    'https://api.twilio.com/2010-04-01/Accounts/ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Recordings/REaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   events: [],
   createdAt: new Date('2026-03-20T00:00:00.000Z'),
   updatedAt: new Date('2026-03-20T00:04:12.000Z'),
