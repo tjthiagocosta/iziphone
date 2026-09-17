@@ -1,4 +1,3 @@
-import { E164PhoneNumberSchema } from '@repo/dto';
 import { z } from 'zod';
 
 /*
@@ -38,7 +37,6 @@ const EnvSchema = z.object({
   TWILIO_API_KEY: z.string().optional(),
   TWILIO_API_SECRET: z.string().optional(),
   TWILIO_TWIML_APP_SID: z.string().optional(),
-  TWILIO_PHONE_NUMBER: E164PhoneNumberSchema.optional(),
   TWILIO_HOLD_AUDIO_URL: z.url().optional(),
 });
 
@@ -52,7 +50,6 @@ const TWILIO_VOICE_KEYS = [
   'TWILIO_API_KEY',
   'TWILIO_API_SECRET',
   'TWILIO_TWIML_APP_SID',
-  'TWILIO_PHONE_NUMBER',
 ] as const;
 
 export type NodeEnv = EnvValues['NODE_ENV'];
@@ -70,8 +67,6 @@ export interface TwilioVoiceConfig {
    * against it.
    */
   webhookBaseUrl: string;
-  /** E.164 caller id used when a call has no number of its own. */
-  defaultFromNumber: string;
   /** Played to a participant who is on hold or waiting for the other side. */
   holdAudioUrl: string;
 }
@@ -148,7 +143,6 @@ function resolveTwilio(values: EnvValues): TwilioVoiceConfig | null {
     TWILIO_API_KEY: apiKeySid,
     TWILIO_API_SECRET: apiKeySecret,
     TWILIO_TWIML_APP_SID: twimlAppSid,
-    TWILIO_PHONE_NUMBER: defaultFromNumber,
   } = values;
 
   if (
@@ -157,8 +151,7 @@ function resolveTwilio(values: EnvValues): TwilioVoiceConfig | null {
     !authToken ||
     !apiKeySid ||
     !apiKeySecret ||
-    !twimlAppSid ||
-    !defaultFromNumber
+    !twimlAppSid
   ) {
     throw new ControllerConfigError([
       `Twilio voice is half-configured; also set ${missing.join(', ')}`,
@@ -172,7 +165,6 @@ function resolveTwilio(values: EnvValues): TwilioVoiceConfig | null {
     apiKeySecret,
     twimlAppSid,
     webhookBaseUrl: stripTrailingSlash(webhookBaseUrl),
-    defaultFromNumber,
     holdAudioUrl: values.TWILIO_HOLD_AUDIO_URL ?? DEFAULT_HOLD_AUDIO_URL,
   };
 }

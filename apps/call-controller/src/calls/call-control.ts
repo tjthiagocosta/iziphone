@@ -1,7 +1,7 @@
 import {
   type CallControlRefusal,
   type CallEndStatus,
-  E164PhoneNumberSchema,
+  callLine,
   type IncomingCall,
   type TransferFailureReason,
 } from '@repo/dto';
@@ -220,22 +220,6 @@ export function transferFailureReasonOf(
 }
 
 /**
- * Our number on the call, as far as the state knows it. An outbound call
- * names who placed it in `from`: the line it went out on where there is one,
- * and otherwise the agent's user id, which must not travel as a phone number.
- * The number dialed stands in for a line that is not known.
- */
-function lineOf(state: CallState): string {
-  if (state.direction !== 'outbound') {
-    return state.to;
-  }
-
-  return E164PhoneNumberSchema.safeParse(state.from).success
-    ? state.from
-    : state.to;
-}
-
-/**
  * What the teammate is shown while the transfer rings: the customer as the
  * caller, exactly as for a call routed to them, plus who is handing it over.
  */
@@ -248,7 +232,7 @@ export function transferOfferOf(
   return {
     conversationUuid: state.conversationUuid,
     from: customer,
-    to: lineOf(state),
+    to: callLine(state),
     callerId: customer,
     routingType:
       state.routingType === 'OUTBOUND' ? undefined : state.routingType,

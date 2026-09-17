@@ -1,4 +1,3 @@
-import { normalizePhoneNumber } from '@repo/dto';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { createTwilioSignatureValidator } from '../infra/index.js';
@@ -26,10 +25,14 @@ const InboundBodySchema = z.object({
   CallSid: field,
   From: field,
   To: field,
-  /** Set by the softphone's TwiML app for outbound calls. */
+  /*
+   * What the softphone passed to `Device.connect` for an outbound call: that
+   * it is one, and the grant it was issued for it. Twilio lets those
+   * parameters override `From` and `To` as well, so nothing in this body says
+   * who is calling; the grant does.
+   */
   type: field,
-  to: field,
-  userId: field,
+  grant: field,
 });
 
 const StatusBodySchema = z.object({
@@ -97,22 +100,11 @@ export const voiceWebhookRoutes: FastifyPluginAsync<
     const { CallSid: callSid, From: from, To: to } = body.data;
 
     if (body.data.type === 'outbound-pstn') {
-      const agentUserId =
-        body.data.userId ??
-        (from?.startsWith('client:') ? from.slice('client:'.length) : from);
-      const targetNumber = body.data.to
-        ? normalizePhoneNumber(body.data.to)
-        : null;
-
-      if (!agentUserId || !targetNumber) {
-        return reply
-          .status(400)
-          .send({ error: 'Outbound call context is incomplete' });
-      }
-
+      // A missing grant is for the flow to refuse out loud: the agent is on
+      // the line and should hear why.
       return sendTwiml(
         reply,
-        await flow.startOutboundCall({ callSid, agentUserId, targetNumber }),
+        await flow.startOutboundCall({ callSid, from, grant: body.data.grant }),
       );
     }
 

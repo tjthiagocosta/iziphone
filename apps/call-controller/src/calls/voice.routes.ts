@@ -1,8 +1,12 @@
 import {
   type CallControlRefusal,
   HoldCallSchema,
+  type OutboundGrantRefusal,
+  OutboundGrantRequestSchema,
+  type OutboundGrantResponse,
   type Role,
   TransferCallSchema,
+  toE164PhoneNumber,
   type VoiceHangupResponse,
   type VoiceHoldResponse,
   type VoiceTokenResponse,
@@ -13,14 +17,16 @@ import { verifyJWT } from '@repo/events';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { planHangup, REFUSAL_MESSAGES } from './call-control.js';
 import type { CallFlow } from './call-flow.js';
+import { OUTBOUND_GRANT_REFUSAL_MESSAGES } from './outbound-grant.js';
 import type { TelephonyService } from './telephony.service.js';
 
 /*
  * What the softphone calls directly: a Twilio access token to register the
- * browser, and the controls an agent has over a call they are on: hang up,
- * hold and transfer. Requests carry the realtime JWT the API issued and name
- * the agent's own leg, so each one is checked against the live call and
- * answered with what actually happened to it.
+ * browser, the grant to place an outbound call on, and the controls an agent
+ * has over a call they are on: hang up, hold and transfer. Requests carry the
+ * realtime JWT the API issued; the controls also name the agent's own leg, so
+ * each one is checked against the live call and answered with what actually
+ * happened to it.
  */
 
 interface AuthenticatedUser {
@@ -48,9 +54,19 @@ export interface VoiceRouteOptions {
   >;
   flow: Pick<
     CallFlow,
-    'holdCall' | 'transferCall' | 'cancelTransfer' | 'declineOfferedCall'
+    | 'grantOutboundCall'
+    | 'holdCall'
+    | 'transferCall'
+    | 'cancelTransfer'
+    | 'declineOfferedCall'
   >;
 }
+
+const GRANT_REFUSAL_STATUS: Record<OutboundGrantRefusal, number> = {
+  'line-unavailable': 409,
+  'line-without-voice': 409,
+  'line-not-allowed': 403,
+};
 
 const REFUSAL_STATUS: Record<CallControlRefusal, number> = {
   'leg-not-found': 404,
@@ -110,6 +126,44 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
         identity: user.id,
         provider: 'twilio',
       } satisfies VoiceTokenResponse;
+    },
+  );
+
+  fastify.post(
+    '/api/voice/outbound-grants',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const user = requireUser(request);
+
+      const body = OutboundGrantRequestSchema.safeParse(request.body);
+      const to = body.success ? toE164PhoneNumber(body.data.to) : null;
+      const fromNumber = body.success
+        ? toE164PhoneNumber(body.data.fromNumber)
+        : null;
+      if (!to || !fromNumber) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'to and fromNumber must be phone numbers',
+        });
+      }
+
+      const result = await flow.grantOutboundCall({
+        userId: user.id,
+        to,
+        fromNumber,
+      });
+      if (!result.ok) {
+        return reply.status(GRANT_REFUSAL_STATUS[result.refusal]).send({
+          error: 'Refused',
+          message: OUTBOUND_GRANT_REFUSAL_MESSAGES[result.refusal],
+          code: result.refusal,
+        });
+      }
+
+      return {
+        grant: result.grant,
+        expiresInSeconds: result.expiresInSeconds,
+      } satisfies OutboundGrantResponse;
     },
   );
 

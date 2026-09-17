@@ -19,7 +19,6 @@ export const testControllerConfig: ControllerConfig = loadControllerConfig({
   TWILIO_API_KEY: 'SKaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   TWILIO_API_SECRET: 'not-a-real-api-secret',
   TWILIO_TWIML_APP_SID: 'APaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-  TWILIO_PHONE_NUMBER: '+15555550100',
 });
 
 interface CreateControllerRouteAppOptions<Options> {

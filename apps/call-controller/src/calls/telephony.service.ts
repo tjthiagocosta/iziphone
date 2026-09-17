@@ -1,4 +1,6 @@
-import { normalizePhoneNumber } from '@repo/dto';
+import { randomBytes } from 'node:crypto';
+import { callLine, normalizePhoneNumber } from '@repo/dto';
+import { OUTBOUND_GRANT } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
 import twilio from 'twilio';
@@ -15,14 +17,22 @@ import {
   type LegMetadata,
   legUuidsOf,
 } from './call-state.js';
+import {
+  type OutboundCallGrant,
+  type OutboundCallRefusal,
+  outboundCallRefusalMessage,
+  parseStoredGrant,
+} from './outbound-grant.js';
 
 /*
  * Twilio and Redis for one call. Twilio is the phone network: legs are
  * created, joined into a conference, put on hold and hung up here. Redis
- * holds the call state and leg metadata while the call lasts.
+ * holds the call state and leg metadata while the call lasts, and the grant
+ * an outbound call is placed on until the call starts.
  *
  *   telephony:call:{conversationUuid}  -> CallState
  *   telephony:leg:{legUuid}            -> LegMetadata
+ *   voice:outbound-grant:{token}       -> OutboundCallGrant
  */
 
 const CALL_STATE_PREFIX = 'telephony:call:';
@@ -53,7 +63,7 @@ export type TwilioClient = Pick<
   'api' | 'calls' | 'conferences'
 >;
 
-export type TelephonyRedis = Pick<Redis, 'get' | 'set' | 'del'>;
+export type TelephonyRedis = Pick<Redis, 'get' | 'set' | 'del' | 'getdel'>;
 
 export interface TelephonyDependencies {
   redis: TelephonyRedis;
@@ -64,8 +74,12 @@ export interface TelephonyDependencies {
 }
 
 export interface RingOptions {
-  /** Caller id shown on the softphone; defaults to the configured number. */
-  fromNumber?: string;
+  /**
+   * Caller id of the new leg: the line of ours the call is on. There is no
+   * default, because Twilio accepts only a number of the account here and a
+   * call must not leave from a line nobody chose.
+   */
+  fromNumber: string;
   /** Seconds to ring before Twilio gives up on the leg. */
   ringingTimer?: number;
 }
@@ -204,6 +218,41 @@ export class TelephonyService {
     }
   }
 
+  /**
+   * Keeps a grant for the seconds it is good for, under a token that cannot
+   * be guessed. Resolves to the token, which is all the softphone gets.
+   */
+  async issueOutboundGrant(grant: OutboundCallGrant): Promise<string> {
+    const token = randomBytes(16).toString('base64url');
+    await this.deps.redis.set(
+      `${OUTBOUND_GRANT.KEY_PREFIX}${token}`,
+      JSON.stringify(grant),
+      'EX',
+      OUTBOUND_GRANT.TTL_SECONDS,
+    );
+    return token;
+  }
+
+  /**
+   * The grant behind a token, taken from the store in the same step so that
+   * it serves one call. Null once used, expired, or never issued.
+   */
+  async takeOutboundGrant(token: string): Promise<OutboundCallGrant | null> {
+    const payload = await this.deps.redis.getdel(
+      `${OUTBOUND_GRANT.KEY_PREFIX}${token}`,
+    );
+    if (payload === null) {
+      return null;
+    }
+    const grant = parseStoredGrant(JSON.parse(payload));
+    if (!grant) {
+      // Only this service writes the key, so this is a bug, not an attack;
+      // the call is refused as if it had no grant.
+      this.deps.log.error('An outbound grant in the store was not readable');
+    }
+    return grant;
+  }
+
   async ensureConferenceReference(
     conversationUuid: string,
     conferenceSid: string,
@@ -223,7 +272,7 @@ export class TelephonyService {
   async createAgentLeg(
     conversationUuid: string,
     userId: string,
-    options: RingOptions = {},
+    options: RingOptions,
   ): Promise<string> {
     const state = await this.requireCallState(conversationUuid);
     if (state.ending) {
@@ -246,7 +295,7 @@ export class TelephonyService {
   async ringAgents(
     conversationUuid: string,
     userIds: readonly string[],
-    options: RingOptions = {},
+    options: RingOptions,
   ): Promise<AgentLeg[]> {
     const state = await this.requireCallState(conversationUuid);
     if (state.ending || userIds.length === 0) {
@@ -334,7 +383,7 @@ export class TelephonyService {
   async createExternalLeg(
     conversationUuid: string,
     phoneNumber: string,
-    options: { fromNumber?: string; ringingTimer?: number } = {},
+    options: RingOptions,
   ): Promise<string> {
     const state = await this.requireCallState(conversationUuid);
     if (state.ending) {
@@ -480,7 +529,9 @@ export class TelephonyService {
     }
 
     return this.createAgentLeg(conversationUuid, targetUserId, {
-      fromNumber: state.to,
+      // The line the call is on, whichever way the call went: on an outbound
+      // call `to` is the other party, whose number is not ours to present.
+      fromNumber: callLine(state),
       ringingTimer: state.ringDuration,
     });
   }
@@ -603,6 +654,14 @@ export class TelephonyService {
     return response.toString();
   }
 
+  /** Tells the agent why their outbound call was not placed, then ends it. */
+  buildOutboundRefusalTwiml(reason: OutboundCallRefusal): string {
+    const response = new twilio.twiml.VoiceResponse();
+    response.say({ voice: 'alice' }, outboundCallRefusalMessage(reason));
+    response.hangup();
+    return response.toString();
+  }
+
   buildFallbackTwiml(): string {
     const response = new twilio.twiml.VoiceResponse();
     response.say(
@@ -653,17 +712,19 @@ export class TelephonyService {
   private async createConferenceParticipant(
     state: CallState,
     options: {
-      /** Caller id for the new leg; the deployment's number when absent. */
-      fromNumber: string | undefined;
+      fromNumber: string;
       participant: CallParticipant;
       to: string;
       timeout: number;
     },
   ): Promise<string> {
     const { config, client } = this.requireVoice();
-    const from =
-      (options.fromNumber && normalizePhoneNumber(options.fromNumber)) ||
-      config.defaultFromNumber;
+    const from = normalizePhoneNumber(options.fromNumber);
+    if (!from) {
+      throw new Error(
+        `Cannot add a leg to call ${state.conversationUuid} without the line it is on as caller id`,
+      );
+    }
 
     const participant = await client
       .conferences(state.conferenceSid ?? state.conversationName)

@@ -355,20 +355,6 @@ describe('transferOfferOf', () => {
     });
     expect(offer.routingType).toBeUndefined();
   });
-
-  test('never offers the user id an outbound call may name as its origin as a number', () => {
-    const offer = transferOfferOf(
-      connectedCall({
-        direction: 'outbound',
-        routingType: 'OUTBOUND',
-        from: 'user-1',
-        to: customer,
-      }),
-      'user-1',
-    );
-
-    expect(offer).toMatchObject({ from: customer, to: customer });
-  });
 });
 
 describe('REFUSAL_MESSAGES', () => {

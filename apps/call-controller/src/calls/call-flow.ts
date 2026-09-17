@@ -3,8 +3,10 @@ import type {
   CallEndStatus,
   CallTransferOutcome,
   IncomingCall,
+  OutboundGrantRefusal,
   TransferFailureReason,
 } from '@repo/dto';
+import { OUTBOUND_GRANT } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
 import {
   type InboundCallPlan,
@@ -34,6 +36,11 @@ import {
   participantOfLeg,
   removeLeg,
 } from './call-state.js';
+import {
+  admitOutboundCall,
+  decideOutboundGrant,
+  type OutboundGrantRequest,
+} from './outbound-grant.js';
 import {
   isTerminalStatus,
   normalizeCallStatus,
@@ -84,6 +91,8 @@ export type CallFlowTelephony = Pick<
   | 'createAgentLeg'
   | 'ringAgents'
   | 'createExternalLeg'
+  | 'issueOutboundGrant'
+  | 'takeOutboundGrant'
   | 'hangupConversation'
   | 'requestConversationHangup'
   | 'holdConversation'
@@ -92,6 +101,7 @@ export type CallFlowTelephony = Pick<
   | 'redirectLegToVoicemail'
   | 'buildConferenceTwiml'
   | 'buildVoicemailTwiml'
+  | 'buildOutboundRefusalTwiml'
   | 'parseParticipantLabel'
 >;
 
@@ -108,12 +118,18 @@ export type CallControlResult<T = unknown> =
   | ({ ok: true; conversationUuid: string } & T)
   | { ok: false; refusal: CallControlRefusal };
 
+/** What a grant request came to: the token to dial with, or why not. */
+export type OutboundGrantResult =
+  | { ok: true; grant: string; expiresInSeconds: number }
+  | { ok: false; refusal: OutboundGrantRefusal };
+
 export interface OutboundCallRequest {
   /** The agent's own Twilio client leg. */
   callSid: string;
-  agentUserId: string;
-  /** E.164. */
-  targetNumber: string;
+  /** Twilio's caller, `client:<identity>` for a softphone; the browser can set it. */
+  from: string | undefined;
+  /** The grant token the softphone passed with the call, if it passed one. */
+  grant: string | undefined;
 }
 
 export interface InboundCallRequest {
@@ -160,18 +176,80 @@ export interface CallStatusNotice {
 export class CallFlow {
   constructor(private readonly deps: CallFlowDependencies) {}
 
-  /** An agent dialed a number from the softphone. Resolves to TwiML for the agent's leg. */
+  /**
+   * An agent is about to dial a number from the softphone and asks whether
+   * they may, from that line. Resolves to a grant the call is then placed on,
+   * or to why not. The line's routing entry decides, without the database.
+   */
+  async grantOutboundCall(
+    request: OutboundGrantRequest,
+  ): Promise<OutboundGrantResult> {
+    const { telephony, routing } = this.deps;
+
+    const decision = decideOutboundGrant(
+      request,
+      await routing.lookupByPhone(request.fromNumber),
+      new Date(),
+    );
+    if (decision.action === 'refuse') {
+      this.deps.log.warn(
+        {
+          userId: request.userId,
+          refusal: decision.reason,
+          phoneNumberLast4: maskPhoneNumber(request.fromNumber),
+        },
+        'Refused an outbound call grant',
+      );
+      return { ok: false, refusal: decision.reason };
+    }
+
+    const grant = await telephony.issueOutboundGrant(decision.grant);
+    return { ok: true, grant, expiresInSeconds: OUTBOUND_GRANT.TTL_SECONDS };
+  }
+
+  /**
+   * An agent dialed a number from the softphone, and Twilio asks what to do
+   * with their leg. Resolves to TwiML for it: the conference the other party
+   * is dialed into, or the reason the call was refused. Who is calling, whom
+   * and from where come from the grant the call carries; a call without a
+   * usable one dials nobody and leaves no record.
+   */
   async startOutboundCall(request: OutboundCallRequest): Promise<string> {
-    const { callSid, agentUserId, targetNumber } = request;
+    const { callSid, from } = request;
     const { telephony, events, realtime } = this.deps;
 
+    const admission = admitOutboundCall(
+      request.grant ? await telephony.takeOutboundGrant(request.grant) : null,
+      from,
+      new Date(),
+    );
+    if (admission.action === 'refuse') {
+      this.deps.log.warn(
+        {
+          conversationUuid: callSid,
+          // A softphone's caller is `client:<user id>`; anything else is the
+          // browser's doing and may be a number, so only its end is logged.
+          caller: from?.startsWith('client:')
+            ? from
+            : maskPhoneNumber(from ?? ''),
+          reason: admission.reason,
+        },
+        'Refused an outbound call',
+      );
+      return telephony.buildOutboundRefusalTwiml(admission.reason);
+    }
+
+    const { grant } = admission;
+    const agentUserId = grant.userId;
     const state: CallState = {
       conversationUuid: callSid,
       conversationName: conversationNameFor(callSid),
       direction: 'outbound',
       routingType: 'OUTBOUND',
-      from: agentUserId,
-      to: targetNumber,
+      from: grant.fromNumber,
+      to: grant.to,
+      departmentId: grant.departmentId,
+      departmentName: grant.departmentName,
       targetUserId: agentUserId,
       activeAgentUserId: agentUserId,
       agentLegUuid: callSid,
@@ -195,10 +273,11 @@ export class CallFlow {
     await realtime.trackCallParticipants(callSid, [agentUserId]);
     await events.callIncoming({
       conversationUuid: callSid,
-      from: agentUserId,
-      to: targetNumber,
+      from: grant.fromNumber,
+      to: grant.to,
       direction: 'outbound',
       agentLegUuid: callSid,
+      departmentId: grant.departmentId,
       userId: agentUserId,
     });
 
@@ -206,7 +285,7 @@ export class CallFlow {
     // while the agent waits in the conference.
     this.inBackground(
       telephony
-        .createExternalLeg(callSid, targetNumber)
+        .createExternalLeg(callSid, grant.to, { fromNumber: grant.fromNumber })
         .catch(async (error) => {
           const latest = await telephony.getCallState(callSid);
           if (!latest || latest.ending) {

@@ -1,5 +1,6 @@
 import type { CachedRouting, CachedRoutingSettings } from '@repo/events';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { e164 } from '../test/e164.js';
 import { createFakeLogger } from '../test/fake-logger.js';
 import { createFakeTelephony } from '../test/fake-telephony.js';
 import { testControllerConfig } from '../test/route-test-helpers.js';
@@ -8,7 +9,9 @@ import { CallFlow } from './call-flow.js';
 
 const caller = '+15555550101';
 const businessNumber = '+15555550102';
-const customerNumber = '+15555550199';
+/** The same number, as the line an agent calls out from. */
+const line = e164(businessNumber);
+const customer = e164('+15555550199');
 
 const settings: CachedRoutingSettings = {
   timezone: 'UTC',
@@ -32,6 +35,16 @@ const department: CachedRouting = {
     { userId: 'user-2', order: 1 },
   ],
   settings,
+  voiceEnabled: true,
+  cachedAt: '2026-09-08T12:00:00.000Z',
+};
+
+const directLine: CachedRouting = {
+  type: 'USER',
+  userId: 'user-1',
+  userName: 'Alex Example',
+  userIds: ['user-1'],
+  voiceEnabled: true,
   cachedAt: '2026-09-08T12:00:00.000Z',
 };
 
@@ -78,6 +91,31 @@ function buildFlow(
 /** Let background work started by a webhook handler settle. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** The grant the softphone obtains before it dials, as user-1 from the line. */
+async function grantFor(
+  flow: CallFlow,
+  request: { userId?: string; fromNumber?: typeof line } = {},
+): Promise<string> {
+  const result = await flow.grantOutboundCall({
+    userId: request.userId ?? 'user-1',
+    to: customer,
+    fromNumber: request.fromNumber ?? line,
+  });
+  if (!result.ok) {
+    throw new Error(`The grant was refused: ${result.refusal}`);
+  }
+  return result.grant;
+}
+
+/** User-1 dials the customer from CAagent1 on a grant they just obtained. */
+async function dialOut(flow: CallFlow): Promise<string> {
+  return flow.startOutboundCall({
+    callSid: 'CAagent1',
+    from: 'client:user-1',
+    grant: await grantFor(flow),
+  });
+}
+
 /** An inbound call that user-1 answered on CAleg1; the caller is CAcall1. */
 async function answeredCall() {
   const context = buildFlow({ online: ['user-1'] });
@@ -99,11 +137,7 @@ async function answeredCall() {
 /** A call user-1 placed from CAagent1 that the number answered on CAleg1. */
 async function answeredOutboundCall() {
   const context = buildFlow({ online: ['user-1', 'user-2'] });
-  await context.flow.startOutboundCall({
-    callSid: 'CAagent1',
-    agentUserId: 'user-1',
-    targetNumber: customerNumber,
-  });
+  await dialOut(context.flow);
   await settle();
   await context.flow.handleConferenceEvent({
     conversationUuid: 'CAagent1',
@@ -845,11 +879,7 @@ describe('CallFlow', () => {
 
     test('refuses while the number dialed has not answered yet', async () => {
       const { flow, twilio } = buildFlow();
-      await flow.startOutboundCall({
-        callSid: 'CAagent1',
-        agentUserId: 'user-1',
-        targetNumber: customerNumber,
-      });
+      await dialOut(flow);
       await settle();
 
       await expect(
@@ -1251,11 +1281,7 @@ describe('CallFlow', () => {
 
     test('refuses a call that is not connected', async () => {
       const { flow } = buildFlow();
-      await flow.startOutboundCall({
-        callSid: 'CAagent1',
-        agentUserId: 'user-1',
-        targetNumber: customerNumber,
-      });
+      await dialOut(flow);
       await settle();
 
       await expect(
@@ -1548,8 +1574,8 @@ describe('CallFlow', () => {
           ['user-2'],
           expect.objectContaining({
             conversationUuid: 'CAagent1',
-            from: customerNumber,
-            callerId: customerNumber,
+            from: customer,
+            callerId: customer,
             transferredBy: { userId: 'user-1' },
           }),
         );
@@ -1629,44 +1655,234 @@ describe('CallFlow', () => {
   });
 
   describe('outbound calls', () => {
-    test('dials the number while the agent waits in the conference', async () => {
+    describe('the grant', () => {
+      test('is issued to a member for a department line, and is the only thing the softphone gets', async () => {
+        const { flow, routing, store } = buildFlow();
+
+        const result = await flow.grantOutboundCall({
+          userId: 'user-1',
+          to: customer,
+          fromNumber: line,
+        });
+
+        expect(routing.lookupByPhone).toHaveBeenCalledWith(line);
+        expect(result).toEqual({
+          ok: true,
+          grant: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+          expiresInSeconds: 60,
+        });
+        // What the store keeps is the decision; the token names none of it.
+        expect([...store.values()].map((value) => JSON.parse(value))).toEqual([
+          {
+            userId: 'user-1',
+            to: customer,
+            fromNumber: line,
+            departmentId: 'dept-1',
+            departmentName: 'Support',
+            createdAt: expect.any(String),
+          },
+        ]);
+      });
+
+      test.each([
+        {
+          name: 'a line the agent does not answer',
+          userId: 'user-9',
+          routing: department,
+          refusal: 'line-not-allowed',
+        },
+        {
+          name: 'a number that is not ours',
+          userId: 'user-1',
+          routing: null,
+          refusal: 'line-unavailable',
+        },
+        {
+          name: 'a line that does not do voice',
+          userId: 'user-1',
+          routing: { ...department, voiceEnabled: false },
+          refusal: 'line-without-voice',
+        },
+      ])(
+        'is refused for $name, and nothing is kept',
+        async ({ userId, routing, refusal }) => {
+          const { flow, store } = buildFlow({ routing });
+
+          await expect(
+            flow.grantOutboundCall({ userId, to: customer, fromNumber: line }),
+          ).resolves.toEqual({ ok: false, refusal });
+          expect(store.size).toBe(0);
+        },
+      );
+    });
+
+    test('dials the number from the granted line while the agent waits in the conference', async () => {
       const { flow, events, realtime, twilio, telephony } = buildFlow();
 
-      const twiml = await flow.startOutboundCall({
-        callSid: 'CAagent1',
-        agentUserId: 'user-1',
-        targetNumber: '+15555550199',
-      });
+      const twiml = await dialOut(flow);
       await settle();
 
       expect(twiml).toContain('<Conference');
       expect(realtime.trackCallParticipants).toHaveBeenCalledWith('CAagent1', [
         'user-1',
       ]);
+      // The record is from the line and belongs to its department; the agent
+      // is the user, never the `from`.
       expect(events.callIncoming).toHaveBeenCalledWith({
         conversationUuid: 'CAagent1',
-        from: 'user-1',
-        to: '+15555550199',
+        from: line,
+        to: customer,
         direction: 'outbound',
         agentLegUuid: 'CAagent1',
+        departmentId: 'dept-1',
         userId: 'user-1',
       });
       expect(twilio.created).toEqual([
-        expect.objectContaining({ to: '+15555550199', from: '+15555550100' }),
+        expect.objectContaining({ to: customer, from: line }),
       ]);
       await expect(telephony.getCallState('CAagent1')).resolves.toMatchObject({
         direction: 'outbound',
+        from: line,
+        to: customer,
+        departmentId: 'dept-1',
         externalLegUuid: 'CAleg1',
       });
     });
 
-    test('starts when the number answers and ends when it hangs up', async () => {
-      const { flow, events, twilio } = buildFlow();
+    test('a call from a direct line belongs to no department', async () => {
+      const { flow, events, twilio } = buildFlow({ routing: directLine });
+
+      await dialOut(flow);
+      await settle();
+
+      expect(events.callIncoming).toHaveBeenCalledWith({
+        conversationUuid: 'CAagent1',
+        from: line,
+        to: customer,
+        direction: 'outbound',
+        agentLegUuid: 'CAagent1',
+        departmentId: undefined,
+        userId: 'user-1',
+      });
+      expect(twilio.created).toEqual([
+        expect.objectContaining({ to: customer, from: line }),
+      ]);
+    });
+
+    test('the call is what was granted; the routing is not asked again', async () => {
+      const { flow, routing, events, twilio } = buildFlow();
+      const grant = await grantFor(flow);
+      routing.lookupByPhone.mockClear();
+
       await flow.startOutboundCall({
         callSid: 'CAagent1',
-        agentUserId: 'user-1',
-        targetNumber: '+15555550199',
+        from: 'client:user-1',
+        grant,
       });
+      await settle();
+
+      expect(routing.lookupByPhone).not.toHaveBeenCalled();
+      expect(events.callIncoming).toHaveBeenCalledWith(
+        expect.objectContaining({ from: line, to: customer, userId: 'user-1' }),
+      );
+      expect(twilio.created).toEqual([
+        expect.objectContaining({ to: customer, from: line }),
+      ]);
+    });
+
+    test.each([
+      {
+        name: 'a call without a grant',
+        request: async () => ({ from: 'client:user-1', grant: undefined }),
+        heard: 'Please start it again from the softphone.',
+      },
+      {
+        name: 'a grant that was never issued',
+        request: async () => ({ from: 'client:user-1', grant: 'made-up' }),
+        heard: 'Please start it again from the softphone.',
+      },
+      {
+        name: 'a grant issued to someone else',
+        request: async (flow: CallFlow) => ({
+          from: 'client:user-2',
+          grant: await grantFor(flow),
+        }),
+        heard: 'It did not come from the softphone it was granted to.',
+      },
+      {
+        name: 'a caller that is not a softphone',
+        request: async (flow: CallFlow) => ({
+          from: '+15555550101',
+          grant: await grantFor(flow),
+        }),
+        heard: 'It did not come from the softphone it was granted to.',
+      },
+    ])(
+      'refuses $name: the agent hears why and nobody is dialed',
+      async ({ request, heard }) => {
+        const { flow, events, realtime, twilio, telephony } = buildFlow();
+
+        const twiml = await flow.startOutboundCall({
+          callSid: 'CAagent1',
+          ...(await request(flow)),
+        });
+        await settle();
+
+        expect(twiml).toContain('Your call was not placed.');
+        expect(twiml).toContain(heard);
+        expect(twiml).toContain('<Hangup/>');
+        expect(twiml).not.toContain('<Conference');
+        expect(twilio.created).toEqual([]);
+        expect(events.callIncoming).not.toHaveBeenCalled();
+        expect(realtime.trackCallParticipants).not.toHaveBeenCalled();
+        await expect(telephony.getCallState('CAagent1')).resolves.toBeNull();
+      },
+    );
+
+    test('a grant places one call: the second call on it is refused', async () => {
+      const { flow, twilio } = buildFlow();
+      const grant = await grantFor(flow);
+
+      const first = await flow.startOutboundCall({
+        callSid: 'CAagent1',
+        from: 'client:user-1',
+        grant,
+      });
+      const second = await flow.startOutboundCall({
+        callSid: 'CAagent2',
+        from: 'client:user-1',
+        grant,
+      });
+      await settle();
+
+      expect(first).toContain('<Conference');
+      expect(second).toContain('Your call was not placed.');
+      expect(twilio.created).toHaveLength(1);
+    });
+
+    test('a grant older than its life is refused even when the store still had it', async () => {
+      vi.useFakeTimers();
+      try {
+        const { flow, twilio } = buildFlow();
+        const grant = await grantFor(flow);
+        vi.advanceTimersByTime(61_000);
+
+        const twiml = await flow.startOutboundCall({
+          callSid: 'CAagent1',
+          from: 'client:user-1',
+          grant,
+        });
+
+        expect(twiml).toContain('Starting it took too long.');
+        expect(twilio.created).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('starts when the number answers and ends when it hangs up', async () => {
+      const { flow, events, twilio } = buildFlow();
+      await dialOut(flow);
       await settle();
 
       await flow.handleConferenceEvent({
@@ -1678,7 +1894,10 @@ describe('CallFlow', () => {
       expect(events.callStarted).toHaveBeenCalledWith(
         expect.objectContaining({
           direction: 'outbound',
+          from: line,
+          to: customer,
           userId: 'user-1',
+          departmentId: 'dept-1',
           externalLegUuid: 'CAleg1',
         }),
       );
@@ -1697,13 +1916,9 @@ describe('CallFlow', () => {
 
     test('fails the call when the number cannot be dialed', async () => {
       const { flow, events, twilio } = buildFlow();
-      twilio.failWith('+15555550199', new Error('Twilio rejected the dial'));
+      twilio.failWith(customer, new Error('Twilio rejected the dial'));
 
-      await flow.startOutboundCall({
-        callSid: 'CAagent1',
-        agentUserId: 'user-1',
-        targetNumber: '+15555550199',
-      });
+      await dialOut(flow);
       await settle();
 
       expect(twilio.hangups()).toEqual(['CAagent1']);

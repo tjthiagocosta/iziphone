@@ -13,7 +13,6 @@ const twilioEnv = {
   TWILIO_API_KEY: 'SKaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   TWILIO_API_SECRET: 'not-a-real-api-secret',
   TWILIO_TWIML_APP_SID: 'APaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-  TWILIO_PHONE_NUMBER: '+15555550100',
 };
 
 describe('loadControllerConfig', () => {
@@ -65,7 +64,6 @@ describe('loadControllerConfig', () => {
       apiKeySecret: twilioEnv.TWILIO_API_SECRET,
       twimlAppSid: twilioEnv.TWILIO_TWIML_APP_SID,
       webhookBaseUrl: 'https://calls.example.com',
-      defaultFromNumber: '+15555550100',
       holdAudioUrl: 'https://media.example.com/hold.mp3',
     });
   });
@@ -115,21 +113,27 @@ describe('loadControllerConfig', () => {
       loadControllerConfig({
         ...requiredEnv,
         ...twilioEnv,
+        TWILIO_API_SECRET: '',
         TWILIO_TWIML_APP_SID: '',
-        TWILIO_PHONE_NUMBER: '',
       }),
     ).toThrowError(
-      /Twilio voice is half-configured; also set TWILIO_TWIML_APP_SID, TWILIO_PHONE_NUMBER/,
+      /Twilio voice is half-configured; also set TWILIO_API_SECRET, TWILIO_TWIML_APP_SID/,
     );
   });
 
-  test('rejects a caller id that is not E.164', () => {
-    expect(() =>
-      loadControllerConfig({
-        ...requiredEnv,
-        ...twilioEnv,
-        TWILIO_PHONE_NUMBER: '555-0100',
-      }),
-    ).toThrowError(/TWILIO_PHONE_NUMBER/);
+  test('has no deployment-wide caller id: every call names its own line', () => {
+    const leftover = { TWILIO_PHONE_NUMBER: '+15555550100' };
+
+    // An `.env` from before the setting was removed neither fails the start
+    // nor brings a default caller id back.
+    expect(
+      JSON.stringify(
+        loadControllerConfig({ ...requiredEnv, ...twilioEnv, ...leftover }),
+      ),
+    ).not.toContain('+15555550100');
+    // And it does not count as configuring voice by itself.
+    expect(
+      loadControllerConfig({ ...requiredEnv, ...leftover }).twilio,
+    ).toBeNull();
   });
 });

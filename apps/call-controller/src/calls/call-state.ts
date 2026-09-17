@@ -28,6 +28,12 @@ export interface CallState {
   conferenceSid?: string;
   direction: CallDirection;
   routingType: RoutingTargetType | 'OUTBOUND';
+  /**
+   * The provider's caller and callee, so which is our line swaps with the
+   * direction: on an inbound call the caller dialed `to`; on an outbound one
+   * the agent called from `from`, the line it was granted on, never from a
+   * user id. `callLine` in `@repo/dto` has the rule.
+   */
   from: string;
   to: string;
   departmentId?: string;

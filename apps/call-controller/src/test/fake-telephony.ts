@@ -15,19 +15,29 @@ import { testControllerConfig } from './route-test-helpers.js';
 
 export function createFakeRedis() {
   const store = new Map<string, string>();
+  /** Seconds each key was written with, so a test can see what would expire. */
+  const ttls = new Map<string, number | undefined>();
   const redis = {
     get: vi.fn(async (key: string) => store.get(key) ?? null),
-    set: vi.fn(async (key: string, value: string) => {
-      store.set(key, value);
-      return 'OK';
-    }),
+    set: vi.fn(
+      async (key: string, value: string, _mode?: 'EX', seconds?: number) => {
+        store.set(key, value);
+        ttls.set(key, seconds);
+        return 'OK';
+      },
+    ),
     del: vi.fn(async (...keys: string[]) => {
       let removed = 0;
       for (const key of keys) if (store.delete(key)) removed += 1;
       return removed;
     }),
+    getdel: vi.fn(async (key: string) => {
+      const value = store.get(key) ?? null;
+      store.delete(key);
+      return value;
+    }),
   };
-  return { redis: redis as unknown as Redis, store };
+  return { redis: redis as unknown as Redis, store, ttls };
 }
 
 export function createFakeTwilioClient() {
@@ -132,7 +142,7 @@ export function createFakeTwilioClient() {
 }
 
 export function createFakeTelephony() {
-  const { redis, store } = createFakeRedis();
+  const { redis, store, ttls } = createFakeRedis();
   const twilio = createFakeTwilioClient();
   const config = testControllerConfig.twilio;
   if (!config) {
@@ -146,5 +156,5 @@ export function createFakeTelephony() {
     log: createFakeLogger(),
   });
 
-  return { telephony, twilio, store };
+  return { telephony, twilio, store, ttls };
 }

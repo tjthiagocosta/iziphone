@@ -1,11 +1,17 @@
+import { OUTBOUND_GRANT } from '@repo/events';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { e164 } from '../test/e164.js';
 import { createFakeLogger } from '../test/fake-logger.js';
 import {
   createFakeRedis,
   createFakeTelephony,
 } from '../test/fake-telephony.js';
 import { type CallState, conversationNameFor } from './call-state.js';
+import type { OutboundCallGrant } from './outbound-grant.js';
 import { TelephonyService } from './telephony.service.js';
+
+/** The line the test calls are on: the number the inbound caller dialed. */
+const line = '+15555550102';
 
 function inboundState(overrides: Partial<CallState> = {}): CallState {
   return {
@@ -127,7 +133,7 @@ describe('TelephonyService', () => {
       await telephony.requestConversationHangup('CAcall1', 'user-9');
     });
 
-    await telephony.createAgentLeg('CAcall1', 'user-1');
+    await telephony.createAgentLeg('CAcall1', 'user-1', { fromNumber: line });
 
     expect(twilio.hangups()).toContain('CAleg1');
     await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
@@ -143,11 +149,11 @@ describe('TelephonyService', () => {
       new Error('busy'),
     );
 
-    const legs = await telephony.ringAgents('CAcall1', [
-      'user-1',
-      'user-2',
-      'user-3',
-    ]);
+    const legs = await telephony.ringAgents(
+      'CAcall1',
+      ['user-1', 'user-2', 'user-3'],
+      { fromNumber: line },
+    );
 
     expect(legs).toEqual([
       { userId: 'user-1', legUuid: 'CAleg1' },
@@ -163,9 +169,9 @@ describe('TelephonyService', () => {
     const { telephony, twilio } = createFakeTelephony();
     await telephony.saveCallState(inboundState({ ending: true }));
 
-    await expect(telephony.ringAgents('CAcall1', ['user-1'])).resolves.toEqual(
-      [],
-    );
+    await expect(
+      telephony.ringAgents('CAcall1', ['user-1'], { fromNumber: line }),
+    ).resolves.toEqual([]);
     expect(twilio.created).toHaveLength(0);
   });
 
@@ -173,9 +179,9 @@ describe('TelephonyService', () => {
     const { telephony } = createFakeTelephony();
     await telephony.saveCallState(inboundState({ ending: true }));
 
-    await expect(telephony.createAgentLeg('CAcall1', 'user-1')).rejects.toThrow(
-      /is ending/,
-    );
+    await expect(
+      telephony.createAgentLeg('CAcall1', 'user-1', { fromNumber: line }),
+    ).rejects.toThrow(/is ending/);
   });
 
   test('dials an external number in E.164 and refuses anything else', async () => {
@@ -195,17 +201,25 @@ describe('TelephonyService', () => {
     });
 
     await expect(
-      telephony.createExternalLeg('CAcall1', 'not a number'),
+      telephony.createExternalLeg('CAcall1', 'not a number', {
+        fromNumber: line,
+      }),
     ).rejects.toThrow(/not E\.164/);
   });
 
-  test('uses the deployment number as caller id when none is given', async () => {
+  test('never dials a leg whose caller id is not a number: there is no deployment number to fall back to', async () => {
     const { telephony, twilio } = createFakeTelephony();
     await telephony.saveCallState(inboundState());
 
-    await telephony.createExternalLeg('CAcall1', '+15555550199');
-
-    expect(twilio.created[0]).toMatchObject({ from: '+15555550100' });
+    await expect(
+      telephony.createExternalLeg('CAcall1', '+15555550199', {
+        fromNumber: 'user-1',
+      }),
+    ).rejects.toThrow(/without the line it is on as caller id/);
+    await expect(
+      telephony.createAgentLeg('CAcall1', 'user-2', { fromNumber: '' }),
+    ).rejects.toThrow(/without the line it is on as caller id/);
+    expect(twilio.created).toHaveLength(0);
   });
 
   test('requesting a hangup marks the call as ending and hangs up every leg', async () => {
@@ -367,6 +381,104 @@ describe('TelephonyService', () => {
       agentLegs: { CAagent1: 'user-1', CAleg1: 'user-2' },
       pendingAgentLegUuids: ['CAleg1'],
       pendingTransferToUserId: 'user-2',
+    });
+  });
+
+  test('a transfer of an outbound call rings the teammate from our line, not from the number that was dialed', async () => {
+    const { telephony, twilio } = createFakeTelephony();
+    await telephony.saveCallState(
+      inboundState({
+        direction: 'outbound',
+        routingType: 'OUTBOUND',
+        from: line,
+        to: '+15555550199',
+        callerLegUuid: undefined,
+        externalLegUuid: 'CAexternal1',
+        answered: true,
+        agentLegUuid: 'CAagent1',
+        activeAgentUserId: 'user-1',
+        agentLegs: { CAagent1: 'user-1' },
+        pendingTransferToUserId: 'user-2',
+        transferInitiatedBy: 'user-1',
+        transferOriginLegUuid: 'CAagent1',
+      }),
+    );
+
+    await telephony.transferConversation('CAcall1', 'user-2', 'user-1');
+
+    expect(twilio.created).toEqual([
+      expect.objectContaining({
+        from: line,
+        to: expect.stringMatching(/^client:user-2\?/),
+      }),
+    ]);
+  });
+
+  test('refusal TwiML tells the agent why the call was not placed and hangs up', () => {
+    const { telephony } = createFakeTelephony();
+
+    const twiml = telephony.buildOutboundRefusalTwiml('no-grant');
+
+    expect(twiml).toContain('Your call was not placed.');
+    expect(twiml).toContain('<Hangup/>');
+    expect(twiml).not.toContain('<Conference');
+    expect(twiml).not.toContain('<Dial');
+  });
+
+  describe('outbound grants', () => {
+    const grant: OutboundCallGrant = {
+      userId: 'user-1',
+      to: e164('+15555550199'),
+      fromNumber: e164(line),
+      departmentId: 'dept-1',
+      departmentName: 'Support',
+      createdAt: '2026-09-17T12:00:00.000Z',
+    };
+
+    test('a grant is kept for one minute under a token that names nothing', async () => {
+      const { telephony, store, ttls } = createFakeTelephony();
+
+      const token = await telephony.issueOutboundGrant(grant);
+
+      expect(token).toMatch(/^[A-Za-z0-9_-]{22}$/);
+      expect(token).not.toContain('user-1');
+      const key = `${OUTBOUND_GRANT.KEY_PREFIX}${token}`;
+      expect(JSON.parse(store.get(key) ?? 'null')).toEqual(grant);
+      expect(ttls.get(key)).toBe(OUTBOUND_GRANT.TTL_SECONDS);
+    });
+
+    test('two grants never share a token', async () => {
+      const { telephony } = createFakeTelephony();
+
+      const first = await telephony.issueOutboundGrant(grant);
+      const second = await telephony.issueOutboundGrant(grant);
+
+      expect(first).not.toBe(second);
+    });
+
+    test('a grant can be taken once; the second taker gets nothing', async () => {
+      const { telephony } = createFakeTelephony();
+      const token = await telephony.issueOutboundGrant(grant);
+
+      await expect(telephony.takeOutboundGrant(token)).resolves.toEqual(grant);
+      await expect(telephony.takeOutboundGrant(token)).resolves.toBeNull();
+    });
+
+    test('a token that was never issued yields nothing', async () => {
+      const { telephony } = createFakeTelephony();
+
+      await expect(
+        telephony.takeOutboundGrant('not-a-token'),
+      ).resolves.toBeNull();
+    });
+
+    test('a stored value that is not a grant is taken and refused as none', async () => {
+      const { telephony, store } = createFakeTelephony();
+      const key = `${OUTBOUND_GRANT.KEY_PREFIX}broken`;
+      store.set(key, JSON.stringify({ userId: 'user-1' }));
+
+      await expect(telephony.takeOutboundGrant('broken')).resolves.toBeNull();
+      expect(store.has(key)).toBe(false);
     });
   });
 

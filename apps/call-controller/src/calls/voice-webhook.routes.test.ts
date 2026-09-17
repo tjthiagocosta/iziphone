@@ -85,31 +85,60 @@ describe('voiceWebhookRoutes', () => {
       });
     });
 
-    test('starts an outbound call from the softphone with the number in E.164', async () => {
+    test('starts an outbound call from the softphone on the grant it carries', async () => {
       const response = await post(
         '/webhooks/twilio/voice/inbound',
-        'CallSid=CAagent1&From=client%3Auser-1&type=outbound-pstn&to=%28555%29%20555-0199',
+        'CallSid=CAagent1&From=client%3Auser-1&type=outbound-pstn&grant=a-grant-token',
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/xml');
+      expect(flow.startOutboundCall).toHaveBeenCalledWith({
+        callSid: 'CAagent1',
+        from: 'client:user-1',
+        grant: 'a-grant-token',
+      });
+    });
+
+    test('reads nothing but the grant from the call: whom to dial, from where and who is calling are its', async () => {
+      const response = await post(
+        '/webhooks/twilio/voice/inbound',
+        'CallSid=CAagent1&From=client%3Auser-1&type=outbound-pstn&grant=a-grant-token&to=%2B15555550199&line=%2B15555550102&userId=user-2',
       );
 
       expect(response.statusCode).toBe(200);
       expect(flow.startOutboundCall).toHaveBeenCalledWith({
         callSid: 'CAagent1',
-        agentUserId: 'user-1',
-        targetNumber: '+15555550199',
+        from: 'client:user-1',
+        grant: 'a-grant-token',
       });
     });
 
-    test('rejects an outbound call to a number that cannot be dialed', async () => {
-      const response = await post(
-        '/webhooks/twilio/voice/inbound',
-        'CallSid=CAagent1&From=client%3Auser-1&type=outbound-pstn&to=12',
-      );
+    test.each([
+      ['no grant', 'From=client%3Auser-1', { from: 'client:user-1' }],
+      ['no caller', 'grant=a-grant-token', { grant: 'a-grant-token' }],
+      [
+        'a caller that is not a softphone',
+        'From=%2B15555550101&grant=a-grant-token',
+        { from: '+15555550101', grant: 'a-grant-token' },
+      ],
+    ])(
+      'leaves an outbound call with %s to the flow, which refuses it out loud',
+      async (_name, fields, expected) => {
+        const response = await post(
+          '/webhooks/twilio/voice/inbound',
+          `CallSid=CAagent1&type=outbound-pstn&${fields}`,
+        );
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({
-        error: 'Outbound call context is incomplete',
-      });
-    });
+        expect(response.statusCode).toBe(200);
+        expect(flow.startOutboundCall).toHaveBeenCalledWith({
+          callSid: 'CAagent1',
+          from: undefined,
+          grant: undefined,
+          ...expected,
+        });
+      },
+    );
   });
 
   describe('status', () => {

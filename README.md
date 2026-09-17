@@ -106,6 +106,8 @@ iziphone/
 
 Hold and transfer are not commands. The softphone asks the call controller for them directly (`POST /api/voice/calls/:legUuid/hold`, `/transfer` and `/transfer/cancel`, with the realtime JWT), because only the controller can check the request against the live call and answer with what happened. How a transfer ended reaches the softphones as the `call_transfer_outcome` socket event.
 
+An outbound call starts the same way: the softphone asks `POST /api/voice/outbound-grants` for a grant to call a number from one of the user's lines, and dials through Twilio with the grant alone. The controller checks the line against the routing cache (the people a number rings are the people who may call from it), keeps the grant in Redis for a minute (`voice:outbound-grant:*`), and consumes it when Twilio's webhook brings it back, so the webhook needs nothing the browser could forge.
+
 **Conference-first calling.** Inbound and outbound calls are placed into a Twilio conference from the start. The controller keeps per-call state in Redis (`telephony:call:*`, `telephony:leg:*`, `call:participants:*`) with TTLs of one to four hours so abandoned state cleans itself up. Hold, transfer and supervisor features all work by adding, removing or updating conference participants instead of re-dialing.
 
 **Realtime to the browser.** The call controller runs Socket.IO with the Redis adapter, so it can scale horizontally. Users authenticate to the socket with a short-lived JWT issued by the API. Each user's sockets are tracked in Redis (`presence:sockets:*`) so an inbound call can ring every tab and device that user has open.
@@ -198,7 +200,7 @@ pnpm clean               # Remove build outputs
 ## Twilio configuration
 
 1. Create an **API key and secret** in the Twilio console. The call controller uses them to mint browser voice tokens.
-2. Create a **TwiML application** and copy its SID into `TWILIO_TWIML_APP_SID`. Set its Voice request URL to the call controller's voice webhook. Browser-originated calls arrive there with an `outbound-pstn` type.
+2. Create a **TwiML application** and copy its SID into `TWILIO_TWIML_APP_SID`. Set its Voice request URL to the call controller's voice webhook (`${WEBHOOK_BASE_URL}/webhooks/twilio/voice/inbound`) with the HTTP POST method; the route accepts nothing else. Before the softphone dials, it asks the call controller for a grant to call that number from the line the user chose, and starts the call with the grant as its only parameter besides the `outbound-pstn` type. The webhook reads who is calling, whom and from where from the grant, because Twilio lets the browser set every other parameter of the call, `From` included. There is no deployment-wide caller ID: a call leaves from one of the caller's own lines (their number, or a number of a department they belong to) and is refused when it names no line they may use.
 3. For each **phone number** you add through the admin console, point its Voice webhook at the call controller and its Messaging webhooks at the API:
    - Voice: `${WEBHOOK_BASE_URL}/webhooks/twilio/voice/inbound`
    - Voice status callback: `${WEBHOOK_BASE_URL}/webhooks/twilio/voice/status`
@@ -217,6 +219,8 @@ pnpm clean               # Remove build outputs
    Messaging and MMS need the API public as well, because Twilio fetches media from it. Point `BETTER_AUTH_URL` and `NEXT_PUBLIC_API_URL` at the API alias — the session cookie is issued for the API's own origin, so they must agree. Add a third `-R` for the web app on 3000 and set `CORS_ORIGIN` to it; keeping every origin under `nouva.cloud` keeps the cookie same-site.
 5. Optionally set `TWILIO_HOLD_AUDIO_URL` to a public MP3 or WAV for hold music. A Twilio-hosted classical track is used when it is empty.
 6. Turn on **Enforce HTTP Auth on Media URLs** in the console's Voice settings, as Twilio recommends. The API already fetches a voicemail with the account's credentials and serves the audio to the softphone itself, so nothing here relies on recording URLs being public; while the setting is off, anyone who holds a recording's URL can download it without signing in.
+
+Every line must be a voice-capable number on this Twilio account, because Twilio accepts only the account's own (or verified) numbers as caller ID. For US calls to be signed with full STIR/SHAKEN attestation, the account also needs an approved Business Profile and a SHAKEN/STIR trust product in Trust Hub with the numbers assigned to it.
 
 Twilio signs every webhook. Signature validation is enforced when `NODE_ENV` is anything other than `development`, and skipped in development so local tunnels are easy to work with. Never run with `NODE_ENV=development` on a public host.
 
@@ -245,7 +249,6 @@ All services and the Prisma CLI read the root `.env`. `.env.example` documents e
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | api, call-controller | Account credentials and webhook signature validation. Set both or neither |
 | `TWILIO_API_KEY`, `TWILIO_API_SECRET` | call-controller | Voice token minting |
 | `TWILIO_TWIML_APP_SID` | call-controller | TwiML app for outbound browser calls |
-| `TWILIO_PHONE_NUMBER` | api, call-controller | Default caller ID when a user has no assigned number |
 | `TWILIO_HOLD_AUDIO_URL` | call-controller | Optional hold music URL |
 
 In production, session cookies are set with the `__Secure-` prefix and require HTTPS.

@@ -5,7 +5,7 @@ import {
   createControllerRouteApp,
   testControllerConfig,
 } from '../test/route-test-helpers.js';
-import type { CallControlResult } from './call-flow.js';
+import type { CallControlResult, OutboundGrantResult } from './call-flow.js';
 import type { CallState, LegMetadata } from './call-state.js';
 import { voiceRoutes } from './voice.routes.js';
 
@@ -43,6 +43,11 @@ function buildTelephony() {
 
 function buildFlow() {
   return {
+    grantOutboundCall: vi.fn<() => Promise<OutboundGrantResult>>(async () => ({
+      ok: true,
+      grant: 'a-grant-token',
+      expiresInSeconds: 60,
+    })),
     holdCall: vi.fn<() => Promise<CallControlResult<{ held: boolean }>>>(
       async () => ({ ok: true, conversationUuid: 'CAcall1', held: true }),
     ),
@@ -146,6 +151,110 @@ describe('voiceRoutes', () => {
       expect(response.statusCode).toBe(503);
       expect(response.json()).toEqual({ error: 'Voice is not configured' });
     });
+  });
+
+  describe('POST /api/voice/outbound-grants', () => {
+    const ask = (payload: unknown, headers = { authorization }) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/voice/outbound-grants',
+        headers,
+        payload,
+      });
+
+    test('requires a bearer token', async () => {
+      const response = await ask(
+        { to: '+15555550199', fromNumber: '+15555550102' },
+        {} as { authorization: string },
+      );
+
+      expect(response.statusCode).toBe(401);
+      expect(flow.grantOutboundCall).not.toHaveBeenCalled();
+    });
+
+    test('grants the authenticated user a call to the number, as typed, from the line', async () => {
+      const response = await ask({
+        to: '(555) 555-0199',
+        fromNumber: '+15555550102',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        grant: 'a-grant-token',
+        expiresInSeconds: 60,
+      });
+      // The user is the token's, whatever the body says.
+      expect(flow.grantOutboundCall).toHaveBeenCalledWith({
+        userId: 'user-1',
+        to: '+15555550199',
+        fromNumber: '+15555550102',
+      });
+    });
+
+    test('is not told who is asking by the body', async () => {
+      await ask({
+        to: '+15555550199',
+        fromNumber: '+15555550102',
+        userId: 'user-2',
+      });
+
+      expect(flow.grantOutboundCall).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user-1' }),
+      );
+    });
+
+    test.each([
+      ['no line', { to: '+15555550199' }],
+      [
+        'a line that is not E.164',
+        { to: '+15555550199', fromNumber: 'user-1' },
+      ],
+      ['no number', { fromNumber: '+15555550102' }],
+      [
+        'a number that cannot be dialed',
+        { to: '12', fromNumber: '+15555550102' },
+      ],
+    ])('answers 400 to a request with %s', async (_name, payload) => {
+      const response = await ask(payload);
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: 'Bad Request',
+        message: 'to and fromNumber must be phone numbers',
+      });
+      expect(flow.grantOutboundCall).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['line-not-allowed', 403, 'You are not allowed to call from that number'],
+      [
+        'line-unavailable',
+        409,
+        'The number you are calling from is not available',
+      ],
+      [
+        'line-without-voice',
+        409,
+        'The number you are calling from cannot place calls',
+      ],
+    ] as const)(
+      'answers a refusal (%s) with its status, sentence and code',
+      async (refusal, status, message) => {
+        flow.grantOutboundCall.mockResolvedValue({ ok: false, refusal });
+
+        const response = await ask({
+          to: '+15555550199',
+          fromNumber: '+15555550102',
+        });
+
+        expect(response.statusCode).toBe(status);
+        expect(response.json()).toEqual({
+          error: 'Refused',
+          message,
+          code: refusal,
+        });
+      },
+    );
   });
 
   describe('POST /api/voice/calls/:legUuid/hangup', () => {
