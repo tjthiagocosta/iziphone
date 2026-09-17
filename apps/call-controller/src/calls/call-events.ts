@@ -18,6 +18,8 @@ export interface CallEventPublisher {
   callEnded(event: Unstamped<'call:ended'>): Promise<void>;
   callMissed(event: Unstamped<'call:missed'>): Promise<void>;
   callTransferred(event: Unstamped<'call:transferred'>): Promise<void>;
+  callHeld(event: Unstamped<'call:held'>): Promise<void>;
+  callResumed(event: Unstamped<'call:resumed'>): Promise<void>;
   callParticipantStatus(
     event: Unstamped<'call:participant-status'>,
   ): Promise<void>;
@@ -51,6 +53,12 @@ export function createCallEventPublisher(
     },
     async callTransferred(event) {
       await publisher.callTransferred(stamped(event));
+    },
+    async callHeld(event) {
+      await publisher.callHeld(stamped(event));
+    },
+    async callResumed(event) {
+      await publisher.callResumed(stamped(event));
     },
     async callParticipantStatus(event) {
       await publisher.callParticipantStatus(stamped(event));

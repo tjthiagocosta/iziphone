@@ -22,6 +22,11 @@ export const IncomingCallSchema = z.object({
   departmentName: z.string().optional(),
   userId: z.string().optional(),
   userName: z.string().optional(),
+  /**
+   * Set when a teammate is handing this call over. `from` is still the
+   * customer; the softphone resolves the teammate's name from the directory.
+   */
+  transferredBy: z.object({ userId: z.string() }).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -31,6 +36,30 @@ export const CallEndedSchema = z.object({
   /** Seconds, when the call was answered. */
   duration: z.number().int().nonnegative().optional(),
   endedAt: IsoDateTimeSchema,
+});
+
+export const TransferFailureReasonSchema = z.enum([
+  /** The teammate turned the call down. */
+  'declined',
+  /** The teammate's softphone rang out. */
+  'no-answer',
+  /** The teammate could not be rung, or their leg dropped before answering. */
+  'unavailable',
+  /** The transferring agent took the call back. */
+  'cancelled',
+]);
+
+/**
+ * How a transfer ended. Sent to the agent who started it, because their
+ * softphone cannot tell a handover from a hangup when its leg is released,
+ * and to the teammate when the offer they were shown is no longer valid.
+ */
+export const CallTransferOutcomeSchema = z.object({
+  conversationUuid: z.string(),
+  targetUserId: z.string(),
+  status: z.enum(['completed', 'failed']),
+  /** Only with `failed`. */
+  reason: TransferFailureReasonSchema.optional(),
 });
 
 export const AuthRefreshedSchema = z.object({
@@ -74,6 +103,8 @@ export const AuthRefreshSchema = z.object({
 
 export type IncomingCall = z.infer<typeof IncomingCallSchema>;
 export type CallEnded = z.infer<typeof CallEndedSchema>;
+export type TransferFailureReason = z.infer<typeof TransferFailureReasonSchema>;
+export type CallTransferOutcome = z.infer<typeof CallTransferOutcomeSchema>;
 export type AuthRefreshed = z.infer<typeof AuthRefreshedSchema>;
 export type SocketError = z.infer<typeof SocketErrorSchema>;
 export type UserSocketRegistration = z.infer<

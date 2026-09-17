@@ -66,6 +66,21 @@ export const CallTransferredEventSchema = z.object({
 });
 export type CallTransferredEvent = z.infer<typeof CallTransferredEventSchema>;
 
+/** The shape of both `call:held` and `call:resumed`. */
+export const CallHoldEventSchema = z.object({
+  conversationUuid: z.string(),
+  /**
+   * The agent who pressed hold or resume, or who started the transfer that
+   * held the call. Absent when the controller resumed the call by itself,
+   * because a transfer was answered or fell through.
+   */
+  userId: z.string().optional(),
+  /** The leg that was held or resumed. */
+  legUuid: z.string().optional(),
+  timestamp: IsoDateTimeSchema,
+});
+export type CallHoldEvent = z.infer<typeof CallHoldEventSchema>;
+
 export const CallParticipantTypeSchema = z.enum([
   'agent',
   'external',
@@ -124,20 +139,6 @@ export type CallConversationMigratedEvent = z.infer<
 // Commands (API -> call controller)
 // ---------------------------------------------------------------------------
 
-export const CallTransferCommandSchema = z.object({
-  conversationUuid: z.string(),
-  targetUserId: z.string(),
-  initiatedBy: z.string(),
-});
-export type CallTransferCommand = z.infer<typeof CallTransferCommandSchema>;
-
-export const CallHoldCommandSchema = z.object({
-  conversationUuid: z.string(),
-  hold: z.boolean(),
-  initiatedBy: z.string(),
-});
-export type CallHoldCommand = z.infer<typeof CallHoldCommandSchema>;
-
 export const CallHangupCommandSchema = z.object({
   conversationUuid: z.string(),
   initiatedBy: z.string(),
@@ -154,6 +155,8 @@ export const EVENT_SCHEMAS = {
   'call:ended': CallEndedEventSchema,
   'call:missed': CallMissedEventSchema,
   'call:transferred': CallTransferredEventSchema,
+  'call:held': CallHoldEventSchema,
+  'call:resumed': CallHoldEventSchema,
   'call:participant-status': CallParticipantStatusEventSchema,
   'call:recording-ready': CallRecordingReadyEventSchema,
   'call:transcription-ready': CallTranscriptionReadyEventSchema,
@@ -161,8 +164,6 @@ export const EVENT_SCHEMAS = {
 } as const satisfies Record<EventChannel, z.ZodType>;
 
 export const COMMAND_SCHEMAS = {
-  'call:transfer': CallTransferCommandSchema,
-  'call:hold': CallHoldCommandSchema,
   'call:hangup': CallHangupCommandSchema,
 } as const satisfies Record<CommandChannel, z.ZodType>;
 

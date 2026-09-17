@@ -80,10 +80,9 @@ describe('publish', () => {
     const connection = { publish: vi.fn(async () => 1) };
 
     await expect(
-      createCommandPublisher(connection).hold({
+      createCommandPublisher(connection).hangup({
         conversationUuid: 'conv-1',
-        hold: 'yes' as unknown as boolean,
-        initiatedBy: 'user-1',
+        initiatedBy: 7 as unknown as string,
       }),
     ).rejects.toBeInstanceOf(ZodError);
     expect(connection.publish).not.toHaveBeenCalled();

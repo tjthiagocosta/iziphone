@@ -52,8 +52,12 @@ export interface CallState {
   answered: boolean;
   /** The caller has been sent to voicemail; nobody will pick up. */
   voicemail: boolean;
+  /** The other party is on hold, by the hold button or by a pending transfer. */
+  held?: boolean;
+  /** The teammate a transfer is ringing. Set for as long as it is undecided. */
   pendingTransferToUserId?: string;
   transferInitiatedBy?: string;
+  /** The leg of the agent handing the call over, until they leave. */
   transferOriginLegUuid?: string;
   /** A hangup was requested; remaining legs are being torn down. */
   ending: boolean;

@@ -8,6 +8,7 @@ import {
   type VoicemailReason,
   voicemailGreeting,
 } from '../routing/index.js';
+import { remoteLegOf } from './call-control.js';
 import {
   type CallParticipant,
   type CallState,
@@ -416,83 +417,72 @@ export class TelephonyService {
     return state;
   }
 
-  /** Hold or resume the remote party (the caller, or the number we dialed). */
+  /**
+   * Hold or resume the remote party (the caller, or the number we dialed).
+   * Resolves to whether they are on hold now, as Twilio answered, or to null
+   * when the call or the party is no longer there to be held.
+   */
   async holdConversation(
     conversationUuid: string,
     hold: boolean,
-  ): Promise<void> {
+  ): Promise<boolean | null> {
     const { config, client } = this.requireVoice();
-    const state = await this.requireCallState(conversationUuid);
-    const heldLegUuid =
-      state.direction === 'outbound'
-        ? state.externalLegUuid
-        : (state.callerLegUuid ?? state.externalLegUuid);
+    const state = await this.getCallState(conversationUuid);
+    const heldLegUuid = state ? remoteLegOf(state) : undefined;
 
-    if (!heldLegUuid) {
-      throw new Error(
-        `No remote leg is available for call ${conversationUuid}`,
-      );
+    if (!state || !heldLegUuid) {
+      return null;
     }
 
-    const conferenceSid = await this.ensureConferenceSid(state);
+    const conferenceSid = await this.findConferenceSid(state);
+    if (!conferenceSid) {
+      return null;
+    }
 
-    await client
-      .conferences(conferenceSid)
-      .participants(heldLegUuid)
-      .update({
-        hold,
-        holdUrl: hold ? config.holdAudioUrl : undefined,
-        holdMethod: hold ? 'GET' : undefined,
-      });
+    try {
+      const participant = await client
+        .conferences(conferenceSid)
+        .participants(heldLegUuid)
+        .update({
+          hold,
+          holdUrl: hold ? config.holdAudioUrl : undefined,
+          holdMethod: hold ? 'GET' : undefined,
+        });
+
+      return typeof participant.hold === 'boolean' ? participant.hold : hold;
+    } catch (error) {
+      // Twilio only manages participants who are still in the conference.
+      if (responseStatus(error) === 404) {
+        return null;
+      }
+      throw error;
+    }
   }
 
-  /** Ring another agent; the transfer completes when they join. */
+  /**
+   * Ring the teammate a transfer is pending for; it completes when they join.
+   * The call flow marks the transfer before it asks for the ring, and the
+   * teammate can turn it down from the offer alone, so the marker is read
+   * again here. Resolves to null, without ringing, when it is no longer set.
+   */
   async transferConversation(
     conversationUuid: string,
     targetUserId: string,
     initiatedBy: string,
-  ): Promise<string> {
+  ): Promise<string | null> {
     const state = await this.requireCallState(conversationUuid);
 
-    state.pendingTransferToUserId = targetUserId;
-    state.transferInitiatedBy = initiatedBy;
-    state.transferOriginLegUuid = state.agentLegUuid;
-    await this.saveCallState(state);
+    if (
+      state.pendingTransferToUserId !== targetUserId ||
+      state.transferInitiatedBy !== initiatedBy
+    ) {
+      return null;
+    }
 
     return this.createAgentLeg(conversationUuid, targetUserId, {
       fromNumber: state.to,
       ringingTimer: state.ringDuration,
     });
-  }
-
-  /** The transfer target answered: drop the agent who handed the call over. */
-  async completePendingTransfer(
-    conversationUuid: string,
-    answeredLegUuid: string,
-    answeredUserId: string,
-  ): Promise<CallState | null> {
-    const state = await this.requireCallState(conversationUuid);
-
-    if (state.pendingTransferToUserId !== answeredUserId) {
-      return null;
-    }
-
-    if (state.transferOriginLegUuid) {
-      await this.safeHangup(state.transferOriginLegUuid);
-      delete state.agentLegs[state.transferOriginLegUuid];
-    }
-
-    state.agentLegUuid = answeredLegUuid;
-    state.activeAgentUserId = answeredUserId;
-    state.pendingTransferToUserId = undefined;
-    state.transferInitiatedBy = undefined;
-    state.transferOriginLegUuid = undefined;
-    state.pendingAgentLegUuids = state.pendingAgentLegUuids.filter(
-      (legUuid) => legUuid !== answeredLegUuid,
-    );
-
-    await this.saveCallState(state);
-    return state;
   }
 
   /** Hang up one leg. Tolerates legs that are already gone; retries throttling. */
@@ -718,7 +708,8 @@ export class TelephonyService {
     return participant.callSid;
   }
 
-  private async ensureConferenceSid(state: CallState): Promise<string> {
+  /** The call's conference, or null when Twilio has none in progress for it. */
+  private async findConferenceSid(state: CallState): Promise<string | null> {
     if (state.conferenceSid) {
       return state.conferenceSid;
     }
@@ -731,9 +722,7 @@ export class TelephonyService {
     });
     const conferenceSid = conferences[0]?.sid;
     if (!conferenceSid) {
-      throw new Error(
-        `Active Twilio conference not found for ${state.conversationUuid}`,
-      );
+      return null;
     }
 
     state.conferenceSid = conferenceSid;

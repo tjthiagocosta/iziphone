@@ -67,8 +67,10 @@ export async function buildApp(config: ControllerConfig) {
     log: fastify.log,
     authSecret: config.authSecret,
     corsOrigins: config.corsOrigins,
+    // The flow is built from this realtime layer, so it is only named here;
+    // no softphone can reject a call before both exist.
     onCallRejected: (conversationUuid, userId) =>
-      telephony.requestConversationHangup(conversationUuid, userId),
+      flow.declineOfferedCall(conversationUuid, userId),
   });
   const flow = new CallFlow({
     telephony,
@@ -94,7 +96,7 @@ export async function buildApp(config: ControllerConfig) {
   });
 
   await fastify.register(healthRoutes, { telephony });
-  await fastify.register(voiceRoutes, { telephony });
+  await fastify.register(voiceRoutes, { telephony, flow });
   await fastify.register(voiceWebhookRoutes, { flow, telephony });
 
   return fastify;

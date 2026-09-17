@@ -139,6 +139,10 @@ export function createEventPublisher(connection: PublishConnection) {
       publish(connection, 'call:missed', payload),
     callTransferred: (payload: ChannelInput<'call:transferred'>) =>
       publish(connection, 'call:transferred', payload),
+    callHeld: (payload: ChannelInput<'call:held'>) =>
+      publish(connection, 'call:held', payload),
+    callResumed: (payload: ChannelInput<'call:resumed'>) =>
+      publish(connection, 'call:resumed', payload),
     callParticipantStatus: (payload: ChannelInput<'call:participant-status'>) =>
       publish(connection, 'call:participant-status', payload),
     callRecordingReady: (payload: ChannelInput<'call:recording-ready'>) =>
@@ -157,10 +161,6 @@ export type EventPublisher = ReturnType<typeof createEventPublisher>;
 /** Typed publishers for the commands the API sends to the call controller. */
 export function createCommandPublisher(connection: PublishConnection) {
   return {
-    transfer: (payload: ChannelInput<'call:transfer'>) =>
-      publish(connection, 'call:transfer', payload),
-    hold: (payload: ChannelInput<'call:hold'>) =>
-      publish(connection, 'call:hold', payload),
     hangup: (payload: ChannelInput<'call:hangup'>) =>
       publish(connection, 'call:hangup', payload),
   };

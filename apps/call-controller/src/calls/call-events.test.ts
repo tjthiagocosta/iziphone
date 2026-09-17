@@ -28,6 +28,28 @@ describe('createCallEventPublisher', () => {
     vi.useRealTimers();
   });
 
+  test('publishes a hold and a resume on their own channels', async () => {
+    const publish = vi.fn(async (_channel: string, _message: string) => 1);
+    const events = createCallEventPublisher({ publish });
+    const event = {
+      conversationUuid: 'CAcall1',
+      userId: 'user-1',
+      legUuid: 'CAcall1',
+    };
+
+    await events.callHeld(event);
+    await events.callResumed(event);
+
+    expect(publish.mock.calls.map(([channel]) => channel)).toEqual([
+      'call:held',
+      'call:resumed',
+    ]);
+    expect(JSON.parse(String(publish.mock.calls[0]?.[1]))).toMatchObject({
+      ...event,
+      timestamp: expect.any(String),
+    });
+  });
+
   test('rejects an event that does not match its schema', async () => {
     const publish = vi.fn(async () => 1);
     const events = createCallEventPublisher({ publish });

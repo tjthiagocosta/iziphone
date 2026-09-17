@@ -1,12 +1,26 @@
-import type { Role, VoiceHangupResponse, VoiceTokenResponse } from '@repo/dto';
+import {
+  type CallControlRefusal,
+  HoldCallSchema,
+  type Role,
+  TransferCallSchema,
+  type VoiceHangupResponse,
+  type VoiceHoldResponse,
+  type VoiceTokenResponse,
+  type VoiceTransferCancelResponse,
+  type VoiceTransferResponse,
+} from '@repo/dto';
 import { verifyJWT } from '@repo/events';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
+import { planHangup, REFUSAL_MESSAGES } from './call-control.js';
+import type { CallFlow } from './call-flow.js';
 import type { TelephonyService } from './telephony.service.js';
 
 /*
  * What the softphone calls directly: a Twilio access token to register the
- * browser as a client, and an authoritative hangup for a leg it is on.
- * Requests carry the realtime JWT the API issued.
+ * browser, and the controls an agent has over a call they are on: hang up,
+ * hold and transfer. Requests carry the realtime JWT the API issued and name
+ * the agent's own leg, so each one is checked against the live call and
+ * answered with what actually happened to it.
  */
 
 interface AuthenticatedUser {
@@ -32,11 +46,28 @@ export interface VoiceRouteOptions {
     | 'safeHangup'
     | 'requestConversationHangup'
   >;
+  flow: Pick<
+    CallFlow,
+    'holdCall' | 'transferCall' | 'cancelTransfer' | 'declineOfferedCall'
+  >;
 }
+
+const REFUSAL_STATUS: Record<CallControlRefusal, number> = {
+  'leg-not-found': 404,
+  'not-on-call': 403,
+  'not-connected': 409,
+  'transfer-pending': 409,
+  'no-transfer-pending': 409,
+  'transfer-to-self': 409,
+  'target-on-call': 409,
+  'target-offline': 409,
+  'call-gone': 409,
+  'provider-error': 502,
+};
 
 export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
   fastify,
-  { telephony },
+  { telephony, flow },
 ) => {
   const requireAuth = async (request: FastifyRequest, reply: FastifyReply) => {
     const header = request.headers.authorization;
@@ -109,6 +140,31 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
         return { success: true, legUuid } satisfies VoiceHangupResponse;
       }
 
+      // Not every hangup ends the call: while a transfer rings, the other
+      // party stays on the line whoever of the two agents leaves.
+      const plan = planHangup(state, { userId: user.id, legUuid });
+      if (plan !== 'end-call') {
+        // The active agent may name a leg that is not theirs; what they
+        // release is still their own.
+        const ownLegUuid = ownsLeg ? legUuid : state.agentLegUuid;
+        if (plan === 'decline-transfer') {
+          await flow.declineOfferedCall(state.conversationUuid, user.id);
+        } else if (ownLegUuid) {
+          await telephony.safeHangup(ownLegUuid);
+        }
+
+        request.log.info(
+          { userId: user.id, legUuid, plan },
+          'Released a leg without ending the call',
+        );
+
+        return {
+          success: true,
+          legUuid,
+          conversationUuid: state.conversationUuid,
+        } satisfies VoiceHangupResponse;
+      }
+
       const ending = await telephony.requestConversationHangup(
         state.conversationUuid,
         user.id,
@@ -130,7 +186,104 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
       } satisfies VoiceHangupResponse;
     },
   );
+
+  fastify.post<{ Params: { legUuid: string } }>(
+    '/api/voice/calls/:legUuid/hold',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const user = requireUser(request);
+      const { legUuid } = request.params;
+
+      const body = HoldCallSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Bad Request', message: 'hold must be a boolean' });
+      }
+
+      const result = await flow.holdCall(
+        { userId: user.id, legUuid },
+        body.data.hold,
+      );
+      if (!result.ok) {
+        return refuse(reply, result.refusal);
+      }
+
+      request.log.info(
+        {
+          userId: user.id,
+          conversationUuid: result.conversationUuid,
+          held: result.held,
+        },
+        'Changed the hold on a call',
+      );
+
+      return {
+        success: true,
+        conversationUuid: result.conversationUuid,
+        held: result.held,
+      } satisfies VoiceHoldResponse;
+    },
+  );
+
+  fastify.post<{ Params: { legUuid: string } }>(
+    '/api/voice/calls/:legUuid/transfer',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const user = requireUser(request);
+      const { legUuid } = request.params;
+
+      const body = TransferCallSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply
+          .status(400)
+          .send({ error: 'Bad Request', message: 'targetUserId is required' });
+      }
+
+      const result = await flow.transferCall(
+        { userId: user.id, legUuid },
+        body.data.targetUserId,
+      );
+      if (!result.ok) {
+        return refuse(reply, result.refusal);
+      }
+
+      return {
+        success: true,
+        conversationUuid: result.conversationUuid,
+        targetUserId: result.targetUserId,
+      } satisfies VoiceTransferResponse;
+    },
+  );
+
+  fastify.post<{ Params: { legUuid: string } }>(
+    '/api/voice/calls/:legUuid/transfer/cancel',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const user = requireUser(request);
+      const { legUuid } = request.params;
+
+      const result = await flow.cancelTransfer({ userId: user.id, legUuid });
+      if (!result.ok) {
+        return refuse(reply, result.refusal);
+      }
+
+      return {
+        success: true,
+        conversationUuid: result.conversationUuid,
+      } satisfies VoiceTransferCancelResponse;
+    },
+  );
 };
+
+/** Every refusal has the same shape: a status, a sentence and its code. */
+function refuse(reply: FastifyReply, refusal: CallControlRefusal) {
+  return reply.status(REFUSAL_STATUS[refusal]).send({
+    error: 'Refused',
+    message: REFUSAL_MESSAGES[refusal],
+    code: refusal,
+  });
+}
 
 /** Only reachable behind `requireAuth`, which always sets the user. */
 function requireUser(request: FastifyRequest): AuthenticatedUser {

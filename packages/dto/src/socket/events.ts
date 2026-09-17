@@ -5,6 +5,7 @@ import type {
   CallAccepted,
   CallEnded,
   CallRejected,
+  CallTransferOutcome,
   IncomingCall,
   SocketError,
   UserSocketRegistration,
@@ -19,6 +20,7 @@ import type {
 export interface ServerToClientEvents {
   incoming_call: (data: IncomingCall) => void;
   call_ended: (data: CallEnded) => void;
+  call_transfer_outcome: (data: CallTransferOutcome) => void;
   'auth:refreshed': (data: AuthRefreshed) => void;
   error: (data: SocketError) => void;
 }

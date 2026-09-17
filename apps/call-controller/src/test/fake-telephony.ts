@@ -42,6 +42,10 @@ export function createFakeTwilioClient() {
   }> = [];
   const failures = new Map<string, unknown>();
   let beforeCreate: (() => Promise<void>) | undefined;
+  let beforeHold: (() => Promise<void>) | undefined;
+  let holdFailure: unknown;
+  let holdAnswer: boolean | undefined;
+  let conferenceSids = ['CFconference1'];
 
   const client = {
     api: {
@@ -60,8 +64,13 @@ export function createFakeTwilioClient() {
         participants: Object.assign(
           (legUuid: string) => ({
             update: async (params: Record<string, unknown>) => {
+              await beforeHold?.();
+              if (holdFailure) throw holdFailure;
               participantUpdates.push({ conferenceSid, legUuid, params });
-              return {};
+              return {
+                callSid: legUuid,
+                hold: holdAnswer ?? params.hold === true,
+              };
             },
           }),
           {
@@ -76,7 +85,7 @@ export function createFakeTwilioClient() {
         ),
       }),
       {
-        list: vi.fn(async () => [{ sid: 'CFconference1' }]),
+        list: vi.fn(async () => conferenceSids.map((sid) => ({ sid }))),
       },
     ),
   };
@@ -92,6 +101,24 @@ export function createFakeTwilioClient() {
     whileCreating(hook: () => Promise<void>) {
       beforeCreate = hook;
     },
+    /** Run something (a decline, say) while Twilio is holding a participant. */
+    whileHolding(hook: () => Promise<void>) {
+      beforeHold = hook;
+    },
+    /** Make holding and resuming throw, or work again with `undefined`. */
+    failHoldWith(error: unknown) {
+      holdFailure = error;
+    },
+    /** Make Twilio answer every hold and resume with this flag, whatever was asked. */
+    answerHoldsWith(hold: boolean) {
+      holdAnswer = hold;
+    },
+    /** Twilio lists no conference in progress, as once everybody has left. */
+    endConference() {
+      conferenceSids = [];
+    },
+    /** The hold flag of every participant update, in order. */
+    holds: () => participantUpdates.map((update) => update.params.hold),
     /** Make the next operation on a leg id or dial target throw. */
     failWith(target: string, error: unknown) {
       failures.set(target, error);

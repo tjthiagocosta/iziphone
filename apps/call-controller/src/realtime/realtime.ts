@@ -1,5 +1,5 @@
 import type { Server as HttpServer } from 'node:http';
-import type { IncomingCall } from '@repo/dto';
+import type { CallTransferOutcome, IncomingCall } from '@repo/dto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
 import {
@@ -23,6 +23,11 @@ export interface Realtime {
   trackCallParticipants(
     conversationUuid: string,
     userIds: string[],
+  ): Promise<void>;
+  /** Tell these users' softphones how a transfer ended. */
+  notifyTransferOutcome(
+    userIds: string[],
+    outcome: CallTransferOutcome,
   ): Promise<void>;
   /** Start listening for `call:ended`; call once the app is ready. */
   start(): Promise<void>;
@@ -73,6 +78,13 @@ export function createRealtime(deps: RealtimeDependencies): Realtime {
 
     trackCallParticipants(conversationUuid, userIds) {
       return presence.addCallParticipants(conversationUuid, userIds);
+    },
+
+    async notifyTransferOutcome(userIds, outcome) {
+      const sockets = await presence.socketIdsOf(userIds);
+      for (const socketId of sockets.values()) {
+        server.io.to(socketId).emit('call_transfer_outcome', outcome);
+      }
     },
 
     async start() {

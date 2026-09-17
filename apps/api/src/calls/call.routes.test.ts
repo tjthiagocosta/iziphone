@@ -76,8 +76,6 @@ const callDto = {
 describe('callRoutes', () => {
   let app: FastifyInstance;
 
-  const transfer = vi.fn(async () => 1);
-  const hold = vi.fn(async () => 1);
   const hangup = vi.fn(async () => 1);
   const findMany = vi.fn(async (): Promise<unknown[]> => []);
   const count = vi.fn(async () => 0);
@@ -88,8 +86,6 @@ describe('callRoutes', () => {
 
   async function buildApp(user: AuthUser = defaultAuthUser) {
     vi.spyOn(repoEvents, 'createCommandPublisher').mockReturnValue({
-      transfer,
-      hold,
       hangup,
     });
 
@@ -119,52 +115,42 @@ describe('callRoutes', () => {
     await app.close();
   });
 
-  test.each([
-    {
-      name: 'publishes a transfer command for a call the agent can see',
-      url: '/api/calls/conversation-1/transfer',
-      payload: { targetUserId: 'user-2' },
-      expectedCall: () =>
-        expect(transfer).toHaveBeenCalledWith({
-          conversationUuid: 'conversation-1',
-          targetUserId: 'user-2',
-          initiatedBy: 'user-7',
-        }),
-      expectedBody: { success: true, message: 'Transfer command sent' },
-    },
-    {
-      name: 'publishes a hold command for a call the agent can see',
-      url: '/api/calls/conversation-1/hold',
-      payload: { hold: true },
-      expectedCall: () =>
-        expect(hold).toHaveBeenCalledWith({
-          conversationUuid: 'conversation-1',
-          hold: true,
-          initiatedBy: 'user-7',
-        }),
-      expectedBody: { success: true, message: 'Hold command sent' },
-    },
-    {
-      name: 'publishes a hangup command for a call the agent can see',
+  test('publishes a hangup command for a call the agent can see', async () => {
+    const response = await app.inject({
+      method: 'POST',
       url: '/api/calls/conversation-1/hangup',
-      payload: undefined,
-      expectedCall: () =>
-        expect(hangup).toHaveBeenCalledWith({
-          conversationUuid: 'conversation-1',
-          initiatedBy: 'user-7',
-        }),
-      expectedBody: { success: true, message: 'Hangup command sent' },
-    },
-  ])('$name', async ({ url, payload, expectedCall, expectedBody }) => {
-    const response = await app.inject({ method: 'POST', url, payload });
+    });
 
     expect(response.statusCode).toBe(200);
     expect(findFirst).toHaveBeenCalledWith({
       where: { conversationUuid: 'conversation-1', ...agentScope },
       include,
     });
-    expectedCall();
-    expect(response.json()).toEqual(expectedBody);
+    expect(hangup).toHaveBeenCalledWith({
+      conversationUuid: 'conversation-1',
+      initiatedBy: 'user-7',
+    });
+    expect(response.json()).toEqual({
+      success: true,
+      message: 'Hangup command sent',
+    });
+  });
+
+  // Seeing a call in the history is not being on it. The softphone asks the
+  // call controller, which checks the request against the live call.
+  test.each([
+    { action: 'hold', payload: { hold: true } },
+    { action: 'transfer', payload: { targetUserId: 'user-2' } },
+  ])('has no $action command any more', async ({ action, payload }) => {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/calls/conversation-1/${action}`,
+      payload,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(findFirst).not.toHaveBeenCalled();
+    expect(hangup).not.toHaveBeenCalled();
   });
 
   test('answers 404 to a command on a call outside the agent scope', async () => {
@@ -178,18 +164,6 @@ describe('callRoutes', () => {
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: 'Call not found' });
     expect(hangup).not.toHaveBeenCalled();
-  });
-
-  test('rejects a transfer without a target user before touching the database', async () => {
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/calls/conversation-1/transfer',
-      payload: {},
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(findFirst).not.toHaveBeenCalled();
-    expect(transfer).not.toHaveBeenCalled();
   });
 
   test('lists only the calls in the agent scope with default pagination', async () => {

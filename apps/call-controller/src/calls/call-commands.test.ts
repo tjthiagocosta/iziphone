@@ -30,11 +30,7 @@ const log = createFakeLogger();
 describe('startCallCommandSubscriber', () => {
   test('subscribes to the command channels on a dedicated connection', async () => {
     const { redis, connection } = buildFakeRedis();
-    const telephony = {
-      transferConversation: vi.fn(),
-      holdConversation: vi.fn(),
-      requestConversationHangup: vi.fn(),
-    };
+    const telephony = { requestConversationHangup: vi.fn() };
 
     const subscriber = await startCallCommandSubscriber({
       redis,
@@ -42,36 +38,18 @@ describe('startCallCommandSubscriber', () => {
       log,
     });
 
-    expect(connection.subscribe).toHaveBeenCalledWith(
-      'call:transfer',
-      'call:hold',
-      'call:hangup',
-    );
+    expect(connection.subscribe).toHaveBeenCalledWith('call:hangup');
 
     await subscriber.close();
     expect(connection.quit).toHaveBeenCalled();
   });
 
-  test('routes each command to the telephony service', async () => {
+  test('routes a hangup to the telephony service', async () => {
     const { redis, deliver } = buildFakeRedis();
-    const telephony = {
-      transferConversation: vi.fn(async () => 'CAagent2'),
-      holdConversation: vi.fn(async () => undefined),
-      requestConversationHangup: vi.fn(async () => null),
-    };
+    const telephony = { requestConversationHangup: vi.fn(async () => null) };
 
     await startCallCommandSubscriber({ redis, telephony, log });
 
-    deliver('call:transfer', {
-      conversationUuid: 'CAcall1',
-      targetUserId: 'user-2',
-      initiatedBy: 'user-1',
-    });
-    deliver('call:hold', {
-      conversationUuid: 'CAcall1',
-      hold: true,
-      initiatedBy: 'user-1',
-    });
     deliver('call:hangup', {
       conversationUuid: 'CAcall1',
       initiatedBy: 'user-1',
@@ -80,31 +58,41 @@ describe('startCallCommandSubscriber', () => {
       expect(telephony.requestConversationHangup).toHaveBeenCalled();
     });
 
-    expect(telephony.transferConversation).toHaveBeenCalledWith(
-      'CAcall1',
-      'user-2',
-      'user-1',
-    );
-    expect(telephony.holdConversation).toHaveBeenCalledWith('CAcall1', true);
     expect(telephony.requestConversationHangup).toHaveBeenCalledWith(
       'CAcall1',
       'user-1',
     );
   });
 
-  test('drops a command that does not match its schema', async () => {
+  test('no longer acts on hold or transfer commands: nothing checks them against the call', async () => {
     const { redis, deliver } = buildFakeRedis();
-    const telephony = {
-      transferConversation: vi.fn(),
-      holdConversation: vi.fn(),
-      requestConversationHangup: vi.fn(),
-    };
+    const telephony = { requestConversationHangup: vi.fn() };
 
     await startCallCommandSubscriber({ redis, telephony, log });
-    deliver('call:hold', { conversationUuid: 'CAcall1' });
+    deliver('call:hold', {
+      conversationUuid: 'CAcall1',
+      hold: true,
+      initiatedBy: 'user-1',
+    });
+    deliver('call:transfer', {
+      conversationUuid: 'CAcall1',
+      targetUserId: 'user-2',
+      initiatedBy: 'user-1',
+    });
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(telephony.holdConversation).not.toHaveBeenCalled();
+    expect(telephony.requestConversationHangup).not.toHaveBeenCalled();
+  });
+
+  test('drops a command that does not match its schema', async () => {
+    const { redis, deliver } = buildFakeRedis();
+    const telephony = { requestConversationHangup: vi.fn() };
+
+    await startCallCommandSubscriber({ redis, telephony, log });
+    deliver('call:hangup', { conversationUuid: 'CAcall1' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(telephony.requestConversationHangup).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
   });
 });

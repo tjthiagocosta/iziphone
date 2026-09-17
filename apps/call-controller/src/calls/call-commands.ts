@@ -4,13 +4,15 @@ import type { Redis } from 'ioredis';
 import type { TelephonyService } from './telephony.service.js';
 
 /*
- * The API asks this service to act on live calls over Redis: transfer, hold
- * and hang up. Each command is validated by @repo/events before it gets here.
+ * The API asks this service to hang up a live call over Redis. The command is
+ * validated by @repo/events before it gets here. Hold and transfer do not
+ * come this way: the softphone asks for them on the voice routes, where the
+ * request is checked against the call and answered with what happened.
  */
 
 export type CallCommandTarget = Pick<
   TelephonyService,
-  'transferConversation' | 'holdConversation' | 'requestConversationHangup'
+  'requestConversationHangup'
 >;
 
 export interface CallCommandSubscriber {
@@ -26,16 +28,6 @@ export async function startCallCommandSubscriber(deps: {
   const connection = deps.redis.duplicate();
 
   await createChannelSubscriber(connection, deps.log)
-    .on(CHANNELS.CALL_TRANSFER, (command) =>
-      deps.telephony.transferConversation(
-        command.conversationUuid,
-        command.targetUserId,
-        command.initiatedBy,
-      ),
-    )
-    .on(CHANNELS.CALL_HOLD, (command) =>
-      deps.telephony.holdConversation(command.conversationUuid, command.hold),
-    )
     .on(CHANNELS.CALL_HANGUP, (command) =>
       deps.telephony.requestConversationHangup(
         command.conversationUuid,

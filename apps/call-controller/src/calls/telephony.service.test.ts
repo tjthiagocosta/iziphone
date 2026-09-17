@@ -250,8 +250,9 @@ describe('TelephonyService', () => {
     const { telephony, twilio } = createFakeTelephony();
     await telephony.saveCallState(inboundState({ answered: true }));
 
-    await telephony.holdConversation('CAcall1', true);
+    const held = await telephony.holdConversation('CAcall1', true);
 
+    expect(held).toBe(true);
     expect(twilio.participantUpdates).toEqual([
       {
         conferenceSid: 'CFconference1',
@@ -268,7 +269,60 @@ describe('TelephonyService', () => {
     });
   });
 
-  test('a transfer rings the target and completes when they answer', async () => {
+  test('resumes without hold audio, and holds the number dialed on an outbound call', async () => {
+    const { telephony, twilio } = createFakeTelephony();
+    await telephony.saveCallState(
+      inboundState({
+        direction: 'outbound',
+        callerLegUuid: undefined,
+        externalLegUuid: 'CAexternal1',
+        answered: true,
+      }),
+    );
+
+    const held = await telephony.holdConversation('CAcall1', false);
+
+    expect(held).toBe(false);
+    expect(twilio.participantUpdates).toEqual([
+      {
+        conferenceSid: 'CFconference1',
+        legUuid: 'CAexternal1',
+        params: { hold: false, holdUrl: undefined, holdMethod: undefined },
+      },
+    ]);
+  });
+
+  test('a hold answers null when the call or the party is gone, and throws what else Twilio refuses', async () => {
+    const { telephony, twilio } = createFakeTelephony();
+
+    await expect(telephony.holdConversation('CAcall1', true)).resolves.toBe(
+      null,
+    );
+
+    await telephony.saveCallState(inboundState({ answered: true }));
+    twilio.failHoldWith({ status: 404 });
+    await expect(telephony.holdConversation('CAcall1', true)).resolves.toBe(
+      null,
+    );
+
+    twilio.failHoldWith({ status: 500 });
+    await expect(
+      telephony.holdConversation('CAcall1', true),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+
+  test('a hold answers null when the conference of the call is already over', async () => {
+    const { telephony, twilio } = createFakeTelephony();
+    await telephony.saveCallState(inboundState({ answered: true }));
+    twilio.endConference();
+
+    await expect(telephony.holdConversation('CAcall1', true)).resolves.toBe(
+      null,
+    );
+    expect(twilio.participantUpdates).toEqual([]);
+  });
+
+  test('a transfer rings the teammate only while it is still pending for them', async () => {
     const { telephony, twilio } = createFakeTelephony();
     await telephony.saveCallState(
       inboundState({
@@ -279,24 +333,41 @@ describe('TelephonyService', () => {
       }),
     );
 
+    await expect(
+      telephony.transferConversation('CAcall1', 'user-2', 'user-1'),
+    ).resolves.toBeNull();
+    expect(twilio.created).toEqual([]);
+
+    await telephony.saveCallState(
+      inboundState({
+        answered: true,
+        agentLegUuid: 'CAagent1',
+        activeAgentUserId: 'user-1',
+        agentLegs: { CAagent1: 'user-1' },
+        pendingTransferToUserId: 'user-2',
+        transferInitiatedBy: 'user-1',
+        transferOriginLegUuid: 'CAagent1',
+      }),
+    );
+
     const targetLeg = await telephony.transferConversation(
       'CAcall1',
       'user-2',
       'user-1',
     );
-    const completed = await telephony.completePendingTransfer(
-      'CAcall1',
-      targetLeg,
-      'user-2',
-    );
 
-    expect(completed).toMatchObject({
-      agentLegUuid: targetLeg,
-      activeAgentUserId: 'user-2',
-      pendingTransferToUserId: undefined,
-      agentLegs: { [targetLeg]: 'user-2' },
+    expect(targetLeg).toBe('CAleg1');
+    expect(twilio.created).toEqual([
+      expect.objectContaining({
+        to: expect.stringMatching(/^client:user-2\?/),
+        from: '+15555550102',
+      }),
+    ]);
+    await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+      agentLegs: { CAagent1: 'user-1', CAleg1: 'user-2' },
+      pendingAgentLegUuids: ['CAleg1'],
+      pendingTransferToUserId: 'user-2',
     });
-    expect(twilio.hangups()).toEqual(['CAagent1']);
   });
 
   test('conference TwiML joins the caller and reports back to this service', () => {

@@ -1,9 +1,4 @@
-import {
-  CallConversationParamsSchema,
-  CallListQuerySchema,
-  HoldCallSchema,
-  TransferCallSchema,
-} from '@repo/dto';
+import { CallConversationParamsSchema, CallListQuerySchema } from '@repo/dto';
 import { createCommandPublisher } from '@repo/events';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { authenticatedUser } from '../auth/index.js';
@@ -11,9 +6,10 @@ import { CallHistoryService } from './call-history.service.js';
 import { loadCallScope } from './call-scope.js';
 
 /**
- * Call history reads from the database; call commands are published to
- * Redis for the call controller to execute. Both are limited to the calls
- * the user may see (see call-scope).
+ * Call history reads from the database; a hangup is published to Redis for
+ * the call controller to execute. Both are limited to the calls the user may
+ * see (see call-scope). Hold and transfer are not here: only the controller
+ * knows who is on a live call, so the softphone asks it directly.
  */
 export const callRoutes: FastifyPluginAsync = async (fastify) => {
   const commands = createCommandPublisher(fastify.redis);
@@ -37,63 +33,6 @@ export const callRoutes: FastifyPluginAsync = async (fastify) => {
 
     return { user, call };
   }
-
-  fastify.post(
-    '/api/calls/:conversationUuid/transfer',
-    { preHandler: [fastify.requireAuth] },
-    async (request, reply) => {
-      const { targetUserId } = TransferCallSchema.parse(request.body);
-      const visible = await visibleCall(request, reply);
-      if (!visible) return;
-
-      fastify.log.info(
-        {
-          conversationUuid: visible.call.conversationUuid,
-          targetUserId,
-          initiatedBy: visible.user.id,
-        },
-        'Publishing transfer command',
-      );
-
-      await commands.transfer({
-        conversationUuid: visible.call.conversationUuid,
-        targetUserId,
-        initiatedBy: visible.user.id,
-      });
-
-      return { success: true, message: 'Transfer command sent' };
-    },
-  );
-
-  fastify.post(
-    '/api/calls/:conversationUuid/hold',
-    { preHandler: [fastify.requireAuth] },
-    async (request, reply) => {
-      const { hold } = HoldCallSchema.parse(request.body);
-      const visible = await visibleCall(request, reply);
-      if (!visible) return;
-
-      fastify.log.info(
-        {
-          conversationUuid: visible.call.conversationUuid,
-          hold,
-          initiatedBy: visible.user.id,
-        },
-        'Publishing hold command',
-      );
-
-      await commands.hold({
-        conversationUuid: visible.call.conversationUuid,
-        hold,
-        initiatedBy: visible.user.id,
-      });
-
-      return {
-        success: true,
-        message: hold ? 'Hold command sent' : 'Resume command sent',
-      };
-    },
-  );
 
   fastify.post(
     '/api/calls/:conversationUuid/hangup',

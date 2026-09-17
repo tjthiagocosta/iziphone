@@ -5,7 +5,6 @@ import {
   TelephonyProviderSchema,
 } from '../common/domain.js';
 import {
-  EntityIdSchema,
   IsoDateTimeSchema,
   normalizePhoneNumber,
   QueryBooleanSchema,
@@ -70,14 +69,6 @@ export const CallListQuerySchema = z.object({
   status: CallStatusFilterSchema.optional(),
   direction: CallDirectionSchema.optional(),
   hasVoicemail: QueryBooleanSchema.optional(),
-});
-
-export const TransferCallSchema = z.object({
-  targetUserId: EntityIdSchema,
-});
-
-export const HoldCallSchema = z.object({
-  hold: z.boolean(),
 });
 
 export const CallCommandResponseSchema = z.object({
@@ -148,8 +139,6 @@ export type CallConversationParams = z.infer<
   typeof CallConversationParamsSchema
 >;
 export type CallListQuery = z.infer<typeof CallListQuerySchema>;
-export type TransferCall = z.infer<typeof TransferCallSchema>;
-export type HoldCall = z.infer<typeof HoldCallSchema>;
 export type CallCommandResponse = z.infer<typeof CallCommandResponseSchema>;
 export type CallContact = z.infer<typeof CallContactSchema>;
 export type CallLine = z.infer<typeof CallLineSchema>;
