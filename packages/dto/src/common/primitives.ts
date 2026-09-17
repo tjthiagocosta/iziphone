@@ -66,6 +66,19 @@ export function normalizePhoneNumber(value: string): string | null {
   return null;
 }
 
+declare const e164PhoneNumber: unique symbol;
+
+/**
+ * A string proven to be E.164. Only {@link toE164PhoneNumber} makes one, so a
+ * field of this type cannot be handed a user id or whatever a client sent.
+ */
+export type E164PhoneNumber = string & { readonly [e164PhoneNumber]: true };
+
+/** {@link normalizePhoneNumber}, keeping the proof in the type. */
+export function toE164PhoneNumber(value: string): E164PhoneNumber | null {
+  return normalizePhoneNumber(value) as E164PhoneNumber | null;
+}
+
 /** IANA time zone name accepted by the runtime's `Intl` implementation. */
 export const TimeZoneSchema = z
   .string()

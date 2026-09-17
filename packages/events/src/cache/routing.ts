@@ -86,10 +86,19 @@ export type CachedRoutingSettings = z.infer<typeof CachedRoutingSettingsSchema>;
  * How to route a called number. `DEPARTMENT` entries carry the department
  * fields and `USER` entries the user fields; `userIds` is filled either way so
  * the ring logic has one place to look.
+ *
+ * The same entry says who may place a call from the number: the people it
+ * rings, as long as the number itself does voice.
  */
 export const CachedRoutingSchema = z.object({
   type: RoutingTargetTypeSchema,
   userIds: z.array(z.string()),
+  /**
+   * The number places and receives voice calls. Entries written before the
+   * flag existed do not say and are hits until their TTL ends, so only an
+   * explicit `false` keeps an outbound call from leaving from the number.
+   */
+  voiceEnabled: z.boolean().optional(),
   orderedUsers: z.array(OrderedUserSchema).optional(),
   settings: CachedRoutingSettingsSchema.optional(),
   departmentId: z.string().optional(),

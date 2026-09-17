@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   CallDirectionSchema,
   CallStatusSchema,
+  OwnerTypeSchema,
   TelephonyProviderSchema,
 } from '../common/domain.js';
 import {
@@ -98,6 +99,25 @@ export const CallLineSchema = z.object({
   label: z.string().nullable(),
 });
 
+/**
+ * A number the current user may place calls from: their own, or one of a
+ * department they belong to. It carries the fields a message sender does, so
+ * the softphone names both the same way.
+ */
+export const OutboundCallLineSchema = z.object({
+  id: z.string(),
+  phoneNumber: z.string(),
+  label: z.string().nullable(),
+  ownerType: OwnerTypeSchema,
+  ownerId: z.string(),
+  ownerName: z.string(),
+  isPrimary: z.boolean(),
+});
+
+export const OutboundCallLinesResponseSchema = z.object({
+  lines: z.array(OutboundCallLineSchema),
+});
+
 export const CallRecordSchema = z.object({
   id: z.string(),
   conversationUuid: z.string(),
@@ -142,5 +162,9 @@ export type CallListQuery = z.infer<typeof CallListQuerySchema>;
 export type CallCommandResponse = z.infer<typeof CallCommandResponseSchema>;
 export type CallContact = z.infer<typeof CallContactSchema>;
 export type CallLine = z.infer<typeof CallLineSchema>;
+export type OutboundCallLine = z.infer<typeof OutboundCallLineSchema>;
+export type OutboundCallLinesResponse = z.infer<
+  typeof OutboundCallLinesResponseSchema
+>;
 export type CallRecord = z.infer<typeof CallRecordSchema>;
 export type CallListResponse = z.infer<typeof CallListResponseSchema>;

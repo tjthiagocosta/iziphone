@@ -2,6 +2,9 @@ import { describe, expect, test } from 'vitest';
 import {
   CallControlRefusalSchema,
   HoldCallSchema,
+  OutboundGrantRefusalSchema,
+  OutboundGrantRequestSchema,
+  OutboundGrantResponseSchema,
   TransferCallSchema,
   VoiceHangupResponseSchema,
   VoiceHoldResponseSchema,
@@ -36,6 +39,67 @@ describe('VoiceTokenResponseSchema', () => {
         provider: 'vonage',
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('outbound grant', () => {
+  test('a request names a number as a person types it and a line in E.164', () => {
+    expect(
+      OutboundGrantRequestSchema.parse({
+        to: '(555) 555-0199',
+        fromNumber: '+15555550102',
+      }),
+    ).toEqual({ to: '(555) 555-0199', fromNumber: '+15555550102' });
+  });
+
+  test('a request is refused without both, or with a line that is not E.164', () => {
+    expect(
+      OutboundGrantRequestSchema.safeParse({ fromNumber: '+15555550102' })
+        .success,
+    ).toBe(false);
+    expect(
+      OutboundGrantRequestSchema.safeParse({ to: '+15555550199' }).success,
+    ).toBe(false);
+    expect(
+      OutboundGrantRequestSchema.safeParse({
+        to: '+15555550199',
+        fromNumber: '555-0102',
+      }).success,
+    ).toBe(false);
+    expect(
+      OutboundGrantRequestSchema.safeParse({
+        to: '12',
+        fromNumber: '+15555550102',
+      }).success,
+    ).toBe(false);
+  });
+
+  test('an answer carries the grant and how long it lasts', () => {
+    expect(
+      OutboundGrantResponseSchema.parse({
+        grant: 'a-grant-token',
+        expiresInSeconds: 60,
+      }),
+    ).toEqual({ grant: 'a-grant-token', expiresInSeconds: 60 });
+    expect(
+      OutboundGrantResponseSchema.safeParse({ grant: '', expiresInSeconds: 60 })
+        .success,
+    ).toBe(false);
+    expect(
+      OutboundGrantResponseSchema.safeParse({
+        grant: 'a-grant-token',
+        expiresInSeconds: 0,
+      }).success,
+    ).toBe(false);
+  });
+
+  test('refusal codes are a closed set', () => {
+    expect(OutboundGrantRefusalSchema.parse('line-not-allowed')).toBe(
+      'line-not-allowed',
+    );
+    expect(OutboundGrantRefusalSchema.safeParse('line-missing').success).toBe(
+      false,
+    );
   });
 });
 

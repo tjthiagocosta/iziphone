@@ -7,6 +7,7 @@ import {
   QueryBooleanSchema,
   TimeOfDaySchema,
   TimeZoneSchema,
+  toE164PhoneNumber,
 } from './primitives.js';
 
 describe('E164PhoneNumberSchema', () => {
@@ -120,5 +121,16 @@ describe('normalizePhoneNumber', () => {
     '+1555555019923456',
   ])('returns null for %s', (input) => {
     expect(normalizePhoneNumber(input)).toBeNull();
+  });
+});
+
+describe('toE164PhoneNumber', () => {
+  test('gives the number a person typed in E.164', () => {
+    expect(toE164PhoneNumber('(555) 555-0100')).toBe('+15555550100');
+  });
+
+  test('refuses anything that is not a number, such as a user id', () => {
+    expect(toE164PhoneNumber('user-1')).toBeNull();
+    expect(toE164PhoneNumber('client:user-1')).toBeNull();
   });
 });

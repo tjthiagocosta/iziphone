@@ -74,6 +74,21 @@ describe('CachedRoutingSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  test('carries whether the number does voice, and tolerates entries that do not say', () => {
+    const entry = {
+      type: 'USER',
+      userIds: ['user-1'],
+      cachedAt: '2026-04-21T12:00:00.000Z',
+    };
+    expect(
+      CachedRoutingSchema.parse({ ...entry, voiceEnabled: false }).voiceEnabled,
+    ).toBe(false);
+    expect(CachedRoutingSchema.parse(entry).voiceEnabled).toBeUndefined();
+    expect(
+      CachedRoutingSchema.safeParse({ ...entry, voiceEnabled: 'yes' }).success,
+    ).toBe(false);
+  });
+
   test('rejects a routing type outside the contract', () => {
     const result = CachedRoutingSchema.safeParse({
       type: 'QUEUE',
