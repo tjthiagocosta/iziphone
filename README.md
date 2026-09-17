@@ -11,7 +11,7 @@ Own your phone system. iziphone runs on your own server and your own Twilio acco
 - **Browser softphone.** Agents make and receive calls from the web app using the Twilio Voice SDK. No desk phones, no desktop client.
 - **Department routing.** Inbound calls to a number ring the members of its department. Members can be online or offline, and a call can go to voicemail when nobody answers.
 - **Conference-first calls.** Every call is a Twilio conference, so hold, transfer and supervisor features are consistent for inbound and outbound calls.
-- **Hold and transfer.** Put callers on hold with hold music and transfer them to another user or department.
+- **Hold and transfer.** Put the other party on hold with hold music and hand the call to a teammate, who sees who is calling and who is transferring before answering.
 - **Shared SMS and MMS inboxes.** Text conversations per phone number, shared across a team, with media attachments and STOP keyword suppression.
 - **Recording and transcription.** Calls can be recorded and transcribed through Twilio, with playback restricted by role.
 - **Admin console.** Manage users, departments, phone numbers and roles (`ADMIN`, `SUPERVISOR`, `AGENT`), and see basic call statistics.
@@ -97,11 +97,14 @@ iziphone/
 | `call:ended` | call-controller | Call finished |
 | `call:missed` | call-controller | Nobody answered |
 | `call:transferred` | call-controller | Transfer completed |
+| `call:held`, `call:resumed` | call-controller | The other party was put on hold, or taken off it |
 | `call:participant-status` | call-controller | Participant joined, left, muted, held |
 | `call:recording-ready` | call-controller | Recording available |
 | `call:transcription-ready` | call-controller | Transcript available |
 | `call:conversation-migrated` | call-controller | Call SID changed mid-call |
-| `call:transfer`, `call:hold`, `call:hangup` | api | Commands sent to the call controller |
+| `call:hangup` | api | Command sent to the call controller |
+
+Hold and transfer are not commands. The softphone asks the call controller for them directly (`POST /api/voice/calls/:legUuid/hold`, `/transfer` and `/transfer/cancel`, with the realtime JWT), because only the controller can check the request against the live call and answer with what happened. How a transfer ended reaches the softphones as the `call_transfer_outcome` socket event.
 
 **Conference-first calling.** Inbound and outbound calls are placed into a Twilio conference from the start. The controller keeps per-call state in Redis (`telephony:call:*`, `telephony:leg:*`, `call:participants:*`) with TTLs of one to four hours so abandoned state cleans itself up. Hold, transfer and supervisor features all work by adding, removing or updating conference participants instead of re-dialing.
 
@@ -116,13 +119,14 @@ Working today:
 - Sign in, sessions, roles and permissions
 - Inbound calls to department numbers, ringing every online member
 - Outbound calls from the browser softphone
-- Hold, mute, transfer to users and departments
+- Hold, mute and direct transfer to a teammate
 - Call history, recordings and transcripts
 - Shared SMS/MMS conversations with inbound and outbound messages
 - Admin console for users, departments and phone numbers, with soft delete and restore
 
 Planned or incomplete:
 
+- Warm transfer, and transfer to a department or an outside number
 - Mobile apps
 - Call queues with wait positions and callbacks
 - IVR menus and business hours routing
