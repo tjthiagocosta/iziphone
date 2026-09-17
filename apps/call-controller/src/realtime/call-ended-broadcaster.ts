@@ -35,8 +35,11 @@ export async function startCallEndedBroadcaster(deps: {
     }
 
     const sockets = await deps.presence.socketIdsOf(participants);
-    for (const socketId of sockets.values()) {
-      deps.io.to(socketId).emit('call_ended', {
+    const socketIds = [...sockets.values()].flat();
+    // `to([])` addresses every socket there is, so an empty list must never
+    // get as far as the emit.
+    if (socketIds.length > 0) {
+      deps.io.to(socketIds).emit('call_ended', {
         conversationUuid,
         status: event.status,
         duration: event.duration,
@@ -50,6 +53,7 @@ export async function startCallEndedBroadcaster(deps: {
         conversationUuid,
         offered: participants.length,
         notified: sockets.size,
+        sockets: socketIds.length,
       },
       'Broadcast call_ended',
     );

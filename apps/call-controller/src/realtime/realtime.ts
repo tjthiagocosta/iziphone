@@ -6,6 +6,7 @@ import {
   type CallEndedBroadcaster,
   startCallEndedBroadcaster,
 } from './call-ended-broadcaster.js';
+import { notifyIncomingCall } from './incoming-call-notifier.js';
 import { PresenceService } from './presence.service.js';
 import { createSocketAuthMiddleware } from './socket-auth.js';
 import { registerSocketHandlers } from './socket-handlers.js';
@@ -55,25 +56,15 @@ export function createRealtime(deps: RealtimeDependencies): Realtime {
   server.io.use(createSocketAuthMiddleware(deps.authSecret, deps.log));
   registerSocketHandlers(server.io, {
     presence,
+    redis: deps.redis,
     authSecret: deps.authSecret,
     log: deps.log,
     onCallRejected: deps.onCallRejected,
   });
 
   return {
-    async notifyIncomingCall(userIds, call) {
-      const sockets = await presence.socketIdsOf(userIds);
-      const online = [...sockets.keys()];
-      if (online.length === 0) {
-        return [];
-      }
-
-      await presence.addCallParticipants(call.conversationUuid, online);
-      for (const socketId of sockets.values()) {
-        server.io.to(socketId).emit('incoming_call', call);
-      }
-
-      return online;
+    notifyIncomingCall(userIds, call) {
+      return notifyIncomingCall({ io: server.io, presence }, userIds, call);
     },
 
     trackCallParticipants(conversationUuid, userIds) {
@@ -82,8 +73,8 @@ export function createRealtime(deps: RealtimeDependencies): Realtime {
 
     async notifyTransferOutcome(userIds, outcome) {
       const sockets = await presence.socketIdsOf(userIds);
-      for (const socketId of sockets.values()) {
-        server.io.to(socketId).emit('call_transfer_outcome', outcome);
+      for (const socketIds of sockets.values()) {
+        server.io.to(socketIds).emit('call_transfer_outcome', outcome);
       }
     },
 

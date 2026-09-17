@@ -108,7 +108,7 @@ Hold and transfer are not commands. The softphone asks the call controller for t
 
 **Conference-first calling.** Inbound and outbound calls are placed into a Twilio conference from the start. The controller keeps per-call state in Redis (`telephony:call:*`, `telephony:leg:*`, `call:participants:*`) with TTLs of one to four hours so abandoned state cleans itself up. Hold, transfer and supervisor features all work by adding, removing or updating conference participants instead of re-dialing.
 
-**Realtime to the browser.** The call controller runs Socket.IO with the Redis adapter, so it can scale horizontally. Users authenticate to the socket with a short-lived JWT issued by the API. Each user's sockets are tracked in Redis (`user:sockets:*`) so an inbound call can ring every tab and device that user has open.
+**Realtime to the browser.** The call controller runs Socket.IO with the Redis adapter, so it can scale horizontally. Users authenticate to the socket with a short-lived JWT issued by the API. Each user's sockets are tracked in Redis (`presence:sockets:*`) so an inbound call can ring every tab and device that user has open.
 
 **Browser softphone behavior.** The web app registers a Twilio Voice device on sign-in and refreshes its token before it expires. Do Not Disturb is a client-side setting: the device stays registered and incoming calls are rejected in the browser. Microphone access is requested before the device registers.
 

@@ -16,14 +16,14 @@ function buildFakes() {
     quit: vi.fn(async () => 'OK'),
   };
   const emit = vi.fn();
-  const io = { to: vi.fn(() => ({ emit })) };
+  const io = { to: vi.fn((_socketIds: string[]) => ({ emit })) };
   const presence = {
     callParticipants: vi.fn(async () => ['user-1', 'user-2', 'user-3']),
     socketIdsOf: vi.fn(
       async () =>
         new Map([
-          ['user-1', 'socket-1'],
-          ['user-3', 'socket-3'],
+          ['user-1', ['socket-tab-a', 'socket-tab-b']],
+          ['user-3', ['socket-3']],
         ]),
     ),
     removeCallParticipants: vi.fn(async () => undefined),
@@ -43,7 +43,7 @@ function buildFakes() {
 }
 
 describe('startCallEndedBroadcaster', () => {
-  test('tells every online participant that the call ended, then forgets the call', async () => {
+  test('tells every connected softphone of the participants that the call ended, then forgets the call', async () => {
     const fakes = buildFakes();
     await startCallEndedBroadcaster({
       redis: fakes.redis,
@@ -69,15 +69,43 @@ describe('startCallEndedBroadcaster', () => {
       'user-2',
       'user-3',
     ]);
-    expect(fakes.ioCalls.to).toHaveBeenCalledWith('socket-1');
-    expect(fakes.ioCalls.to).toHaveBeenCalledWith('socket-3');
-    expect(fakes.emit).toHaveBeenCalledTimes(2);
-    expect(fakes.emit).toHaveBeenCalledWith('call_ended', {
+    expect(fakes.ioCalls.to).toHaveBeenCalledExactlyOnceWith([
+      'socket-tab-a',
+      'socket-tab-b',
+      'socket-3',
+    ]);
+    expect(fakes.emit).toHaveBeenCalledExactlyOnceWith('call_ended', {
       conversationUuid: 'CAcall1',
       status: 'completed',
       duration: 42,
       endedAt: '2026-09-08T12:00:00.000Z',
     });
+  });
+
+  test('tells nobody when every participant has gone offline, and still forgets the call', async () => {
+    const fakes = buildFakes();
+    fakes.presence.socketIdsOf.mockResolvedValue(new Map());
+    await startCallEndedBroadcaster({
+      redis: fakes.redis,
+      io: fakes.io,
+      presence: fakes.presence,
+      log,
+    });
+
+    fakes.deliver({
+      conversationUuid: 'CAcall3',
+      duration: 0,
+      status: 'no-answer',
+      timestamp: '2026-09-08T12:00:00.000Z',
+    });
+    await vi.waitFor(() => {
+      expect(fakes.presence.removeCallParticipants).toHaveBeenCalledWith(
+        'CAcall3',
+      );
+    });
+
+    expect(fakes.ioCalls.to).not.toHaveBeenCalled();
+    expect(fakes.emit).not.toHaveBeenCalled();
   });
 
   test('ignores calls nobody was offered', async () => {
