@@ -1,18 +1,29 @@
 'use client';
 
+import type { CallTransferOutcome } from '@repo/dto';
 import { Device } from '@twilio/voice-sdk';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchVoiceToken, requestHangup } from '@/lib/api/call-controller';
+import {
+  fetchVoiceToken,
+  requestHangup,
+  requestHold,
+  requestTransfer,
+  requestTransferCancel,
+} from '@/lib/api/call-controller';
 import {
   INITIAL_TELEPHONY_STATE,
   TelephonySession,
   type TelephonyState,
+  type TransferTarget,
 } from '@/lib/telephony/telephony-session';
 
 export type {
+  CallEndReason,
   CallStatus,
   DeviceStatus,
   TelephonyState,
+  TransferProgress,
+  TransferTarget,
 } from '@/lib/telephony/telephony-session';
 
 export interface TelephonyClientOptions {
@@ -28,6 +39,10 @@ export interface TelephonyClient extends TelephonyState {
   rejectIncoming: () => void;
   toggleMute: () => void;
   sendDigits: (digits: string) => void;
+  toggleHold: () => Promise<void>;
+  transferTo: (target: TransferTarget) => Promise<void>;
+  cancelTransfer: () => Promise<void>;
+  applyTransferOutcome: (outcome: CallTransferOutcome) => void;
 }
 
 async function requestMicrophone(): Promise<void> {
@@ -63,6 +78,16 @@ export function useTelephonyClient({
           fetchVoiceToken(await getRealtimeTokenRef.current()),
         requestHangup: async (legSid) =>
           requestHangup(await getRealtimeTokenRef.current(), legSid),
+        requestHold: async (legSid, hold) =>
+          requestHold(await getRealtimeTokenRef.current(), legSid, hold),
+        requestTransfer: async (legSid, targetUserId) =>
+          requestTransfer(
+            await getRealtimeTokenRef.current(),
+            legSid,
+            targetUserId,
+          ),
+        requestTransferCancel: async (legSid) =>
+          requestTransferCancel(await getRealtimeTokenRef.current(), legSid),
         createDevice: (token) =>
           new Device(token, {
             closeProtection: true,
@@ -102,6 +127,22 @@ export function useTelephonyClient({
   const sendDigits = useCallback((digits: string) => {
     sessionRef.current?.sendDigits(digits);
   }, []);
+  const toggleHold = useCallback(
+    () => sessionRef.current?.toggleHold() ?? Promise.resolve(),
+    [],
+  );
+  const transferTo = useCallback(
+    (target: TransferTarget) =>
+      sessionRef.current?.transferTo(target) ?? Promise.resolve(),
+    [],
+  );
+  const cancelTransfer = useCallback(
+    () => sessionRef.current?.cancelTransfer() ?? Promise.resolve(),
+    [],
+  );
+  const applyTransferOutcome = useCallback((outcome: CallTransferOutcome) => {
+    sessionRef.current?.applyTransferOutcome(outcome);
+  }, []);
 
   return {
     ...state,
@@ -111,5 +152,9 @@ export function useTelephonyClient({
     rejectIncoming,
     toggleMute,
     sendDigits,
+    toggleHold,
+    transferTo,
+    cancelTransfer,
+    applyTransferOutcome,
   };
 }

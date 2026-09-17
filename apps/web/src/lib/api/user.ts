@@ -15,6 +15,8 @@ import {
   type SendSms,
   type SendSmsResponse,
   SendSmsResponseSchema,
+  type TeammatesResponse,
+  TeammatesResponseSchema,
   type UserDepartmentsResponse,
   UserDepartmentsResponseSchema,
 } from '@repo/dto';
@@ -25,6 +27,13 @@ import { requestApi, withQuery } from './client';
 export function getUserDepartments(): Promise<UserDepartmentsResponse> {
   return requestApi('/api/user/departments', {
     schema: UserDepartmentsResponseSchema,
+  });
+}
+
+/** Everyone the user can hand a call to; it does not say who is online. */
+export function getTeammates(): Promise<TeammatesResponse> {
+  return requestApi('/api/user/teammates', {
+    schema: TeammatesResponseSchema,
   });
 }
 

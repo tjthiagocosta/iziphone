@@ -3,6 +3,8 @@
 import {
   type CallEnded,
   CallEndedSchema,
+  type CallTransferOutcome,
+  CallTransferOutcomeSchema,
   type ClientToServerEvents,
   type IncomingCall,
   IncomingCallSchema,
@@ -18,6 +20,8 @@ export interface CallSocketOptions {
   /** Absent while signed out; the socket is then closed. */
   userId: string | undefined;
   getRealtimeToken: () => Promise<string>;
+  /** How a transfer this user started, or was rung for, turned out. */
+  onTransferOutcome?: (outcome: CallTransferOutcome) => void;
 }
 
 export interface CallSocketState {
@@ -49,6 +53,7 @@ const RETRY_MAX_MS = 30_000;
 export function useCallSocket({
   userId,
   getRealtimeToken,
+  onTransferOutcome,
 }: CallSocketOptions): CallSocketState {
   const [isConnected, setIsConnected] = useState(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
@@ -59,6 +64,12 @@ export function useCallSocket({
   useEffect(() => {
     getRealtimeTokenRef.current = getRealtimeToken;
   }, [getRealtimeToken]);
+
+  const onTransferOutcomeRef = useRef(onTransferOutcome);
+
+  useEffect(() => {
+    onTransferOutcomeRef.current = onTransferOutcome;
+  }, [onTransferOutcome]);
 
   useEffect(() => {
     if (!userId) {
@@ -127,6 +138,24 @@ export function useCallSocket({
           : current,
       );
       setLastEndedCall(parsed.data);
+    });
+
+    socket.on('call_transfer_outcome', (data) => {
+      const parsed = CallTransferOutcomeSchema.safeParse(data);
+      if (!parsed.success) {
+        console.error('Ignored a transfer outcome with an unexpected payload');
+        return;
+      }
+      const outcome = parsed.data;
+      // A transfer that failed no longer rings the teammate it was offered to.
+      if (outcome.status === 'failed') {
+        setIncomingCall((current) =>
+          current?.conversationUuid === outcome.conversationUuid
+            ? null
+            : current,
+        );
+      }
+      onTransferOutcomeRef.current?.(outcome);
     });
 
     socket.on('error', (data) => {

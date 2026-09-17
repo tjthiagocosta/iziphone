@@ -17,8 +17,13 @@ const EARLY_ANSWER_TEXT: Record<EarlyAnswer, string> = {
  * Uses CallProvider context for state and actions
  */
 export function IncomingCallModal() {
-  const { incomingCall, earlyAnswer, answerIncoming, rejectIncoming } =
-    useCall();
+  const {
+    incomingCall,
+    earlyAnswer,
+    incomingCallTransferredBy,
+    answerIncoming,
+    rejectIncoming,
+  } = useCall();
 
   // Don't render if no incoming call
   if (!incomingCall) {
@@ -42,7 +47,11 @@ export function IncomingCallModal() {
           {/* Caller info */}
           <div className="space-y-2">
             <p className="text-sm text-muted-foreground">
-              {earlyAnswer ? EARLY_ANSWER_TEXT[earlyAnswer] : 'Incoming Call'}
+              {earlyAnswer
+                ? EARLY_ANSWER_TEXT[earlyAnswer]
+                : incomingCallTransferredBy
+                  ? `Transferred by ${incomingCallTransferredBy}`
+                  : 'Incoming Call'}
             </p>
             <p className="text-2xl font-semibold">
               {formatPhoneNumber(incomingCall.from)}

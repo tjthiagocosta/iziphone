@@ -5,8 +5,8 @@ import {
   Mic,
   MicOff,
   Pause,
-  PhoneForwarded,
   PhoneOff,
+  Play,
   User,
   UserPlus,
 } from 'lucide-react';
@@ -19,35 +19,28 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import type { CallStatus } from '@/hooks/use-telephony-client';
-import { formatDuration } from '@/lib/duration';
 import { formatPhoneNumber } from '@/lib/phone-number';
+import {
+  type CallStatusTone,
+  callStatusLine,
+} from '@/lib/telephony/call-status-line';
 import { cn } from '@/lib/utils';
 import { KeypadModal } from './KeypadModal';
+import { TransferPicker } from './TransferPicker';
 
-/**
- * Get call status display text
- */
-function getCallStatusText(status: CallStatus, duration: number): string {
-  switch (status) {
-    case 'connecting':
-      return 'Connecting...';
-    case 'ringing':
-      return 'Ringing...';
-    case 'disconnecting':
-      return 'Ending...';
-    case 'connected':
-      return formatDuration(duration);
-    case 'disconnected':
-      return 'Call ended';
-    case 'idle':
-      return '';
-  }
-}
+const TONE_CLASS: Record<CallStatusTone, string> = {
+  ringing: 'text-yellow-500',
+  connecting: 'text-blue-500',
+  connected: 'text-green-500',
+  held: 'text-yellow-500',
+  transferring: 'text-blue-500',
+  ending: 'text-orange-500',
+  over: 'text-muted-foreground',
+};
 
 /**
  * ActiveCallBar - Floating pill at bottom of screen during active calls
- * Shows call info and controls (mute, hold, keypad, end)
+ * Shows call info and controls (mute, hold, transfer, keypad, end)
  */
 export function ActiveCallBar() {
   const {
@@ -55,9 +48,17 @@ export function ActiveCallBar() {
     remoteNumber,
     callDuration,
     isMuted,
+    isOnHold,
+    isHoldPending,
+    transfer,
+    notice,
+    endReason,
+    error,
     isEndingCall,
     hangUp,
     toggleMute,
+    toggleHold,
+    cancelTransfer,
   } = useCall();
 
   const [isKeypadOpen, setIsKeypadOpen] = useState(false);
@@ -65,14 +66,36 @@ export function ActiveCallBar() {
   const displayNumber = remoteNumber
     ? formatPhoneNumber(remoteNumber)
     : 'Unknown';
-  const statusText = getCallStatusText(callStatus, callDuration);
+  const statusLine = callStatusLine(
+    { callStatus, isOnHold, transfer, endReason },
+    callDuration,
+  );
   const isConnected = callStatus === 'connected';
+  // While a transfer holds the call, hold and a second transfer are refused.
+  const canControlCall = isConnected && !transfer;
+  // Not before the controller confirms the ring: until then it may not have
+  // a transfer to cancel yet.
+  const canCancelTransfer = transfer?.status === 'ringing';
+  const message = error ?? notice;
 
   return (
     <>
       {/* Floating pill bar */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50">
-        <div className="flex items-center gap-4 bg-card border border-border rounded-2xl px-4 py-3 shadow-lg">
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2">
+        {message && (
+          <p
+            role="status"
+            className="max-w-md rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-lg"
+          >
+            {message}
+          </p>
+        )}
+        <div
+          className={cn(
+            'flex items-center gap-4 bg-card border border-border rounded-2xl px-4 py-3 shadow-lg',
+            isOnHold && 'border-yellow-500/60',
+          )}
+        >
           {/* Avatar and caller info */}
           <div className="flex items-center gap-3">
             <Avatar className="h-10 w-10">
@@ -83,19 +106,22 @@ export function ActiveCallBar() {
 
             <div className="flex flex-col">
               <span className="text-sm font-medium">{displayNumber}</span>
-              <span
-                className={cn(
-                  'text-xs',
-                  callStatus === 'ringing' && 'text-yellow-500',
-                  callStatus === 'connecting' && 'text-blue-500',
-                  callStatus === 'disconnecting' && 'text-orange-500',
-                  callStatus === 'connected' && 'text-green-500',
-                  callStatus === 'disconnected' && 'text-muted-foreground',
-                )}
-              >
-                {statusText}
+              <span className={cn('text-xs', TONE_CLASS[statusLine.tone])}>
+                {statusLine.text}
               </span>
             </div>
+
+            {transfer && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={cancelTransfer}
+                disabled={!canCancelTransfer}
+              >
+                Cancel
+              </Button>
+            )}
           </div>
 
           {/* Divider */}
@@ -127,37 +153,34 @@ export function ActiveCallBar() {
               <TooltipContent>{isMuted ? 'Unmute' : 'Mute'}</TooltipContent>
             </Tooltip>
 
-            {/* Hold button - disabled for now */}
+            {/* Hold button */}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-10 w-10 rounded-full"
-                  disabled
+                  className={cn(
+                    'h-10 w-10 rounded-full',
+                    isOnHold && 'bg-yellow-500/20 text-yellow-500',
+                  )}
+                  onClick={toggleHold}
+                  disabled={!canControlCall || isHoldPending}
+                  aria-label={isOnHold ? 'Resume' : 'Hold'}
+                  aria-pressed={isOnHold}
                 >
-                  <Pause className="h-5 w-5" />
+                  {isOnHold ? (
+                    <Play className="h-5 w-5" />
+                  ) : (
+                    <Pause className="h-5 w-5" />
+                  )}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Hold (Coming soon)</TooltipContent>
+              <TooltipContent>{isOnHold ? 'Resume' : 'Hold'}</TooltipContent>
             </Tooltip>
 
-            {/* Transfer button - disabled for now */}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-10 w-10 rounded-full"
-                  disabled
-                >
-                  <PhoneForwarded className="h-5 w-5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Transfer (Coming soon)</TooltipContent>
-            </Tooltip>
+            {/* Transfer button */}
+            <TransferPicker disabled={!canControlCall || isHoldPending} />
 
             {/* Keypad button */}
             <Tooltip>

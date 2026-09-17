@@ -1,6 +1,6 @@
 'use client';
 
-import type { CallEnded, IncomingCall } from '@repo/dto';
+import type { CallEnded, IncomingCall, Teammate } from '@repo/dto';
 import {
   createContext,
   type ReactNode,
@@ -12,9 +12,13 @@ import {
   useState,
 } from 'react';
 import { useCallSocket } from '@/hooks/use-call-socket';
+import { useTeammates } from '@/hooks/use-teammates';
 import {
+  type CallEndReason,
   type CallStatus,
   type DeviceStatus,
+  type TransferProgress,
+  type TransferTarget,
   useTelephonyClient,
 } from '@/hooks/use-telephony-client';
 import {
@@ -25,6 +29,7 @@ import {
   offerFate,
 } from '@/lib/telephony/incoming-offer';
 import { PENDING_ANSWER_TTL_MS } from '@/lib/telephony/telephony-session';
+import { transferredByName } from '@/lib/telephony/transfer-offer';
 import { useAuth } from './AuthProvider';
 
 export interface CallContextValue {
@@ -34,12 +39,27 @@ export interface CallContextValue {
   /** Seconds since the current call connected. */
   callDuration: number;
   isMuted: boolean;
+  /** The other party hears the hold audio; the two cannot hear each other. */
+  isOnHold: boolean;
+  isHoldPending: boolean;
+  /** The transfer this user started and is still on the line for. */
+  transfer: TransferProgress | null;
+  /** Why the last transfer did not go through. */
+  notice: string | null;
   isEndingCall: boolean;
+  /** How the call that just finished ended. */
+  endReason: CallEndReason;
   error: string | null;
   /** A call the controller offered this user and Twilio may be about to ring. */
   incomingCall: IncomingCall | null;
   /** What an Answer pressed before the device rang has come to, if one was. */
   earlyAnswer: EarlyAnswer | null;
+  /** The teammate handing the offered call over, when it is a transfer. */
+  incomingCallTransferredBy: string | null;
+  /** Everyone a call can be handed to; it does not say who is online. */
+  teammates: Teammate[];
+  teammatesError: Error | null;
+  refreshTeammates: () => Promise<void>;
   /**
    * The call that ended most recently, for views that show call history: the
    * API writes that history from the same event, so it is the cue to refetch.
@@ -50,6 +70,9 @@ export interface CallContextValue {
   hangUp: () => void;
   sendDigits: (digits: string) => void;
   toggleMute: () => void;
+  toggleHold: () => void;
+  transferTo: (target: TransferTarget) => void;
+  cancelTransfer: () => void;
   answerIncoming: () => void;
   rejectIncoming: () => void;
 }
@@ -67,7 +90,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
     identity: user?.id,
     getRealtimeToken,
   });
-  const socket = useCallSocket({ userId: user?.id, getRealtimeToken });
+  const socket = useCallSocket({
+    userId: user?.id,
+    getRealtimeToken,
+    onTransferOutcome: telephony.applyTransferOutcome,
+  });
+  const directory = useTeammates({ userId: user?.id });
   const [callDuration, setCallDuration] = useState(0);
 
   const { callStatus } = telephony;
@@ -163,13 +191,20 @@ export function CallProvider({ children }: { children: ReactNode }) {
     void telephony.hangUp();
   }, [incomingCall, rejectIncoming, telephony.hangUp]);
 
+  const { toggleHold, transferTo, cancelTransfer } = telephony;
+
   const value: CallContextValue = {
     deviceStatus: telephony.deviceStatus,
     callStatus,
     remoteNumber: telephony.remoteNumber,
     callDuration,
     isMuted: telephony.isMuted,
+    isOnHold: telephony.isOnHold,
+    isHoldPending: telephony.isHoldPending,
+    transfer: telephony.transfer,
+    notice: telephony.notice,
     isEndingCall: telephony.isEndingCall,
+    endReason: telephony.endReason,
     error: telephony.error,
     incomingCall,
     earlyAnswer: earlyAnswerOf(
@@ -177,12 +212,21 @@ export function CallProvider({ children }: { children: ReactNode }) {
       answeredOffer,
       telephony.deviceStatus,
     ),
+    incomingCallTransferredBy: incomingCall
+      ? transferredByName(incomingCall, directory.teammates)
+      : null,
+    teammates: directory.teammates,
+    teammatesError: directory.error,
+    refreshTeammates: directory.refetch,
     lastEndedCall: socket.lastEndedCall,
     isSocketConnected: socket.isConnected,
     makeCall: telephony.makeCall,
     hangUp,
     sendDigits: telephony.sendDigits,
     toggleMute: telephony.toggleMute,
+    toggleHold: () => void toggleHold(),
+    transferTo: (target) => void transferTo(target),
+    cancelTransfer: () => void cancelTransfer(),
     answerIncoming,
     rejectIncoming,
   };
