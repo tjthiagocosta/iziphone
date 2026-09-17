@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { adminStatsRoutes } from './admin/index.js';
 import { authRoutes, sessionRoutes } from './auth/index.js';
-import { callRoutes, voicemailRoutes } from './calls/index.js';
+import { callLineRoutes, callRoutes, voicemailRoutes } from './calls/index.js';
 import type { ApiConfig } from './config.js';
 import {
   adminDepartmentRoutes,
@@ -34,6 +34,7 @@ export const userApiRoutes: FastifyPluginAsync = async (fastify) => {
   await fastify.register(contactRoutes, { prefix: '/contacts' });
   await fastify.register(messageRoutes, { prefix: '/messages' });
   await fastify.register(messageSenderRoutes, { prefix: '/message-senders' });
+  await fastify.register(callLineRoutes, { prefix: '/call-lines' });
   await fastify.register(messageConversationRoutes, {
     prefix: '/message-conversations',
   });

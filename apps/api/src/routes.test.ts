@@ -15,20 +15,20 @@ describe('route groups', () => {
     await app.close();
   });
 
-  test('user routes reject requests without an authenticated user', async () => {
-    app = await createApiRouteApp(userApiRoutes, { user: null, db: emptyDb });
+  test.each(['/message-senders', '/call-lines'])(
+    'user routes reject requests without an authenticated user (%s)',
+    async (url) => {
+      app = await createApiRouteApp(userApiRoutes, { user: null, db: emptyDb });
 
-    const response = await app.inject({
-      method: 'GET',
-      url: '/message-senders',
-    });
+      const response = await app.inject({ method: 'GET', url });
 
-    expect(response.statusCode).toBe(401);
-    expect(response.json()).toEqual({
-      error: 'Unauthorized',
-      message: 'Authentication required',
-    });
-  });
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({
+        error: 'Unauthorized',
+        message: 'Authentication required',
+      });
+    },
+  );
 
   test('the teammate list is for signed-in users only', async () => {
     app = await createApiRouteApp(userApiRoutes, { user: null, db: emptyDb });

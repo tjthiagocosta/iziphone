@@ -78,6 +78,26 @@ describe('buildCallListWhere', () => {
     });
   });
 
+  test('finds an outbound call by the line it left from, which a user id in its place never did', () => {
+    const line = '+15155550101';
+    const customer = '+15155550104';
+    const where = buildCallListWhere(
+      {},
+      { linePhone: line, contactPhone: customer },
+    );
+
+    // What the subscriber stores for an outbound call, now and before.
+    const onItsLine = { direction: 'outbound', from: line, to: customer };
+    const onTheAgent = { direction: 'outbound', from: 'user-1', to: customer };
+
+    expect(matches(where, onItsLine)).toBe(true);
+    expect(matches(where, onTheAgent)).toBe(false);
+    // The same pair finds the inbound calls of the conversation too.
+    expect(
+      matches(where, { direction: 'inbound', from: customer, to: line }),
+    ).toBe(true);
+  });
+
   test('selects voicemails by their timeline entry, not by a recording', () => {
     const leftAVoicemail = {
       events: { some: { eventType: 'VOICEMAIL_COMPLETED' } },
@@ -97,3 +117,23 @@ describe('buildCallListWhere', () => {
     });
   });
 });
+
+/**
+ * Reads the part of a Prisma filter these tests build, `AND`, `OR` and column
+ * equality, against one row, so a test can say which calls a filter finds.
+ */
+function matches(where: unknown, row: Record<string, string>): boolean {
+  if (typeof where !== 'object' || where === null) {
+    return false;
+  }
+
+  return Object.entries(where).every(([key, condition]) => {
+    if (key === 'AND' && Array.isArray(condition)) {
+      return condition.every((part) => matches(part, row));
+    }
+    if (key === 'OR' && Array.isArray(condition)) {
+      return condition.some((part) => matches(part, row));
+    }
+    return row[key] === condition;
+  });
+}

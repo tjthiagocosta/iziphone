@@ -9,7 +9,8 @@ import type { Redis } from 'ioredis';
 
 /*
  * The call controller never reads Postgres. It routes inbound calls from the
- * `routing:phone:{e164}` entries this module writes, so every place that
+ * `routing:phone:{e164}` entries this module writes, and lets an agent call
+ * out from a number only when its entry names them, so every place that
  * turns department or user rows into routing data goes through here: the
  * startup warm-up, the controller's cache-miss lookup, and every admin
  * mutation that changes where a number rings.
@@ -104,6 +105,23 @@ export function projectUserRouting(
   };
 }
 
+/** What the warm-up and a department refresh read of each number. */
+const routedNumberSelect = {
+  phoneNumber: true,
+  voiceEnabled: true,
+} as const satisfies Prisma.PhoneNumberSelect;
+
+/**
+ * The entry of one number. Whom it rings is shared by every number of the
+ * department or user; whether it does voice is the number's own.
+ */
+function routingEntry(
+  target: CachedRouting,
+  number: { voiceEnabled: boolean },
+): CachedRouting {
+  return { ...target, voiceEnabled: number.voiceEnabled };
+}
+
 /** The `department:id:` entry is the department half of a routing entry. */
 function projectDepartmentSummary(
   routing: CachedRouting,
@@ -189,7 +207,7 @@ export class RoutingCacheService {
       where: { id: departmentId, deletedAt: null },
       include: {
         ...routingDepartmentInclude,
-        phoneNumbers: { where: routableNumber, select: { phoneNumber: true } },
+        phoneNumbers: { where: routableNumber, select: routedNumberSelect },
       },
     });
     const pipeline = this.redis.pipeline();
@@ -203,10 +221,10 @@ export class RoutingCacheService {
       );
       this.queueDepartmentSummary(pipeline, routing);
 
-      for (const { phoneNumber } of department.phoneNumbers) {
+      for (const number of department.phoneNumbers) {
         pipeline.set(
-          phoneKey(phoneNumber),
-          JSON.stringify(routing),
+          phoneKey(number.phoneNumber),
+          JSON.stringify(routingEntry(routing, number)),
           'EX',
           this.ttlSeconds,
         );
@@ -227,7 +245,7 @@ export class RoutingCacheService {
           ...routingDepartmentInclude,
           phoneNumbers: {
             where: routableNumber,
-            select: { phoneNumber: true },
+            select: routedNumberSelect,
           },
         },
       }),
@@ -238,7 +256,7 @@ export class RoutingCacheService {
           user: { is: { deletedAt: null } },
         },
         select: {
-          phoneNumber: true,
+          ...routedNumberSelect,
           user: { select: { id: true, name: true } },
         },
       }),
@@ -254,10 +272,10 @@ export class RoutingCacheService {
       const routing = projectDepartmentRouting(department, cachedAt);
       this.queueDepartmentSummary(pipeline, routing);
 
-      for (const { phoneNumber } of department.phoneNumbers) {
+      for (const number of department.phoneNumbers) {
         pipeline.set(
-          phoneKey(phoneNumber),
-          JSON.stringify(routing),
+          phoneKey(number.phoneNumber),
+          JSON.stringify(routingEntry(routing, number)),
           'EX',
           this.ttlSeconds,
         );
@@ -273,7 +291,9 @@ export class RoutingCacheService {
 
       pipeline.set(
         phoneKey(line.phoneNumber),
-        JSON.stringify(projectUserRouting(line.user, cachedAt)),
+        JSON.stringify(
+          routingEntry(projectUserRouting(line.user, cachedAt), line),
+        ),
         'EX',
         this.ttlSeconds,
       );
@@ -304,11 +324,14 @@ export class RoutingCacheService {
     const cachedAt = new Date().toISOString();
 
     if (row.department && !row.department.deletedAt) {
-      return projectDepartmentRouting(row.department, cachedAt);
+      return routingEntry(
+        projectDepartmentRouting(row.department, cachedAt),
+        row,
+      );
     }
 
     if (row.user && !row.user.deletedAt) {
-      return projectUserRouting(row.user, cachedAt);
+      return routingEntry(projectUserRouting(row.user, cachedAt), row);
     }
 
     return null;

@@ -376,6 +376,64 @@ describe('callRoutes', () => {
     ]);
   });
 
+  test('names the line and the contact of an outbound call placed from a department line', async () => {
+    // The shape the call controller publishes: `from` is the line, `to` the
+    // number that was dialed, and the agent is the user of the record.
+    findMany.mockResolvedValue([
+      {
+        ...storedCall,
+        direction: 'outbound',
+        from: '+15155550101',
+        to: '+15155550104',
+      },
+    ]);
+    count.mockResolvedValue(1);
+    findLines.mockResolvedValue([
+      { id: 'number-1', phoneNumber: '+15155550101', label: 'Support' },
+    ]);
+    findContacts.mockResolvedValue([
+      {
+        id: 'contact-1',
+        name: 'Riverside Supply Co',
+        phoneNumber: '+15155550104',
+      },
+    ]);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/calls?linePhone=%2B15155550101&contactPhone=%2B15155550104',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().calls).toEqual([
+      expect.objectContaining({
+        direction: 'outbound',
+        userId: 'user-7',
+        departmentId: 'dept-1',
+        line: { id: 'number-1', phoneNumber: '+15155550101', label: 'Support' },
+        contact: {
+          id: 'contact-1',
+          name: 'Riverside Supply Co',
+          phoneNumber: '+15155550104',
+        },
+      }),
+    ]);
+  });
+
+  test('still lists an outbound row from before calls had a line, whose from is a user id', async () => {
+    findMany.mockResolvedValue([
+      { ...storedCall, direction: 'outbound', from: 'user-7' },
+    ]);
+    count.mockResolvedValue(1);
+
+    const response = await app.inject({ method: 'GET', url: '/api/calls' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().calls).toEqual([
+      { ...callDto, direction: 'outbound', from: 'user-7', line: null },
+    ]);
+  });
+
   test('still lists a row whose stored direction is not one the API writes', async () => {
     findMany.mockResolvedValue([{ ...storedCall, direction: 'internal' }]);
     count.mockResolvedValue(1);

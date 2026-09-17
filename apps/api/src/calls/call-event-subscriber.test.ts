@@ -138,18 +138,35 @@ describe('CallEventSubscriberService', () => {
     });
   });
 
-  test('records an outbound dial as agent-initiated', async () => {
+  test('records an outbound dial on the line it left from, for the agent and the department of the line', async () => {
+    const line = '+15555550102';
+    const customer = '+15555550199';
     const event: ChannelInput<'call:incoming'> = {
       conversationUuid: 'conv-2',
-      from,
-      to,
+      from: line,
+      to: customer,
       direction: 'outbound',
+      agentLegUuid: 'agent-leg',
+      departmentId: 'dept-1',
       userId: 'user-1',
       timestamp,
     };
 
     await harness.emit(CHANNELS.CALL_INCOMING, event);
 
+    // `from` is what the line filter and the thread match on; the agent is
+    // the user of the record and the actor of the timeline entry.
+    expect(harness.db.call.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          from: line,
+          to: customer,
+          direction: 'outbound',
+          departmentId: 'dept-1',
+          userId: 'user-1',
+        }),
+      }),
+    );
     expect(harness.db.callEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         eventType: 'DIAL_INITIATED',

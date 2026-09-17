@@ -157,6 +157,7 @@ describe('RoutingCacheService', () => {
     const db = {
       phoneNumber: {
         findFirst: vi.fn(async () => ({
+          voiceEnabled: true,
           department: supportDepartment(),
           user: null,
         })),
@@ -175,7 +176,11 @@ describe('RoutingCacheService', () => {
           `${ROUTING_CACHE.PHONE_KEY_PREFIX}${DEPARTMENT_LINE}`,
         ),
       ),
-    ).toMatchObject({ type: 'DEPARTMENT', departmentId: 'dept-1' });
+    ).toMatchObject({
+      type: 'DEPARTMENT',
+      departmentId: 'dept-1',
+      voiceEnabled: true,
+    });
     expect(
       CachedDepartmentSchema.parse(
         writtenValue(set, `${ROUTING_CACHE.DEPARTMENT_ID_KEY_PREFIX}dept-1`),
@@ -192,10 +197,12 @@ describe('RoutingCacheService', () => {
     const findFirst = vi
       .fn()
       .mockResolvedValueOnce({
+        voiceEnabled: false,
         department: null,
         user: { id: 'user-9', name: 'Agent Nine', deletedAt: null },
       })
       .mockResolvedValueOnce({
+        voiceEnabled: true,
         department: null,
         user: { id: 'user-11', name: 'Gone', deletedAt: new Date() },
       });
@@ -205,7 +212,13 @@ describe('RoutingCacheService', () => {
     const live = await service.lookupByPhone(DIRECT_LINE);
     const deleted = await service.lookupByPhone('+15555550103');
 
-    expect(live).toMatchObject({ type: 'USER', userId: 'user-9' });
+    // The controller refuses to call out from a number that does not do
+    // voice, so the entry has to say so.
+    expect(live).toMatchObject({
+      type: 'USER',
+      userId: 'user-9',
+      voiceEnabled: false,
+    });
     expect(deleted).toBeNull();
     expect(set).toHaveBeenCalledTimes(1);
     expect(set.mock.calls[0]?.[0]).toBe(
@@ -238,6 +251,7 @@ describe('RoutingCacheService', () => {
       .fn()
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
+        voiceEnabled: true,
         department: null,
         user: { id: 'user-9', name: 'Agent Nine', deletedAt: null },
       });
@@ -276,8 +290,8 @@ describe('RoutingCacheService', () => {
         findFirst: vi.fn(async () =>
           supportDepartment({
             phoneNumbers: [
-              { phoneNumber: DEPARTMENT_LINE },
-              { phoneNumber: '+15555550104' },
+              { phoneNumber: DEPARTMENT_LINE, voiceEnabled: true },
+              { phoneNumber: '+15555550104', voiceEnabled: false },
             ],
           } as Partial<RoutingDepartmentRow>),
         ),
@@ -292,6 +306,21 @@ describe('RoutingCacheService', () => {
       `${ROUTING_CACHE.PHONE_KEY_PREFIX}${DEPARTMENT_LINE}`,
       `${ROUTING_CACHE.PHONE_KEY_PREFIX}+15555550104`,
     ]);
+    // Both numbers ring the same people, but each says for itself whether
+    // it does voice.
+    expect(
+      CachedRoutingSchema.parse(
+        writtenValue(
+          set,
+          `${ROUTING_CACHE.PHONE_KEY_PREFIX}${DEPARTMENT_LINE}`,
+        ),
+      ),
+    ).toMatchObject({ departmentId: 'dept-1', voiceEnabled: true });
+    expect(
+      CachedRoutingSchema.parse(
+        writtenValue(set, `${ROUTING_CACHE.PHONE_KEY_PREFIX}+15555550104`),
+      ),
+    ).toMatchObject({ departmentId: 'dept-1', voiceEnabled: false });
   });
 
   test('should remove the department entry when the department is gone', async () => {
@@ -315,7 +344,9 @@ describe('RoutingCacheService', () => {
       department: {
         findMany: vi.fn(async () => [
           supportDepartment({
-            phoneNumbers: [{ phoneNumber: DEPARTMENT_LINE }],
+            phoneNumbers: [
+              { phoneNumber: DEPARTMENT_LINE, voiceEnabled: true },
+            ],
           } as Partial<RoutingDepartmentRow>),
           supportDepartment({
             id: 'dept-2',
@@ -327,6 +358,7 @@ describe('RoutingCacheService', () => {
         findMany: vi.fn(async () => [
           {
             phoneNumber: DIRECT_LINE,
+            voiceEnabled: true,
             user: { id: 'user-9', name: 'Agent Nine' },
           },
         ]),
@@ -342,6 +374,14 @@ describe('RoutingCacheService', () => {
       `${ROUTING_CACHE.PHONE_KEY_PREFIX}${DEPARTMENT_LINE}`,
       `${ROUTING_CACHE.PHONE_KEY_PREFIX}${DIRECT_LINE}`,
     ]);
+    // A warm-up after an upgrade is what gives every entry its voice flag.
+    for (const line of [DEPARTMENT_LINE, DIRECT_LINE]) {
+      expect(
+        CachedRoutingSchema.parse(
+          writtenValue(set, `${ROUTING_CACHE.PHONE_KEY_PREFIX}${line}`),
+        ),
+      ).toMatchObject({ voiceEnabled: true });
+    }
     expect(exec).toHaveBeenCalledTimes(1);
   });
 });
