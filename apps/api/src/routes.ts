@@ -19,13 +19,18 @@ import {
 } from './messaging/index.js';
 import { adminPhoneNumberRoutes } from './phone-numbers/index.js';
 import { internalRoutingRoutes } from './routing/index.js';
-import { adminUserRoutes, internalUserRoutes } from './users/index.js';
+import {
+  adminUserRoutes,
+  internalUserRoutes,
+  userTeammateRoutes,
+} from './users/index.js';
 
 /** Routes every authenticated user (AGENT, SUPERVISOR, ADMIN) may call. */
 export const userApiRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.requireAuth);
 
   await fastify.register(userDepartmentRoutes, { prefix: '/departments' });
+  await fastify.register(userTeammateRoutes, { prefix: '/teammates' });
   await fastify.register(contactRoutes, { prefix: '/contacts' });
   await fastify.register(messageRoutes, { prefix: '/messages' });
   await fastify.register(messageSenderRoutes, { prefix: '/message-senders' });

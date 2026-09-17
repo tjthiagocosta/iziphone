@@ -30,6 +30,14 @@ describe('route groups', () => {
     });
   });
 
+  test('the teammate list is for signed-in users only', async () => {
+    app = await createApiRouteApp(userApiRoutes, { user: null, db: emptyDb });
+
+    const response = await app.inject({ method: 'GET', url: '/teammates' });
+
+    expect(response.statusCode).toBe(401);
+  });
+
   test('admin routes reject users without the ADMIN role', async () => {
     app = await createApiRouteApp(adminApiRoutes, {
       user: { ...defaultAuthUser, role: 'AGENT' },
