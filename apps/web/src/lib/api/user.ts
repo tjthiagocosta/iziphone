@@ -12,6 +12,8 @@ import {
   MessageListResponseSchema,
   type MessageSendersResponse,
   MessageSendersResponseSchema,
+  type OutboundCallLinesResponse,
+  OutboundCallLinesResponseSchema,
   type SendSms,
   type SendSmsResponse,
   SendSmsResponseSchema,
@@ -41,6 +43,13 @@ export function getTeammates(): Promise<TeammatesResponse> {
 export function getMessageSenders(): Promise<MessageSendersResponse> {
   return requestApi('/api/user/message-senders', {
     schema: MessageSendersResponseSchema,
+  });
+}
+
+/** The numbers the user may place calls from. */
+export function getCallLines(): Promise<OutboundCallLinesResponse> {
+  return requestApi('/api/user/call-lines', {
+    schema: OutboundCallLinesResponseSchema,
   });
 }
 

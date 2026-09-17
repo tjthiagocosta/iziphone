@@ -118,6 +118,11 @@ export interface TelephonySessionDeps {
   /** A Twilio access token for this user; asked again before one expires. */
   fetchVoiceToken(): Promise<string>;
   createDevice(token: string): VoiceDevice;
+  /**
+   * Asks the call controller whether this user may call `to` from `line`.
+   * Resolves to the grant the call is placed on; rejects with the refusal.
+   */
+  requestOutboundGrant(to: string, line: string): Promise<string>;
   /** Asks the call controller to end the conversation this leg belongs to. */
   requestHangup(legSid: string): Promise<void>;
   /**
@@ -256,12 +261,25 @@ export class TelephonySession {
     this.lastEndedCall = null;
   }
 
-  async makeCall(to: string): Promise<void> {
-    if (!this.device || this.state.deviceStatus !== 'ready') {
+  /**
+   * Dials `to` from `line`, one of the user's own numbers. The call controller
+   * decides whether the user may call from it: it is asked for a grant first,
+   * and the call is placed on that grant, which is all Twilio is told. A
+   * refusal ends the attempt here, with the controller's reason; a call
+   * without a line is never asked for, because there is no number of the
+   * deployment for it to fall back to.
+   */
+  async makeCall(to: string, line: string): Promise<void> {
+    const device = this.device;
+    if (!device || this.state.deviceStatus !== 'ready') {
       this.update({ error: 'The phone is not ready' });
       return;
     }
-    if (this.activeCall) {
+    if (!line) {
+      this.update({ error: 'Choose a number to call from' });
+      return;
+    }
+    if (this.activeCall || this.state.callStatus === 'connecting') {
       this.update({ error: 'A call is already in progress' });
       return;
     }
@@ -276,14 +294,19 @@ export class TelephonySession {
     });
 
     try {
-      const call = await this.device.connect({
-        params: { type: 'outbound-pstn', to },
+      const grant = await this.deps.requestOutboundGrant(to, line);
+      // A call that rang meanwhile has taken the phone; it is not ours to end.
+      if (this.disposed || this.activeCall) return;
+
+      const call = await device.connect({
+        params: { type: 'outbound-pstn', grant },
       });
       if (this.disposed) return;
 
       this.activeCall = call;
       this.bind(call);
     } catch (error) {
+      if (this.disposed || this.activeCall) return;
       this.update({
         callStatus: 'idle',
         remoteNumber: null,

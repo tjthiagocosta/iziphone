@@ -4,10 +4,10 @@ import type { Contact, ContactConversation } from '@repo/dto';
 import { Phone, Search } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { CallButton, CallLinePicker } from '@/components/call';
 import { useCall } from '@/components/providers/CallProvider';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useContacts } from '@/hooks/use-contacts';
@@ -15,6 +15,10 @@ import { avatarColorFor } from '@/lib/avatar-color';
 import { initialsOf } from '@/lib/initials';
 import { lineName } from '@/lib/line';
 import { formatPhoneNumber } from '@/lib/phone-number';
+import {
+  type CallEligibility,
+  callFromChosenLine,
+} from '@/lib/telephony/call-line';
 import { cn } from '@/lib/utils';
 
 const SEARCH_DEBOUNCE_MS = 250;
@@ -39,6 +43,11 @@ export function ContactsView() {
     search: search || undefined,
   });
 
+  // A contact can have a thread on several lines, so the list does not guess
+  // one: calls from here leave from the line chosen above the list.
+  const { callLines, chosenCallLineId } = useCall();
+  const eligibility = callFromChosenLine(callLines, chosenCallLineId);
+
   return (
     <div className="h-full flex flex-col bg-background">
       <div className="p-4 border-b border-border">
@@ -60,12 +69,18 @@ export function ContactsView() {
             className="pl-9 bg-secondary border-0"
           />
         </div>
+
+        <CallLinePicker className="mt-3" />
       </div>
 
       <ScrollArea className="flex-1">
         <div className="divide-y divide-border">
           {contacts.map((contact) => (
-            <ContactItem key={contact.id} contact={contact} />
+            <ContactItem
+              key={contact.id}
+              contact={contact}
+              eligibility={eligibility}
+            />
           ))}
 
           {contacts.length === 0 && (
@@ -87,8 +102,15 @@ export function ContactsView() {
   );
 }
 
-function ContactItem({ contact }: { contact: Contact }) {
+function ContactItem({
+  contact,
+  eligibility,
+}: {
+  contact: Contact;
+  eligibility: CallEligibility;
+}) {
   const { makeCall } = useCall();
+  const name = contact.name ?? formatPhoneNumber(contact.phoneNumber);
 
   return (
     <div className="flex items-center gap-4 px-4 py-3">
@@ -124,15 +146,17 @@ function ContactItem({ contact }: { contact: Contact }) {
         </div>
       </div>
 
-      <Button
+      <CallButton
         variant="ghost"
         size="icon"
         className="h-9 w-9 shrink-0"
-        onClick={() => void makeCall(contact.phoneNumber)}
-        aria-label={`Call ${contact.name ?? formatPhoneNumber(contact.phoneNumber)}`}
+        eligibility={eligibility}
+        label={`Call ${name}`}
+        onCall={(line) => void makeCall(contact.phoneNumber, line.phoneNumber)}
+        aria-label={`Call ${name}`}
       >
         <Phone className="h-4 w-4" />
-      </Button>
+      </CallButton>
     </div>
   );
 }

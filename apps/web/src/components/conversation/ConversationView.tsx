@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useConversationThread } from '@/hooks/use-conversation-thread';
+import { callFromConversationLine } from '@/lib/telephony/call-line';
 import { ConversationHeader } from './ConversationHeader';
 import { InteractionCard } from './InteractionCard';
 import { MessageInput } from './MessageInput';
@@ -21,7 +22,7 @@ interface ConversationViewProps {
 }
 
 export function ConversationView({ conversationId }: ConversationViewProps) {
-  const { makeCall } = useCall();
+  const { makeCall, callLines } = useCall();
   const {
     conversation,
     days,
@@ -52,7 +53,13 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
       <div className="h-full flex flex-col bg-background">
         <ConversationHeader
           conversation={conversation}
-          onCall={() => void makeCall(conversation.contact.phoneNumber)}
+          callEligibility={callFromConversationLine(
+            callLines,
+            conversation.sourcePhoneNumber.phoneNumber,
+          )}
+          onCall={(line) =>
+            void makeCall(conversation.contact.phoneNumber, line.phoneNumber)
+          }
         />
 
         {/*

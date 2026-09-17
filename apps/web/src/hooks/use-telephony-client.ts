@@ -7,6 +7,7 @@ import {
   fetchVoiceToken,
   requestHangup,
   requestHold,
+  requestOutboundGrant,
   requestTransfer,
   requestTransferCancel,
 } from '@/lib/api/call-controller';
@@ -33,7 +34,8 @@ export interface TelephonyClientOptions {
 }
 
 export interface TelephonyClient extends TelephonyState {
-  makeCall: (to: string) => Promise<void>;
+  /** Dials `to` from `line`, the E.164 number of one of the user's lines. */
+  makeCall: (to: string, line: string) => Promise<void>;
   hangUp: () => Promise<void>;
   answerIncoming: () => void;
   rejectIncoming: () => void;
@@ -76,6 +78,8 @@ export function useTelephonyClient({
         requestMicrophone,
         fetchVoiceToken: async () =>
           fetchVoiceToken(await getRealtimeTokenRef.current()),
+        requestOutboundGrant: async (to, line) =>
+          requestOutboundGrant(await getRealtimeTokenRef.current(), to, line),
         requestHangup: async (legSid) =>
           requestHangup(await getRealtimeTokenRef.current(), legSid),
         requestHold: async (legSid, hold) =>
@@ -108,7 +112,8 @@ export function useTelephonyClient({
   }, [identity]);
 
   const makeCall = useCallback(
-    (to: string) => sessionRef.current?.makeCall(to) ?? Promise.resolve(),
+    (to: string, line: string) =>
+      sessionRef.current?.makeCall(to, line) ?? Promise.resolve(),
     [],
   );
   const hangUp = useCallback(

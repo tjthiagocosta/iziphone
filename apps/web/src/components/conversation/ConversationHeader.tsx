@@ -1,27 +1,26 @@
 'use client';
 
-import type { MessageConversation } from '@repo/dto';
+import type { MessageConversation, OutboundCallLine } from '@repo/dto';
 import { Phone } from 'lucide-react';
+import { CallButton } from '@/components/call';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Button } from '@/components/ui/button';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 import { avatarColorFor } from '@/lib/avatar-color';
 import { initialsOf } from '@/lib/initials';
 import { lineDescription } from '@/lib/line';
 import { formatPhoneNumber } from '@/lib/phone-number';
+import type { CallEligibility } from '@/lib/telephony/call-line';
 import { cn } from '@/lib/utils';
 
 interface ConversationHeaderProps {
   conversation: MessageConversation;
-  onCall: () => void;
+  /** Whether the reader may call from the line this thread is on. */
+  callEligibility: CallEligibility;
+  onCall: (line: OutboundCallLine) => void;
 }
 
 export function ConversationHeader({
   conversation,
+  callEligibility,
   onCall,
 }: ConversationHeaderProps) {
   const { contact, sourcePhoneNumber } = conversation;
@@ -52,19 +51,17 @@ export function ConversationHeader({
         </p>
       </div>
 
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-9 w-9 text-muted-foreground hover:text-foreground"
-            onClick={onCall}
-          >
-            <Phone className="h-5 w-5" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Call {name}</TooltipContent>
-      </Tooltip>
+      <CallButton
+        variant="ghost"
+        size="icon"
+        className="h-9 w-9 text-muted-foreground hover:text-foreground"
+        eligibility={callEligibility}
+        label={`Call ${name}`}
+        onCall={onCall}
+        aria-label={`Call ${name}`}
+      >
+        <Phone className="h-5 w-5" />
+      </CallButton>
     </div>
   );
 }

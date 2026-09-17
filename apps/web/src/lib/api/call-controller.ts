@@ -1,5 +1,7 @@
 import {
   type HoldCall,
+  type OutboundGrantRequest,
+  OutboundGrantResponseSchema,
   type TransferCall,
   VoiceHangupResponseSchema,
   VoiceHoldResponseSchema,
@@ -15,6 +17,29 @@ export async function fetchVoiceToken(realtimeToken: string): Promise<string> {
     schema: VoiceTokenResponseSchema,
   });
   return jwt;
+}
+
+/**
+ * Asks the controller for the grant a call to `to` from `fromNumber` is
+ * placed on; the device then starts the call with it. A refusal is an
+ * `ApiError` whose `code` is an `OutboundGrantRefusal` and whose message says
+ * why in the user's terms.
+ */
+export async function requestOutboundGrant(
+  realtimeToken: string,
+  to: string,
+  fromNumber: string,
+): Promise<string> {
+  const { grant } = await requestCallController(
+    '/api/voice/outbound-grants',
+    realtimeToken,
+    {
+      method: 'POST',
+      body: { to, fromNumber } satisfies OutboundGrantRequest,
+      schema: OutboundGrantResponseSchema,
+    },
+  );
+  return grant;
 }
 
 /**

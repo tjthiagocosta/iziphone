@@ -105,8 +105,19 @@ describe('inboxRow for a call', () => {
   test('offers a call back rather than a thread it cannot identify', () => {
     expect(rowForCall()).toMatchObject({
       href: null,
-      callBack: '+15155550104',
+      callBack: { number: '+15155550104', line: '+15155550101' },
     });
+  });
+
+  test('calls back from the line the call was on, whichever way it went', () => {
+    // Outbound, our line is `from` and the other party is `to`.
+    expect(
+      rowForCall({
+        direction: 'outbound',
+        from: '+15155550101',
+        to: '+15155550104',
+      }).callBack,
+    ).toEqual({ number: '+15155550104', line: '+15155550101' });
   });
 
   test('calls a voicemail one, rather than a missed call with a file', () => {

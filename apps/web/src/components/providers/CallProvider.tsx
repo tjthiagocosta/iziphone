@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { useCallLines } from '@/hooks/use-call-lines';
 import { useCallSocket } from '@/hooks/use-call-socket';
 import { useTeammates } from '@/hooks/use-teammates';
 import {
@@ -21,6 +22,11 @@ import {
   type TransferTarget,
   useTelephonyClient,
 } from '@/hooks/use-telephony-client';
+import {
+  type CallLineChoice,
+  type CallLines,
+  chosenLineIdFor,
+} from '@/lib/telephony/call-line';
 import {
   type EarlyAnswer,
   earlyAnswerOf,
@@ -66,7 +72,19 @@ export interface CallContextValue {
    */
   lastEndedCall: CallEnded | null;
   isSocketConnected: boolean;
-  makeCall: (to: string) => Promise<void>;
+  /** The user's numbers a call may leave from; see `lib/telephony/call-line`. */
+  callLines: CallLines;
+  /** Asks the API for the lines again; see `useCallLines`. */
+  reloadCallLines: () => void;
+  /**
+   * The line the user picked for calls that no conversation ties to a line,
+   * shared by every picker so the dialer and the contacts list agree. Null
+   * until they pick one, which means the default line.
+   */
+  chosenCallLineId: string | null;
+  chooseCallLine: (lineId: string) => void;
+  /** Dials `to` from `line`, the E.164 number of one of `callLines`. */
+  makeCall: (to: string, line: string) => Promise<void>;
   hangUp: () => void;
   sendDigits: (digits: string) => void;
   toggleMute: () => void;
@@ -85,7 +103,7 @@ const CallContext = createContext<CallContextValue | null>(null);
  * socket shows the offer, and the device carries the audio.
  */
 export function CallProvider({ children }: { children: ReactNode }) {
-  const { user, getRealtimeToken } = useAuth();
+  const { user, getRealtimeToken, isLoading: isSessionLoading } = useAuth();
   const telephony = useTelephonyClient({
     identity: user?.id,
     getRealtimeToken,
@@ -96,6 +114,22 @@ export function CallProvider({ children }: { children: ReactNode }) {
     onTransferOutcome: telephony.applyTransferOutcome,
   });
   const directory = useTeammates({ userId: user?.id });
+  const { callLines, reload: reloadCallLines } = useCallLines({
+    userId: user?.id,
+    isLoading: isSessionLoading,
+  });
+  const [callLineChoice, setCallLineChoice] = useState<CallLineChoice | null>(
+    null,
+  );
+  const userId = user?.id;
+  const chooseCallLine = useCallback(
+    (lineId: string) => {
+      if (userId) {
+        setCallLineChoice({ userId, lineId });
+      }
+    },
+    [userId],
+  );
   const [callDuration, setCallDuration] = useState(0);
 
   const { callStatus } = telephony;
@@ -220,6 +254,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
     refreshTeammates: directory.refetch,
     lastEndedCall: socket.lastEndedCall,
     isSocketConnected: socket.isConnected,
+    callLines,
+    reloadCallLines,
+    chosenCallLineId: chosenLineIdFor(callLineChoice, userId),
+    chooseCallLine,
     makeCall: telephony.makeCall,
     hangUp,
     sendDigits: telephony.sendDigits,

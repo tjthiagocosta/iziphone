@@ -2,6 +2,7 @@
 
 import { MessageSquare, Phone, PhoneMissed, Voicemail } from 'lucide-react';
 import Link from 'next/link';
+import { CallButton } from '@/components/call';
 import { useCall } from '@/components/providers/CallProvider';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -12,7 +13,9 @@ import { avatarColorFor } from '@/lib/avatar-color';
 import type { InboxItem, InboxTab } from '@/lib/inbox/inbox-item';
 import { type InboxRow, inboxRow } from '@/lib/inbox/inbox-row';
 import { initialsOf } from '@/lib/initials';
+import { lineName } from '@/lib/line';
 import { formatRelativeTime } from '@/lib/relative-time';
+import { callBackFromLine } from '@/lib/telephony/call-line';
 import { cn } from '@/lib/utils';
 
 export interface InboxTabOption {
@@ -120,7 +123,7 @@ function InboxListItem({ item }: { item: InboxItem }) {
   return (
     <div className="flex items-center gap-4 px-4 py-3 hover:bg-secondary/50 transition-colors">
       {body}
-      {row.callBack && <CallBackButton number={row.callBack} />}
+      {row.callBack && <CallBackButton callBack={row.callBack} />}
     </div>
   );
 }
@@ -187,17 +190,32 @@ function InboxRowBody({ row }: { row: InboxRow }) {
  * A call row opens nothing: a contact has one conversation per line, and the
  * call record names only the numbers, so the thread cannot be identified.
  */
-function CallBackButton({ number }: { number: string }) {
-  const { makeCall } = useCall();
+function CallBackButton({
+  callBack,
+}: {
+  callBack: NonNullable<InboxRow['callBack']>;
+}) {
+  const { makeCall, callLines, chosenCallLineId } = useCall();
+  const eligibility = callBackFromLine(
+    callLines,
+    callBack.line,
+    chosenCallLineId,
+  );
 
   return (
-    <Button
+    <CallButton
       variant="ghost"
       size="sm"
-      onClick={() => void makeCall(number)}
       className="shrink-0"
+      eligibility={eligibility}
+      label={
+        eligibility.canCall
+          ? `Call back from ${lineName(eligibility.line)}`
+          : 'Call back'
+      }
+      onCall={(line) => void makeCall(callBack.number, line.phoneNumber)}
     >
       Call back
-    </Button>
+    </CallButton>
   );
 }

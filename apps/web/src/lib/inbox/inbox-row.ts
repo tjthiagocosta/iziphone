@@ -31,8 +31,13 @@ export interface InboxRow {
    * line, and matching on the number alone would open somebody else's.
    */
   href: string | null;
-  /** The number to dial, for a row with no thread to open. */
-  callBack: string | null;
+  /**
+   * For a row with no thread to open: the number to dial and our number the
+   * call was on, which the call back prefers so the other party sees the
+   * number they know. `line` is not a number on the record of a call placed
+   * before calls had a line.
+   */
+  callBack: { number: string; line: string } | null;
 }
 
 export function inboxRow(item: InboxItem): InboxRow {
@@ -64,7 +69,7 @@ export function inboxRow(item: InboxItem): InboxRow {
       unreadCount: 0,
       sortKey: item.sortKey,
       href: null,
-      callBack: counterparty,
+      callBack: { number: counterparty, line: callLine(call) },
     };
   }
 

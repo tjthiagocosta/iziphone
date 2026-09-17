@@ -1,7 +1,8 @@
 'use client';
 
 import { Delete, Phone, Search } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { CallLinePicker } from '@/components/call';
 import { useCall } from '@/components/providers/CallProvider';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -16,6 +17,7 @@ import { useMessageConversations } from '@/hooks/use-message-conversations';
 import { avatarColorFor } from '@/lib/avatar-color';
 import { initialsOf } from '@/lib/initials';
 import { formatPhoneNumber } from '@/lib/phone-number';
+import { callFromChosenLine } from '@/lib/telephony/call-line';
 import { cn } from '@/lib/utils';
 
 interface DialerModalProps {
@@ -41,14 +43,29 @@ const KEYPAD_KEYS = [
 ];
 
 /*
- * There is no "call from" picker here. An outbound call carries the caller ID
- * the deployment is configured with, and `makeCall` takes only the number to
- * reach, so any identity or caller-ID choice on this screen would be a control
- * that changes nothing about the call that leaves.
+ * A typed number belongs to no conversation, so the line it is called from is
+ * the one chosen in the picker under the number. The other party sees that
+ * line as the caller, and the call is kept on it.
  */
 export function DialerModal({ open, onOpenChange }: DialerModalProps) {
   const [phoneNumber, setPhoneNumber] = useState('');
-  const { makeCall, deviceStatus } = useCall();
+  const {
+    makeCall,
+    deviceStatus,
+    callLines,
+    reloadCallLines,
+    chosenCallLineId,
+  } = useCall();
+  const eligibility = callFromChosenLine(callLines, chosenCallLineId);
+  const callLine = eligibility.canCall ? eligibility.line.phoneNumber : null;
+
+  // The lines are about to be chosen from, and an administrator may have
+  // changed them since the tab was opened.
+  useEffect(() => {
+    if (open) {
+      reloadCallLines();
+    }
+  }, [open, reloadCallLines]);
   const { conversations } = useMessageConversations({
     limit: QUICK_DIAL_COUNT,
   });
@@ -62,11 +79,11 @@ export function DialerModal({ open, onOpenChange }: DialerModalProps) {
   }, []);
 
   const handleCall = useCallback(async () => {
-    if (phoneNumber.trim() && deviceStatus === 'ready') {
-      await makeCall(phoneNumber);
+    if (phoneNumber.trim() && deviceStatus === 'ready' && callLine) {
+      await makeCall(phoneNumber, callLine);
       onOpenChange(false);
     }
-  }, [phoneNumber, deviceStatus, makeCall, onOpenChange]);
+  }, [phoneNumber, deviceStatus, callLine, makeCall, onOpenChange]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -94,6 +111,7 @@ export function DialerModal({ open, onOpenChange }: DialerModalProps) {
               </Button>
             )}
           </div>
+          <CallLinePicker className="mt-3" />
         </div>
 
         {conversations.length > 0 && (
@@ -154,7 +172,9 @@ export function DialerModal({ open, onOpenChange }: DialerModalProps) {
             <Button
               type="button"
               onClick={() => void handleCall()}
-              disabled={!phoneNumber.trim() || deviceStatus !== 'ready'}
+              disabled={
+                !phoneNumber.trim() || deviceStatus !== 'ready' || !callLine
+              }
               className="h-14 w-14 rounded-full bg-green-600 hover:bg-green-700 disabled:bg-muted disabled:text-muted-foreground"
               aria-label="Call"
             >

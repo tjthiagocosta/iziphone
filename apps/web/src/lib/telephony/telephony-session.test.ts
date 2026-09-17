@@ -11,6 +11,9 @@ import {
   type VoiceDevice,
 } from './telephony-session';
 
+/** The number of the user's the test calls leave from. */
+const line = '+15550100102';
+
 class FakeCall extends EventEmitter implements VoiceCall {
   parameters: Record<string, string>;
   private muted = false;
@@ -75,6 +78,7 @@ function setup(overrides: Partial<TelephonySessionDeps> = {}) {
       devices.push(device);
       return device;
     }),
+    requestOutboundGrant: vi.fn(async () => 'a-grant-token'),
     requestHangup: vi.fn(async () => {}),
     requestHold: vi.fn(async (_legSid: string, hold: boolean) => hold),
     requestTransfer: vi.fn(async () => ({ conversationUuid: 'CAcall1' })),
@@ -342,14 +346,19 @@ describe('TelephonySession', () => {
   });
 
   describe('outgoing calls', () => {
-    test('dials through the device and connects when Twilio accepts', async () => {
-      const { device, session } = await startedSession();
+    test('asks for a grant to call from the chosen line, dials on it, and connects when Twilio accepts', async () => {
+      const { device, session, deps } = await startedSession();
       const call = device.nextCall;
 
-      await session.makeCall('+15550100199');
+      await session.makeCall('+15550100199', line);
 
+      expect(deps.requestOutboundGrant).toHaveBeenCalledWith(
+        '+15550100199',
+        line,
+      );
+      // The grant is all Twilio is told: the number and the line are its.
       expect(device.connect).toHaveBeenCalledWith({
-        params: { type: 'outbound-pstn', to: '+15550100199' },
+        params: { type: 'outbound-pstn', grant: 'a-grant-token' },
       });
       expect(session.getState()).toMatchObject({
         callStatus: 'connecting',
@@ -363,15 +372,114 @@ describe('TelephonySession', () => {
       expect(session.getState().callStatus).toBe('connected');
     });
 
+    test('shows the call as connecting while the grant is asked for', async () => {
+      const { device, session, deps } = await startedSession();
+      const grant = deferred<string>();
+      vi.mocked(deps.requestOutboundGrant).mockReturnValueOnce(grant.promise);
+
+      const dialing = session.makeCall('+15550100199', line);
+
+      expect(session.getState()).toMatchObject({
+        callStatus: 'connecting',
+        remoteNumber: '+15550100199',
+      });
+      expect(device.connect).not.toHaveBeenCalled();
+
+      grant.resolve('a-grant-token');
+      await dialing;
+      expect(device.connect).toHaveBeenCalledOnce();
+    });
+
+    test('a refused grant ends the attempt with the reason the controller gave, and dials nothing', async () => {
+      const { device, session, deps } = await startedSession();
+      vi.mocked(deps.requestOutboundGrant).mockRejectedValueOnce(
+        refusal(
+          'line-not-allowed',
+          'You are not allowed to call from that number',
+        ),
+      );
+
+      await session.makeCall('+15550100199', line);
+
+      expect(device.connect).not.toHaveBeenCalled();
+      expect(session.getState()).toMatchObject({
+        callStatus: 'idle',
+        remoteNumber: null,
+        error: 'You are not allowed to call from that number',
+      });
+    });
+
+    test('a grant that could not be asked for reads as a call that could not start', async () => {
+      const { device, session, deps } = await startedSession();
+      vi.mocked(deps.requestOutboundGrant).mockRejectedValueOnce(new Error(''));
+
+      await session.makeCall('+15550100199', line);
+
+      expect(device.connect).not.toHaveBeenCalled();
+      expect(session.getState()).toMatchObject({
+        callStatus: 'idle',
+        error: 'The call could not be started',
+      });
+    });
+
+    test('a second dial while the grant is asked for is refused; one grant, one call', async () => {
+      const { device, session, deps } = await startedSession();
+      const grant = deferred<string>();
+      vi.mocked(deps.requestOutboundGrant).mockReturnValueOnce(grant.promise);
+
+      const first = session.makeCall('+15550100199', line);
+      await session.makeCall('+15550100198', line);
+
+      expect(session.getState()).toMatchObject({
+        remoteNumber: '+15550100199',
+        error: 'A call is already in progress',
+      });
+
+      grant.resolve('a-grant-token');
+      await first;
+      expect(deps.requestOutboundGrant).toHaveBeenCalledOnce();
+      expect(device.connect).toHaveBeenCalledOnce();
+    });
+
+    test('a call that rings while the grant is asked for keeps the phone; the grant is not used', async () => {
+      const { device, session, deps } = await startedSession();
+      const grant = deferred<string>();
+      vi.mocked(deps.requestOutboundGrant).mockReturnValueOnce(grant.promise);
+
+      const dialing = session.makeCall('+15550100199', line);
+      device.emit('incoming', new FakeCall({ From: '+15550100101' }));
+      grant.resolve('a-grant-token');
+      await dialing;
+
+      expect(device.connect).not.toHaveBeenCalled();
+      expect(session.getState()).toMatchObject({
+        callStatus: 'ringing',
+        remoteNumber: '+15550100101',
+      });
+    });
+
     test('refuses to dial before the device is ready', async () => {
       const { session, deps } = setup();
 
-      await session.makeCall('+15550100199');
+      await session.makeCall('+15550100199', line);
 
       expect(deps.createDevice).not.toHaveBeenCalled();
       expect(session.getState()).toMatchObject({
         callStatus: 'idle',
         error: 'The phone is not ready',
+      });
+    });
+
+    test('never asks for a call that has no line to leave from', async () => {
+      const { device, session, deps } = await startedSession();
+
+      await session.makeCall('+15550100199', '');
+
+      expect(deps.requestOutboundGrant).not.toHaveBeenCalled();
+      expect(device.connect).not.toHaveBeenCalled();
+      expect(session.getState()).toMatchObject({
+        callStatus: 'idle',
+        error: 'Choose a number to call from',
       });
     });
 
@@ -381,7 +489,7 @@ describe('TelephonySession', () => {
         new Error('31002: Connection failed'),
       );
 
-      await session.makeCall('+15550100199');
+      await session.makeCall('+15550100199', line);
 
       expect(session.getState()).toMatchObject({
         callStatus: 'idle',
@@ -394,7 +502,7 @@ describe('TelephonySession', () => {
       const { device, session, deps } = await startedSession();
       const call = device.nextCall;
       call.parameters.CallSID = 'CA_out';
-      await session.makeCall('+15550100199');
+      await session.makeCall('+15550100199', line);
       call.accept();
 
       await session.hangUp();
@@ -414,7 +522,7 @@ describe('TelephonySession', () => {
       vi.mocked(deps.requestHangup).mockRejectedValueOnce(
         new Error('Request failed with status 502'),
       );
-      await session.makeCall('+15550100199');
+      await session.makeCall('+15550100199', line);
       call.accept();
 
       await session.hangUp();
@@ -426,7 +534,7 @@ describe('TelephonySession', () => {
     test('drops a leg Twilio has not named yet without asking the controller', async () => {
       const { device, session, deps } = await startedSession();
       const call = device.nextCall;
-      await session.makeCall('+15550100199');
+      await session.makeCall('+15550100199', line);
 
       await session.hangUp();
 
@@ -442,7 +550,7 @@ describe('TelephonySession', () => {
       vi.mocked(deps.requestHangup).mockImplementationOnce(
         () => new Promise<void>((resolve) => (release = resolve)),
       );
-      await session.makeCall('+15550100199');
+      await session.makeCall('+15550100199', line);
       call.accept();
 
       const first = session.hangUp();
@@ -459,7 +567,7 @@ describe('TelephonySession', () => {
     async function connectedCall() {
       const context = await startedSession();
       const call = context.device.nextCall;
-      await context.session.makeCall('+15550100199');
+      await context.session.makeCall('+15550100199', line);
       call.accept();
       return { ...context, call };
     }
@@ -517,7 +625,7 @@ describe('TelephonySession', () => {
       const context = await startedSession(overrides);
       const call = context.device.nextCall;
       call.parameters = { CallSID: 'CAleg1' };
-      await context.session.makeCall('+15555550123');
+      await context.session.makeCall('+15555550123', line);
       call.accept();
       return { ...context, call };
     }
@@ -721,7 +829,7 @@ describe('TelephonySession', () => {
       const context = await startedSession(overrides);
       const call = context.device.nextCall;
       call.parameters = { CallSID: 'CAleg1' };
-      await context.session.makeCall('+15555550123');
+      await context.session.makeCall('+15555550123', line);
       call.accept();
       return { ...context, call };
     }
@@ -791,7 +899,7 @@ describe('TelephonySession', () => {
 
       const next = new FakeCall({ CallSID: 'CAleg7' });
       device.nextCall = next;
-      await session.makeCall('+15555550123');
+      await session.makeCall('+15555550123', line);
       next.accept();
       next.emit('disconnect');
 
@@ -1343,7 +1451,7 @@ describe('TelephonySession', () => {
       // Dialling again before "Call ended" left the screen.
       const next = new FakeCall({ CallSID: 'CAleg7' });
       device.nextCall = next;
-      await session.makeCall('+15555550123');
+      await session.makeCall('+15555550123', line);
       next.accept();
 
       session.applyTransferOutcome(answered);
