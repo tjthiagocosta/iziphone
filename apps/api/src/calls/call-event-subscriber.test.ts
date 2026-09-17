@@ -84,6 +84,8 @@ describe('CallEventSubscriberService', () => {
       CHANNELS.CALL_ENDED,
       CHANNELS.CALL_MISSED,
       CHANNELS.CALL_TRANSFERRED,
+      CHANNELS.CALL_HELD,
+      CHANNELS.CALL_RESUMED,
       CHANNELS.CALL_PARTICIPANT_STATUS,
       CHANNELS.CALL_RECORDING_READY,
       CHANNELS.CALL_TRANSCRIPTION_READY,
@@ -284,6 +286,103 @@ describe('CallEventSubscriberService', () => {
         metadata: expect.objectContaining({ toUserId: 'user-2' }),
       }),
     });
+  });
+
+  test('a transferred call belongs to the teammate and their leg, with the handover on the timeline', async () => {
+    await harness.emit(CHANNELS.CALL_TRANSFERRED, {
+      conversationUuid: 'conv-1',
+      fromUserId: 'user-1',
+      toUserId: 'user-2',
+      agentLegUuid: 'teammate-leg',
+      timestamp,
+    } satisfies ChannelInput<'call:transferred'>);
+
+    expect(harness.db.call.update).toHaveBeenCalledWith({
+      where: { id: 'call-1' },
+      data: { userId: 'user-2', agentLegUuid: 'teammate-leg' },
+    });
+    expect(harness.db.callEvent.create).toHaveBeenCalledWith({
+      data: {
+        callId: 'call-1',
+        eventType: 'CALL_TRANSFERRED',
+        actorType: 'AGENT',
+        actorId: 'user-1',
+        description: 'Call transferred to another agent',
+        metadata: {
+          fromUserId: 'user-1',
+          toUserId: 'user-2',
+          agentLegUuid: 'teammate-leg',
+        },
+      },
+    });
+  });
+
+  test('writes a timeline entry when the agent holds the call and when they resume it', async () => {
+    const event = {
+      conversationUuid: 'conv-1',
+      userId: 'user-1',
+      legUuid: 'caller-leg',
+      timestamp,
+    } satisfies ChannelInput<'call:held'>;
+
+    await harness.emit(CHANNELS.CALL_HELD, event);
+    await harness.emit(CHANNELS.CALL_RESUMED, event);
+
+    expect(harness.db.callEvent.create.mock.calls).toEqual([
+      [
+        {
+          data: {
+            callId: 'call-1',
+            eventType: 'CALL_HELD',
+            actorType: 'AGENT',
+            actorId: 'user-1',
+            description: 'Call placed on hold',
+            metadata: { legUuid: 'caller-leg' },
+          },
+        },
+      ],
+      [
+        {
+          data: {
+            callId: 'call-1',
+            eventType: 'CALL_RESUMED',
+            actorType: 'AGENT',
+            actorId: 'user-1',
+            description: 'Call taken off hold',
+            metadata: { legUuid: 'caller-leg' },
+          },
+        },
+      ],
+    ]);
+    expect(harness.db.call.update).not.toHaveBeenCalled();
+  });
+
+  test('a resume nobody asked for, after a transfer settled, is the system’s', async () => {
+    await harness.emit(CHANNELS.CALL_RESUMED, {
+      conversationUuid: 'conv-1',
+      legUuid: 'caller-leg',
+      timestamp,
+    } satisfies ChannelInput<'call:resumed'>);
+
+    expect(harness.db.callEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        eventType: 'CALL_RESUMED',
+        actorType: 'SYSTEM',
+        actorId: undefined,
+      }),
+    });
+  });
+
+  test('drops a hold for a call it has no record of', async () => {
+    harness.db.call.findUnique.mockResolvedValue(null);
+
+    await harness.emit(CHANNELS.CALL_HELD, {
+      conversationUuid: 'conv-9',
+      userId: 'user-1',
+      timestamp,
+    } satisfies ChannelInput<'call:held'>);
+
+    expect(harness.db.callEvent.create).not.toHaveBeenCalled();
   });
 
   test('adds a participant status entry with a known event type', async () => {

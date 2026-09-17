@@ -7,6 +7,7 @@ import {
 import {
   type CallConversationMigratedEvent,
   type CallEndedEvent,
+  type CallHoldEvent,
   type CallIncomingEvent,
   type CallMissedEvent,
   type CallParticipantStatusEvent,
@@ -87,6 +88,16 @@ export class CallEventSubscriberService {
       .on(CHANNELS.CALL_TRANSFERRED, (event) =>
         this.handle(CHANNELS.CALL_TRANSFERRED, event.conversationUuid, () =>
           this.onCallTransferred(event),
+        ),
+      )
+      .on(CHANNELS.CALL_HELD, (event) =>
+        this.handle(CHANNELS.CALL_HELD, event.conversationUuid, () =>
+          this.onHoldChanged(event, true),
+        ),
+      )
+      .on(CHANNELS.CALL_RESUMED, (event) =>
+        this.handle(CHANNELS.CALL_RESUMED, event.conversationUuid, () =>
+          this.onHoldChanged(event, false),
         ),
       )
       .on(CHANNELS.CALL_PARTICIPANT_STATUS, (event) =>
@@ -307,6 +318,28 @@ export class CallEventSubscriberService {
         toUserId: event.toUserId,
         agentLegUuid: event.agentLegUuid,
       },
+    });
+  }
+
+  /**
+   * The agent's hold button, or a transfer holding the other party while the
+   * teammate rings. A resume with nobody named is the controller ending that
+   * hold by itself once the transfer settled.
+   */
+  private async onHoldChanged(
+    event: CallHoldEvent,
+    held: boolean,
+  ): Promise<void> {
+    const existing = await this.findCall(event.conversationUuid);
+    if (!existing) return;
+
+    await this.addTimelineEntry({
+      callId: existing.id,
+      eventType: held ? 'CALL_HELD' : 'CALL_RESUMED',
+      actorType: event.userId ? 'AGENT' : 'SYSTEM',
+      actorId: event.userId,
+      description: held ? 'Call placed on hold' : 'Call taken off hold',
+      metadata: { legUuid: event.legUuid },
     });
   }
 
