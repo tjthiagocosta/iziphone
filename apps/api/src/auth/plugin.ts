@@ -25,10 +25,13 @@ declare module 'fastify' {
     requireAuth: (
       request: FastifyRequest,
       reply: FastifyReply,
-    ) => Promise<void>;
+    ) => Promise<FastifyReply | undefined>;
     requireRole: (
       roles: readonly Role[],
-    ) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    ) => (
+      request: FastifyRequest,
+      reply: FastifyReply,
+    ) => Promise<FastifyReply | undefined>;
   }
   interface FastifyRequest {
     session?: AuthSession;
@@ -95,11 +98,14 @@ const register: FastifyPluginAsync = async (fastify) => {
     const session = await readSession(request);
 
     if (!session) {
-      reply.status(401).send({
+      // An async hook that answers must return the reply, or Fastify decides
+      // whether to continue by looking at reply.sent, which is still false
+      // while any async onSend hook holds the response back: the route handler
+      // would then run despite the 401.
+      return reply.status(401).send({
         error: 'Unauthorized',
         message: 'Authentication required',
       });
-      return;
     }
 
     request.session = session;
@@ -110,12 +116,12 @@ const register: FastifyPluginAsync = async (fastify) => {
 
   fastify.decorate('requireRole', (allowedRoles: readonly Role[]) => {
     return async (request: FastifyRequest, reply: FastifyReply) => {
-      await requireAuth(request, reply);
+      const refused = await requireAuth(request, reply);
 
-      if (reply.sent) return;
+      if (refused) return refused;
 
       if (!request.user || !allowedRoles.includes(request.user.role)) {
-        reply.status(403).send({
+        return reply.status(403).send({
           error: 'Forbidden',
           message: `Required role: ${allowedRoles.join(' or ')}`,
         });

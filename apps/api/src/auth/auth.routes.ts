@@ -27,6 +27,11 @@ function toFetchRequest(request: FastifyRequest, publicUrl: string): Request {
     headers.set(key, Array.isArray(value) ? value.join(', ') : value);
   }
 
+  // Better Auth reads the client address from x-forwarded-for and records it
+  // on the session. Fastify has already resolved request.ip against
+  // TRUST_PROXY, so pass that instead of whatever the client claimed.
+  headers.set('x-forwarded-for', request.ip);
+
   const method = request.method.toUpperCase();
 
   if (method === 'GET' || method === 'HEAD') {

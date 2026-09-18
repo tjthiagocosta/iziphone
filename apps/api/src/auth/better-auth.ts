@@ -43,6 +43,13 @@ export function createAuth(options: AuthOptions) {
       updateAge: SESSION_REFRESH_SECONDS,
     },
 
+    // Better Auth buckets by the x-forwarded-for header, which any client can
+    // set, so its limiter hands an attacker a fresh bucket per request while
+    // putting every header-less client into one shared bucket. The Fastify
+    // limiter covers /api/auth/* instead (see infra/rate-limit.ts) and buckets
+    // by request.ip, which is derived from TRUST_PROXY.
+    rateLimit: { enabled: false },
+
     user: {
       additionalFields: {
         role: {

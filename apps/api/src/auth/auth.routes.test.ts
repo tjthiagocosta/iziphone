@@ -62,6 +62,21 @@ describe('authRoutes', () => {
     );
   });
 
+  test('replaces a forwarded-for header the client sent with the address Fastify resolved', async () => {
+    handler.mockResolvedValue(new Response(null, { status: 204 }));
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/sign-in/email',
+      headers: { 'x-forwarded-for': '203.0.113.9' },
+      payload: { email: 'agent@example.com', password: 'password123' },
+    });
+
+    const fetchRequest = handler.mock.calls[0]?.[0];
+
+    expect(fetchRequest?.headers.get('x-forwarded-for')).toBe('127.0.0.1');
+  });
+
   test('forwards multiple Better Auth cookies individually', async () => {
     const headers = new Headers({ 'content-type': 'application/json' });
     headers.append(

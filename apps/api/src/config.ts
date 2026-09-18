@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { resolveRoutingCacheTtl } from '@repo/events';
 import { z } from 'zod';
 import type { MediaStoreConfig } from './media-store/index.js';
@@ -30,6 +31,7 @@ const EnvSchema = z.object({
     .min(16, 'must be at least 16 characters (openssl rand -base64 32)'),
   BETTER_AUTH_URL: z.url(),
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
+  TRUST_PROXY: z.string().optional(),
   INTERNAL_API_TOKEN: z
     .string()
     .min(16, 'must be at least 16 characters (openssl rand -base64 32)'),
@@ -56,6 +58,18 @@ export interface TwilioCredentials {
   authToken: string;
 }
 
+/**
+ * What Fastify may believe about `X-Forwarded-For` when it derives
+ * `request.ip`: nothing (`false`), everything (`true`), or the addresses and
+ * CIDR ranges of the proxies themselves (`@fastify/proxy-addr` also accepts
+ * the names `loopback`, `linklocal` and `uniquelocal`).
+ *
+ * Fastify also takes a hop count, but a hop count cannot check who the
+ * immediate peer is, so Fastify fails it closed and trusts nothing. It is not
+ * offered here: it would look configured and do nothing.
+ */
+export type TrustProxySetting = boolean | string[];
+
 export interface ApiConfig {
   nodeEnv: NodeEnv;
   logLevel: LogLevel;
@@ -66,6 +80,12 @@ export interface ApiConfig {
    */
   publicUrl: string;
   corsOrigins: string[];
+  /**
+   * Whom to believe about the client's address. The rate limiter buckets by
+   * `request.ip`, so this decides whether every client behind the proxy shares
+   * one bucket (too strict) or can forge a new one per request (no limit).
+   */
+  trustProxy: TrustProxySetting;
   databaseUrl: string;
   redisUrl: string;
   authSecret: string;
@@ -111,6 +131,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
     corsOrigins: values.CORS_ORIGIN.split(',')
       .map((origin) => origin.trim())
       .filter((origin) => origin.length > 0),
+    trustProxy: resolveTrustProxy(values.TRUST_PROXY),
     databaseUrl: values.DATABASE_URL,
     redisUrl: values.REDIS_URL,
     authSecret: values.BETTER_AUTH_SECRET,
@@ -135,6 +156,99 @@ export function loadApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
       keyPrefix: values.STORAGE_KEY_PREFIX ?? null,
     },
   };
+}
+
+/**
+ * Unset means trust nothing, which is right for a directly exposed service:
+ * an unrecognised value stops the boot rather than leaving the address a
+ * client claims to be the one the limiter and the audit log record.
+ */
+function resolveTrustProxy(raw: string | undefined): TrustProxySetting {
+  if (raw === undefined || raw.toLowerCase() === 'false') {
+    return false;
+  }
+
+  if (raw.toLowerCase() === 'true') {
+    return true;
+  }
+
+  const proxies = raw
+    .split(',')
+    .map((proxy) => proxy.trim())
+    .filter((proxy) => proxy.length > 0);
+
+  if (proxies.length === 0) {
+    throw new ApiConfigError([
+      'TRUST_PROXY: names no proxy; use true, false, or a comma-separated list of proxy addresses or CIDR ranges',
+    ]);
+  }
+
+  if (proxies.some((proxy) => /^\d+$/.test(proxy))) {
+    throw new ApiConfigError([
+      'TRUST_PROXY: a hop count is not supported, because Fastify accepts one and then trusts nothing; name the proxies instead',
+    ]);
+  }
+
+  const trusted: string[] = [];
+  const unrecognized: string[] = [];
+
+  for (const proxy of proxies) {
+    const normalized = normalizeProxyAddress(proxy);
+
+    if (normalized === null) {
+      unrecognized.push(proxy);
+    } else {
+      trusted.push(normalized);
+    }
+  }
+
+  if (unrecognized.length > 0) {
+    throw new ApiConfigError([
+      `TRUST_PROXY: not an address, a CIDR range, or one of ${[...PROXY_ADDRESS_PRESETS].join(', ')}: ${unrecognized.join(', ')}`,
+    ]);
+  }
+
+  return trusted;
+}
+
+/** The named ranges `@fastify/proxy-addr` understands besides addresses. */
+const PROXY_ADDRESS_PRESETS = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+/**
+ * The value `@fastify/proxy-addr` will accept for this entry, or null when it
+ * would refuse it. Checked here so a typo is an ApiConfigError at startup
+ * rather than the raw TypeError proxy-addr throws when Fastify compiles the
+ * list. A preset name is matched whatever its case and stored in lower case,
+ * because proxy-addr looks the presets up exactly.
+ */
+function normalizeProxyAddress(value: string): string | null {
+  const preset = value.toLowerCase();
+
+  if (PROXY_ADDRESS_PRESETS.has(preset)) {
+    return preset;
+  }
+
+  const [address, prefixLength, ...extra] = value.split('/');
+
+  if (address === undefined || extra.length > 0) {
+    return null;
+  }
+
+  const version = isIP(address);
+
+  if (version === 0) {
+    return null;
+  }
+
+  if (prefixLength === undefined) {
+    return value;
+  }
+
+  const withinRange =
+    /^\d+$/.test(prefixLength) &&
+    Number(prefixLength) <= (version === 4 ? 32 : 128);
+
+  return withinRange ? value : null;
 }
 
 function resolveTwilio(values: {

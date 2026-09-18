@@ -23,6 +23,7 @@ describe('loadApiConfig', () => {
       listen: { host: '0.0.0.0', port: 3001 },
       publicUrl: 'https://api.example.com',
       corsOrigins: ['http://localhost:3000'],
+      trustProxy: false,
       databaseUrl: requiredEnv.DATABASE_URL,
       redisUrl: 'redis://localhost:6379',
       authSecret: requiredEnv.BETTER_AUTH_SECRET,
@@ -83,6 +84,62 @@ describe('loadApiConfig', () => {
       forcePathStyle: false,
       keyPrefix: 'iziphone',
     });
+  });
+
+  test('reads the proxies to trust for the client address', () => {
+    const trustProxyOf = (TRUST_PROXY: string) =>
+      loadApiConfig({ ...requiredEnv, TRUST_PROXY }).trustProxy;
+
+    expect(trustProxyOf('false')).toBe(false);
+    expect(trustProxyOf('True')).toBe(true);
+    expect(trustProxyOf('10.0.0.1, 192.168.0.0/16')).toEqual([
+      '10.0.0.1',
+      '192.168.0.0/16',
+    ]);
+    // proxy-addr looks its preset names up exactly, so they are stored lower case.
+    expect(trustProxyOf('loopback')).toEqual(['loopback']);
+    expect(trustProxyOf('Loopback, UniqueLocal')).toEqual([
+      'loopback',
+      'uniquelocal',
+    ]);
+    expect(trustProxyOf('2001:db8::1, fc00::/7')).toEqual([
+      '2001:db8::1',
+      'fc00::/7',
+    ]);
+  });
+
+  test('trusts nothing about the client address by default', () => {
+    expect(loadApiConfig(requiredEnv).trustProxy).toBe(false);
+    expect(loadApiConfig({ ...requiredEnv, TRUST_PROXY: '' }).trustProxy).toBe(
+      false,
+    );
+  });
+
+  test('rejects a list of proxies that names none', () => {
+    expect(() =>
+      loadApiConfig({ ...requiredEnv, TRUST_PROXY: ' , , ' }),
+    ).toThrowError(/TRUST_PROXY/);
+  });
+
+  // Fastify accepts a hop count and then trusts nothing, because a hop count
+  // cannot check the immediate peer. Refusing it beats looking configured.
+  test('rejects a hop count', () => {
+    expect(() =>
+      loadApiConfig({ ...requiredEnv, TRUST_PROXY: '2' }),
+    ).toThrowError(/TRUST_PROXY: a hop count is not supported/);
+  });
+
+  test.each([
+    '10.0.0.1typo',
+    '10.0.0.1/33',
+    '192.168.0.0/16/8',
+    'fc00::/129',
+    'nowhere.example.com',
+    '10.0.0.1, bogus',
+  ])('rejects %s as a proxy to trust', (TRUST_PROXY) => {
+    expect(() => loadApiConfig({ ...requiredEnv, TRUST_PROXY })).toThrowError(
+      /TRUST_PROXY: not an address/,
+    );
   });
 
   test('defaults to path-style addressing when a storage endpoint is set', () => {

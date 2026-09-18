@@ -28,6 +28,9 @@ declare module 'fastify' {
 
 export async function buildApp(config: ApiConfig) {
   const fastify = Fastify({
+    // Decides what request.ip is, which is what the rate limiter buckets by
+    // and what the audit log records.
+    trustProxy: config.trustProxy,
     logger: {
       level: config.logLevel,
       transport:

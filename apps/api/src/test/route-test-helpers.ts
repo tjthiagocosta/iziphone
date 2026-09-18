@@ -64,11 +64,11 @@ export async function createApiRouteApp(
   app.decorate('auth', (options.auth ?? {}) as Auth);
   app.decorate('requireAuth', async (request, reply) => {
     if (!user) {
-      reply.status(401).send({
+      // Returns the reply, like the real guard in auth/plugin.ts.
+      return reply.status(401).send({
         error: 'Unauthorized',
         message: 'Authentication required',
       });
-      return;
     }
 
     request.user = user;
@@ -85,17 +85,16 @@ export async function createApiRouteApp(
   app.decorate('requireRole', (roles: readonly Role[]) => {
     return async (request, reply) => {
       if (!user) {
-        reply.status(401).send({
+        return reply.status(401).send({
           error: 'Unauthorized',
           message: 'Authentication required',
         });
-        return;
       }
 
       request.user = user;
 
       if (!roles.includes(user.role)) {
-        reply.status(403).send({
+        return reply.status(403).send({
           error: 'Forbidden',
           message: `Required role: ${roles.join(' or ')}`,
         });
