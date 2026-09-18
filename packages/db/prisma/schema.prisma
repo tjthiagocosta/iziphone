@@ -396,24 +396,44 @@ enum CallRecordingContext {
   CONFERENCE
 }
 
+/// Why a recording's audio is gone: the retention policy swept it, or somebody
+/// deleted it by hand.
+enum CallRecordingDeletionReason {
+  RETENTION_POLICY
+  MANUAL
+}
+
 /// A recording Twilio made of a call. Announced with the provider's URL, then
 /// copied into the media store and deleted at the provider; until the copy
 /// exists, `objectKey` is null and playback fetches from the provider.
+///
+/// The row outlives the audio: once the recording is deleted, `deletedAt` and
+/// `deletionReason` are set and `objectKey` is cleared, so a call's history
+/// says the recording was deleted instead of offering a player for nothing.
 model CallRecording {
-  id                String               @id @default(cuid())
-  callId            String               @map("call_id")
-  call              Call                 @relation(fields: [callId], references: [id], onDelete: Cascade)
+  id                String                       @id @default(cuid())
+  callId            String                       @map("call_id")
+  call              Call                         @relation(fields: [callId], references: [id], onDelete: Cascade)
   context           CallRecordingContext
-  recordingSid      String               @unique @map("recording_sid")
-  providerUrl       String               @map("provider_url")
+  recordingSid      String                       @unique @map("recording_sid")
+  providerUrl       String                       @map("provider_url")
   duration          Int?
-  objectKey         String?              @map("object_key")
-  storedAt          DateTime?            @map("stored_at")
-  providerDeletedAt DateTime?            @map("provider_deleted_at")
-  createdAt         DateTime             @default(now()) @map("created_at")
-  updatedAt         DateTime             @updatedAt @map("updated_at")
+  objectKey         String?                      @map("object_key")
+  storedAt          DateTime?                    @map("stored_at")
+  providerDeletedAt DateTime?                    @map("provider_deleted_at")
+  /// When a copy of this recording was last claimed, so that the event
+  /// subscriber, a fallback play and the retention sweep never copy it twice.
+  copyStartedAt     DateTime?                    @map("copy_started_at")
+  deletedAt         DateTime?                    @map("deleted_at")
+  deletionReason    CallRecordingDeletionReason? @map("deletion_reason")
+  createdAt         DateTime                     @default(now()) @map("created_at")
+  updatedAt         DateTime                     @updatedAt @map("updated_at")
 
   @@index([callId, createdAt])
+  /// The retention sweep's scan for recordings that have outlived their policy.
+  @@index([deletedAt, context, createdAt])
+  /// The sweep's scan for the work earlier attempts left owed at the provider.
+  @@index([providerDeletedAt])
   @@map("call_recordings")
 }
 
@@ -579,4 +599,39 @@ model MessageProviderEvent {
   @@index([messageId])
   @@index([conversationId])
   @@map("message_provider_events")
+}
+
+// ============================================
+// System Settings
+// ============================================
+
+/// How long a recording is kept. `KEEP_UNTIL_DELETED` is the default: nothing
+/// is swept until an admin chooses a period. Named periods rather than a free
+/// number of days, so an unreviewable value cannot be configured.
+enum RecordingRetentionPolicy {
+  KEEP_UNTIL_DELETED
+  DAYS_30
+  DAYS_60
+  DAYS_90
+  DAYS_180
+  YEARS_1
+  YEARS_2
+  YEARS_3
+  YEARS_5
+  YEARS_7
+}
+
+/// The deployment's own settings. One row, `id` fixed to `system`: this is one
+/// stack per customer, and settings that belong to a department live on
+/// `DepartmentSettings` instead.
+model SystemSettings {
+  id                     String                   @id
+  /// Retention for the messages callers leave.
+  voicemailRetention     RecordingRetentionPolicy @default(KEEP_UNTIL_DELETED) @map("voicemail_retention")
+  /// Retention for the recordings of the calls themselves.
+  callRecordingRetention RecordingRetentionPolicy @default(KEEP_UNTIL_DELETED) @map("call_recording_retention")
+  createdAt              DateTime                 @default(now()) @map("created_at")
+  updatedAt              DateTime                 @updatedAt @map("updated_at")
+
+  @@map("system_settings")
 }

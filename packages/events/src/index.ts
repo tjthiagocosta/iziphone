@@ -7,6 +7,7 @@
 export * from './auth/jwt.js';
 export * from './auth/permissions.js';
 export * from './cache/outbound-grant.js';
+export * from './cache/retention-sweep.js';
 export * from './cache/routing.js';
 export * from './channels.js';
 export * from './messages.js';

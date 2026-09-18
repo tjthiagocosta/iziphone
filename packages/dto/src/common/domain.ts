@@ -75,6 +75,19 @@ export const CallStatusSchema = z.enum([
 ]);
 export type CallStatus = z.infer<typeof CallStatusSchema>;
 
+/** What a recording is of: the message a caller left, or the call itself. */
+export const CallRecordingContextSchema = z.enum(['VOICEMAIL', 'CONFERENCE']);
+export type CallRecordingContext = z.infer<typeof CallRecordingContextSchema>;
+
+/** Why a recording's audio is gone. */
+export const CallRecordingDeletionReasonSchema = z.enum([
+  'RETENTION_POLICY',
+  'MANUAL',
+]);
+export type CallRecordingDeletionReason = z.infer<
+  typeof CallRecordingDeletionReasonSchema
+>;
+
 export const MessageDirectionSchema = z.enum(['INBOUND', 'OUTBOUND']);
 export type MessageDirection = z.infer<typeof MessageDirectionSchema>;
 

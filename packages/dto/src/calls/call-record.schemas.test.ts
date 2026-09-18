@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'vitest';
-import { CallRecordSchema } from './call.schemas.js';
+import {
+  CallRecordSchema,
+  RecordingDeletedResponseSchema,
+} from './call.schemas.js';
 
 const record = {
   id: 'call-1',
@@ -21,6 +24,15 @@ const record = {
   contact: null,
   line: null,
   hasVoicemail: true,
+  recordings: [
+    {
+      id: 'recording-1',
+      context: 'VOICEMAIL',
+      duration: 21,
+      deletion: null,
+      createdAt: '2026-03-20T00:04:12.000Z',
+    },
+  ],
   createdAt: '2026-03-20T00:00:00.000Z',
   updatedAt: '2026-03-20T00:04:12.000Z',
 };
@@ -28,6 +40,40 @@ const record = {
 describe('CallRecordSchema', () => {
   test('describes a call without a recording URL', () => {
     expect(CallRecordSchema.parse(record)).toEqual(record);
+  });
+
+  test('says what became of a recording that was deleted', () => {
+    const parsed = CallRecordSchema.parse({
+      ...record,
+      recordings: [
+        {
+          ...record.recordings[0],
+          deletion: {
+            reason: 'RETENTION_POLICY',
+            at: '2026-06-20T00:00:00.000Z',
+          },
+        },
+      ],
+    });
+
+    expect(parsed.recordings[0]?.deletion).toEqual({
+      reason: 'RETENTION_POLICY',
+      at: '2026-06-20T00:00:00.000Z',
+    });
+  });
+
+  test('refuses a deletion reason nobody could have written', () => {
+    expect(
+      CallRecordSchema.safeParse({
+        ...record,
+        recordings: [
+          {
+            ...record.recordings[0],
+            deletion: { reason: 'EXPIRED', at: '2026-06-20T00:00:00.000Z' },
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   test('drops a recording URL an older API still sends', () => {
@@ -39,5 +85,25 @@ describe('CallRecordSchema', () => {
 
     expect(parsed).not.toHaveProperty('recordingUrl');
     expect(parsed.hasVoicemail).toBe(true);
+  });
+});
+
+describe('RecordingDeletedResponseSchema', () => {
+  test('describes the deletion a delete answered with', () => {
+    const reply = {
+      id: 'recording-1',
+      deletion: { reason: 'MANUAL', at: '2026-06-20T00:00:00.000Z' },
+    };
+
+    expect(RecordingDeletedResponseSchema.parse(reply)).toEqual(reply);
+  });
+
+  test('has no shape for a recording whose audio is still there', () => {
+    expect(
+      RecordingDeletedResponseSchema.safeParse({
+        id: 'recording-1',
+        deletion: null,
+      }).success,
+    ).toBe(false);
   });
 });

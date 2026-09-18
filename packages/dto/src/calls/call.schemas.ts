@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   CallDirectionSchema,
+  CallRecordingContextSchema,
+  CallRecordingDeletionReasonSchema,
   CallStatusSchema,
   OwnerTypeSchema,
   TelephonyProviderSchema,
@@ -16,6 +18,11 @@ export const CALL_LIST_MAX_LIMIT = 100;
 
 export const CallConversationParamsSchema = z.object({
   conversationUuid: z.string().trim().min(1, 'Conversation is required'),
+});
+
+/** One recording of one call: what playback and deletion address. */
+export const CallRecordingParamsSchema = CallConversationParamsSchema.extend({
+  recordingId: z.string().trim().min(1, 'Recording is required'),
 });
 
 /**
@@ -118,6 +125,38 @@ export const OutboundCallLinesResponseSchema = z.object({
   lines: z.array(OutboundCallLineSchema),
 });
 
+/** When a recording's audio went, and what took it. */
+export const CallRecordingDeletionSchema = z.object({
+  reason: CallRecordingDeletionReasonSchema,
+  at: IsoDateTimeSchema,
+});
+
+/**
+ * A recording of a call, as a call's card shows it. No provider URL and no
+ * object key: the audio is served by
+ * `GET /api/calls/:conversationUuid/recordings/:recordingId`, which reads
+ * whichever copy still exists.
+ */
+export const CallRecordingSummarySchema = z.object({
+  id: z.string(),
+  context: CallRecordingContextSchema,
+  /** Seconds, as the provider measured it; null when it did not say. */
+  duration: z.number().int().nonnegative().nullable(),
+  /** Set once the audio is gone, so history says so instead of offering a player. */
+  deletion: CallRecordingDeletionSchema.nullable(),
+  createdAt: IsoDateTimeSchema,
+});
+
+/**
+ * What the delete route answers: the deletion as it is stored, so a manual
+ * delete that raced the retention sweep reports the sweep's reason rather
+ * than the one the request asked for.
+ */
+export const RecordingDeletedResponseSchema = z.object({
+  id: z.string(),
+  deletion: CallRecordingDeletionSchema,
+});
+
 export const CallRecordSchema = z.object({
   id: z.string(),
   conversationUuid: z.string(),
@@ -144,6 +183,13 @@ export const CallRecordSchema = z.object({
    * it is the provider's, and the API serves the audio itself.
    */
   hasVoicemail: z.boolean(),
+  /**
+   * Every recording the call has, newest first, whether its audio is still
+   * there or was deleted. `hasVoicemail` is not read from this: it comes from
+   * the timeline, which a call from before recordings had rows of their own
+   * still carries.
+   */
+  recordings: z.array(CallRecordingSummarySchema),
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
 });
@@ -158,9 +204,15 @@ export const CallListResponseSchema = z.object({
 export type CallConversationParams = z.infer<
   typeof CallConversationParamsSchema
 >;
+export type CallRecordingParams = z.infer<typeof CallRecordingParamsSchema>;
 export type CallListQuery = z.infer<typeof CallListQuerySchema>;
 export type CallCommandResponse = z.infer<typeof CallCommandResponseSchema>;
 export type CallContact = z.infer<typeof CallContactSchema>;
+export type CallRecordingDeletion = z.infer<typeof CallRecordingDeletionSchema>;
+export type CallRecordingSummary = z.infer<typeof CallRecordingSummarySchema>;
+export type RecordingDeletedResponse = z.infer<
+  typeof RecordingDeletedResponseSchema
+>;
 export type CallLine = z.infer<typeof CallLineSchema>;
 export type OutboundCallLine = z.infer<typeof OutboundCallLineSchema>;
 export type OutboundCallLinesResponse = z.infer<
