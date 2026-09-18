@@ -90,9 +90,14 @@ function createHarness() {
           providerUrl: args.create.providerUrl,
           objectKey: null,
           providerDeletedAt: null,
+          deletedAt: null,
+          deletionReason: null,
         }),
       ),
       update: vi.fn(async () => ({ id: 'recording-1' })),
+      // The claim the copy takes before it fetches; taken unless a test says
+      // otherwise.
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
   };
 
@@ -581,13 +586,11 @@ describe('CallEventSubscriberService', () => {
         contentType: 'audio/mpeg',
         contentLength: audioBytes.byteLength,
       });
+      expect(harness.db.callRecording.updateMany).toHaveBeenCalledWith({
+        where: { id: 'recording-1', deletedAt: null },
+        data: { objectKey: recordingKey, storedAt: expect.any(Date) },
+      });
       expect(harness.db.callRecording.update.mock.calls).toEqual([
-        [
-          {
-            where: { id: 'recording-1' },
-            data: { objectKey: recordingKey, storedAt: expect.any(Date) },
-          },
-        ],
         [
           {
             where: { id: 'recording-1' },
@@ -824,18 +827,35 @@ describe('CallEventSubscriberService', () => {
     });
 
     test('keeps the recording at Twilio when the copy cannot be recorded', async () => {
-      harness.db.callRecording.update.mockRejectedValueOnce(
-        new Error('db down'),
-      );
+      // The claim is taken first; the write that records the copy is next.
+      harness.db.callRecording.updateMany
+        .mockResolvedValueOnce({ count: 1 })
+        .mockRejectedValueOnce(new Error('db down'));
 
       await harness.emit(CHANNELS.CALL_RECORDING_READY, recordingReady());
 
       expect(harness.mediaStore.keys()).toEqual([recordingKey]);
-      expect(harness.db.callRecording.update).toHaveBeenCalledTimes(1);
+      expect(harness.db.callRecording.update).not.toHaveBeenCalled();
       expect(twilioRequests().map(({ method }) => method)).toEqual(['GET']);
       expect(harness.logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({ conversationUuid: 'conv-1', recordingSid }),
         'Stored the recording but could not record the copy; playback keeps fetching it from Twilio',
+      );
+    });
+
+    test('drops the copy of a recording deleted while it was being copied', async () => {
+      // The claim succeeds; the write that records the copy finds it deleted.
+      harness.db.callRecording.updateMany
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 });
+
+      await harness.emit(CHANNELS.CALL_RECORDING_READY, recordingReady());
+
+      expect(harness.mediaStore.keys()).toEqual([]);
+      expect(twilioRequests().map(({ method }) => method)).toEqual(['GET']);
+      expect(harness.logger.info).toHaveBeenCalledWith(
+        { conversationUuid: 'conv-1', recordingSid },
+        'The recording was deleted while it was being copied; dropping the copy',
       );
     });
 
@@ -872,9 +892,9 @@ describe('CallEventSubscriberService', () => {
         await harness.emit(CHANNELS.CALL_RECORDING_READY, recordingReady());
 
         expect(harness.mediaStore.keys()).toEqual([recordingKey]);
-        expect(harness.db.callRecording.update).toHaveBeenCalledTimes(1);
-        expect(harness.db.callRecording.update).toHaveBeenCalledWith({
-          where: { id: 'recording-1' },
+        expect(harness.db.callRecording.update).not.toHaveBeenCalled();
+        expect(harness.db.callRecording.updateMany).toHaveBeenCalledWith({
+          where: { id: 'recording-1', deletedAt: null },
           data: { objectKey: recordingKey, storedAt: expect.any(Date) },
         });
         expect(harness.logger.warn).toHaveBeenCalledWith(

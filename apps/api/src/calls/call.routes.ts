@@ -24,6 +24,7 @@ export const callRoutes: FastifyPluginAsync = async (fastify) => {
     const call = await history.findInScope(
       await loadCallScope(fastify.db, user),
       conversationUuid,
+      user.role,
     );
 
     if (!call) {
@@ -66,7 +67,7 @@ export const callRoutes: FastifyPluginAsync = async (fastify) => {
       const query = CallListQuerySchema.parse(request.query);
       const scope = await loadCallScope(fastify.db, user);
 
-      return history.listForUser(scope, query);
+      return history.listForUser(scope, query, user.role);
     },
   );
 

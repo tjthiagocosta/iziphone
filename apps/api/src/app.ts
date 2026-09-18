@@ -1,10 +1,13 @@
 import cors from '@fastify/cors';
 import formbody from '@fastify/formbody';
 import Fastify from 'fastify';
+import { AuditLogService, SystemSettingsService } from './admin/index.js';
 import { authPlugin } from './auth/index.js';
 import {
   CallEventSubscriberService,
   CallRecordingService,
+  RecordingRetentionSweep,
+  startRetentionSweep,
 } from './calls/index.js';
 import type { ApiConfig } from './config.js';
 import {
@@ -64,17 +67,30 @@ export async function buildApp(config: ApiConfig) {
     fastify.config.publicUrl,
     fastify.log,
   );
+  const recordings = new CallRecordingService(
+    fastify.db,
+    fastify.mediaStore,
+    fastify.config.twilio,
+    fastify.log,
+  );
   const callEventSubscriber = new CallEventSubscriberService(
     fastify.redis,
     fastify.db,
     fastify.log,
-    new CallRecordingService(
-      fastify.db,
-      fastify.mediaStore,
-      fastify.config.twilio,
-      fastify.log,
-    ),
+    recordings,
   );
+  const retentionSweep = new RecordingRetentionSweep({
+    db: fastify.db,
+    redis: fastify.redis,
+    settings: new SystemSettingsService(
+      fastify.db,
+      new AuditLogService(fastify.db),
+    ),
+    recordings,
+    auditLog: new AuditLogService(fastify.db),
+    log: fastify.log,
+  });
+  let sweepSchedule: { stop(): void } | null = null;
 
   fastify.addHook('onReady', async () => {
     try {
@@ -86,9 +102,11 @@ export async function buildApp(config: ApiConfig) {
     }
 
     await callEventSubscriber.start();
+    sweepSchedule = startRetentionSweep(retentionSweep, fastify.log);
   });
 
   fastify.addHook('onClose', async () => {
+    sweepSchedule?.stop();
     await callEventSubscriber.close();
   });
 

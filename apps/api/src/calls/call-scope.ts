@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '@repo/db';
-import type { CallListQuery } from '@repo/dto';
+import type { CallListQuery, CallRecordingContext, Role } from '@repo/dto';
+import { hasPermission } from '@repo/events';
 import type { AuthUser } from '../auth/index.js';
 
 /**
@@ -46,6 +47,19 @@ export async function loadCallScope(
     user,
     memberships.map((membership) => membership.departmentId),
   );
+}
+
+/**
+ * Who may hear a recording of a call they can already see. Listening to a
+ * voicemail is part of working a line, so it follows the call's visibility;
+ * the recording of the conversation itself is what `recordings:listen`
+ * reserves for supervisors and admins.
+ */
+export function canListenToRecording(
+  role: Role,
+  context: CallRecordingContext,
+): boolean {
+  return context === 'VOICEMAIL' || hasPermission(role, 'recordings:listen');
 }
 
 /**

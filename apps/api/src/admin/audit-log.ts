@@ -29,9 +29,19 @@ export type AuditAction =
   | 'phone_number.updated'
   | 'phone_number.released'
   | 'phone_number.assigned'
-  | 'phone_number.unassigned';
+  | 'phone_number.unassigned'
+  | 'settings.recording_retention_updated'
+  | 'recording.deleted'
+  /** One entry per sweep run, summarising it; never one per recording. */
+  | 'recording.retention_swept';
 
-export type EntityType = 'User' | 'Department' | 'PhoneNumber' | 'Holiday';
+export type EntityType =
+  | 'User'
+  | 'Department'
+  | 'PhoneNumber'
+  | 'Holiday'
+  | 'SystemSettings'
+  | 'CallRecording';
 
 export interface AuditLogParams {
   action: AuditAction;

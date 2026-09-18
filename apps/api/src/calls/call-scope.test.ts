@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   buildCallListWhere,
   buildCallScope,
+  canListenToRecording,
   loadCallScope,
 } from './call-scope.js';
 
@@ -44,6 +45,26 @@ describe('loadCallScope', () => {
       where: { userId: 'user-2' },
       select: { departmentId: true },
     });
+  });
+});
+
+describe('canListenToRecording', () => {
+  test.each(['ADMIN', 'SUPERVISOR', 'AGENT'] as const)(
+    'lets a %s hear the voicemail of a call they may see',
+    (role) => {
+      expect(canListenToRecording(role, 'VOICEMAIL')).toBe(true);
+    },
+  );
+
+  test.each(['ADMIN', 'SUPERVISOR'] as const)(
+    'lets a %s hear the recording of the call itself',
+    (role) => {
+      expect(canListenToRecording(role, 'CONFERENCE')).toBe(true);
+    },
+  );
+
+  test('keeps the recording of the call itself from an agent', () => {
+    expect(canListenToRecording('AGENT', 'CONFERENCE')).toBe(false);
   });
 });
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
-import { adminStatsRoutes } from './admin/index.js';
+import { adminSettingsRoutes, adminStatsRoutes } from './admin/index.js';
 import { authRoutes, sessionRoutes } from './auth/index.js';
-import { callLineRoutes, callRoutes, voicemailRoutes } from './calls/index.js';
+import { callLineRoutes, callRoutes, recordingRoutes } from './calls/index.js';
 import type { ApiConfig } from './config.js';
 import {
   adminDepartmentRoutes,
@@ -46,6 +46,7 @@ export const adminApiRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', fastify.requireRole(['ADMIN']));
 
   await fastify.register(adminStatsRoutes, { prefix: '/stats' });
+  await fastify.register(adminSettingsRoutes, { prefix: '/settings' });
   await fastify.register(adminUserRoutes, { prefix: '/users' });
   await fastify.register(adminDepartmentRoutes, { prefix: '/departments' });
   await fastify.register(adminPhoneNumberRoutes, { prefix: '/phone-numbers' });
@@ -74,7 +75,7 @@ export async function registerRoutes(
   await fastify.register(sessionRoutes);
   await fastify.register(internalApiRoutes, { token: config.internalApiToken });
   await fastify.register(callRoutes);
-  await fastify.register(voicemailRoutes);
+  await fastify.register(recordingRoutes);
   await fastify.register(twilioMessagesWebhookRoutes, {
     prefix: '/webhooks/twilio/messages',
   });

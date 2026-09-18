@@ -7,7 +7,7 @@ import {
   createApiRouteApp,
   testApiConfig,
 } from '../test/route-test-helpers.js';
-import { voicemailRoutes } from './voicemail.routes.js';
+import { recordingRoutes } from './recording.routes.js';
 
 const agent: AuthUser = {
   id: 'user-7',
@@ -18,19 +18,10 @@ const agent: AuthUser = {
 };
 
 const supervisor: AuthUser = { ...agent, id: 'user-8', role: 'SUPERVISOR' };
+const admin: AuthUser = { ...agent, id: 'user-9', role: 'ADMIN' };
 
 const agentScope = {
   OR: [{ userId: 'user-7' }, { departmentId: { in: ['dept-1'] } }],
-};
-
-/** What the route reads of a call: its newest voicemail recording. */
-const select = {
-  recordings: {
-    where: { context: 'VOICEMAIL' },
-    orderBy: { createdAt: 'desc' },
-    take: 1,
-    select: expect.any(Object),
-  },
 };
 
 const accountSid = 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -42,11 +33,13 @@ const recordingKey = `recordings/conversation-1/${recordingSid}.mp3`;
 function announced(providerUrl: string = recording) {
   return {
     id: 'recording-1',
-    context: 'VOICEMAIL',
+    context: 'VOICEMAIL' as const,
     recordingSid,
     providerUrl,
     objectKey: null,
     providerDeletedAt: null,
+    deletedAt: null,
+    deletionReason: null,
   };
 }
 
@@ -57,9 +50,8 @@ const settled = {
   providerDeletedAt: new Date('2026-03-20T10:05:00.000Z'),
 };
 
-function callWith(voicemail: ReturnType<typeof announced> | null) {
-  return { recordings: voicemail ? [voicemail] : [] };
-}
+/** The recording of the call itself, which only some roles may hear. */
+const conference = { ...announced(), context: 'CONFERENCE' as const };
 
 const MEBIBYTE = 1024 * 1024;
 const voicemailBytes = Buffer.from('fictional mp3 bytes');
@@ -100,34 +92,47 @@ function mebibytes(chunks: number) {
   });
 }
 
-describe('voicemailRoutes', () => {
+describe('recordingRoutes', () => {
   let app: FastifyInstance;
   let mediaStore: InMemoryMediaStore;
 
   const findFirst = vi.fn(async (): Promise<unknown> => null);
   const updateRecording = vi.fn(async () => ({ id: 'recording-1' }));
+  const updateManyRecordings = vi.fn(async () => ({ count: 1 }));
   const findMemberships = vi.fn(async () => [{ departmentId: 'dept-1' }]);
+  const createAuditEntry = vi.fn(async () => ({ id: 'audit-1' }));
   const fetchMock = vi.fn<typeof fetch>();
 
   async function buildApp(
     options: { user?: AuthUser | null; config?: Partial<ApiConfig> } = {},
   ) {
-    return createApiRouteApp(voicemailRoutes, {
+    return createApiRouteApp(recordingRoutes, {
       user: options.user === undefined ? agent : options.user,
       config: options.config,
       mediaStore,
       db: {
-        call: { findFirst },
-        callRecording: { update: updateRecording },
+        callRecording: {
+          findFirst,
+          update: updateRecording,
+          updateMany: updateManyRecordings,
+        },
         userDepartment: { findMany: findMemberships },
+        auditLog: { create: createAuditEntry },
       } as never,
     });
   }
 
-  function play() {
+  function play(recordingId = 'recording-1') {
     return app.inject({
       method: 'GET',
-      url: '/api/calls/conversation-1/voicemail',
+      url: `/api/calls/conversation-1/recordings/${recordingId}`,
+    });
+  }
+
+  function remove(recordingId = 'recording-1') {
+    return app.inject({
+      method: 'DELETE',
+      url: `/api/calls/conversation-1/recordings/${recordingId}`,
     });
   }
 
@@ -149,8 +154,9 @@ describe('voicemailRoutes', () => {
   beforeEach(async () => {
     vi.stubGlobal('fetch', fetchMock);
     mediaStore = new InMemoryMediaStore();
-    findFirst.mockResolvedValue(callWith(announced()));
+    findFirst.mockResolvedValue(announced());
     findMemberships.mockResolvedValue([{ departmentId: 'dept-1' }]);
+    updateManyRecordings.mockResolvedValue({ count: 1 });
     twilioAnswers();
     app = await buildApp();
   });
@@ -162,7 +168,7 @@ describe('voicemailRoutes', () => {
 
   describe('from the store', () => {
     beforeEach(async () => {
-      findFirst.mockResolvedValue(callWith(settled));
+      findFirst.mockResolvedValue(settled);
       await mediaStore.put({
         key: recordingKey,
         contentType: 'audio/mpeg',
@@ -197,9 +203,7 @@ describe('voicemailRoutes', () => {
 
     test('falls back to Twilio when the copy is missing from the store', async () => {
       const warn = vi.spyOn(app.log, 'warn');
-      findFirst.mockResolvedValue(
-        callWith({ ...settled, providerDeletedAt: null }),
-      );
+      findFirst.mockResolvedValue({ ...settled, providerDeletedAt: null });
       await mediaStore.delete(recordingKey);
 
       const response = await play();
@@ -223,6 +227,100 @@ describe('voicemailRoutes', () => {
     });
   });
 
+  describe('once the recording is deleted', () => {
+    test('says the retention policy deleted it, and asks Twilio nothing', async () => {
+      findFirst.mockResolvedValue({
+        ...settled,
+        objectKey: null,
+        deletedAt: new Date('2026-06-20T10:05:00.000Z'),
+        deletionReason: 'RETENTION_POLICY',
+      });
+
+      const response = await play();
+
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toEqual({
+        error: 'Gone',
+        message: 'This recording was deleted by the retention policy',
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    test('says a hand-deleted recording was deleted', async () => {
+      findFirst.mockResolvedValue({
+        ...settled,
+        objectKey: null,
+        deletedAt: new Date('2026-06-20T10:05:00.000Z'),
+        deletionReason: 'MANUAL',
+      });
+
+      const response = await play();
+
+      expect(response.statusCode).toBe(410);
+      expect(response.json()).toEqual({
+        error: 'Gone',
+        message: 'This recording was deleted',
+      });
+    });
+  });
+
+  describe('a recording of the call itself', () => {
+    beforeEach(async () => {
+      findFirst.mockResolvedValue({
+        ...conference,
+        objectKey: recordingKey,
+        providerDeletedAt: new Date('2026-03-20T10:05:00.000Z'),
+      });
+      await mediaStore.put({
+        key: recordingKey,
+        contentType: 'audio/mpeg',
+        body: copiedBytes,
+      });
+    });
+
+    test.each([
+      { name: 'a supervisor', user: supervisor },
+      { name: 'an admin', user: admin },
+    ])('plays for $name', async ({ user }) => {
+      await app.close();
+      app = await buildApp({ user });
+
+      const response = await play();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.rawPayload).toEqual(copiedBytes);
+    });
+
+    test('is refused to an agent, who may still see the call', async () => {
+      const response = await play();
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        error: 'Forbidden',
+        message: 'Call recordings are for supervisors and admins',
+      });
+    });
+
+    test('is streamed straight through while the copy is still owed', async () => {
+      await app.close();
+      app = await buildApp({ user: supervisor });
+      findFirst.mockResolvedValue(conference);
+      await mediaStore.delete(recordingKey);
+      twilioAnswers(() =>
+        audio(mebibytes(2), { 'content-type': 'audio/mpeg' }),
+      );
+
+      const response = await play();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.rawPayload.byteLength).toBe(2 * MEBIBYTE);
+      // Streamed, so nothing was stored and nothing deleted at Twilio on
+      // the way: the sweep still owes the copy.
+      expect(mediaStore.keys()).toEqual([]);
+      expect(twilioRequests().map(({ method }) => method)).toEqual(['GET']);
+    });
+  });
+
   describe('from Twilio, while the copy is owed', () => {
     test('plays the voicemail of a call the agent may see', async () => {
       const response = await play();
@@ -230,8 +328,11 @@ describe('voicemailRoutes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.rawPayload).toEqual(voicemailBytes);
       expect(findFirst).toHaveBeenCalledWith({
-        where: { conversationUuid: 'conversation-1', ...agentScope },
-        select,
+        where: {
+          id: 'recording-1',
+          call: { conversationUuid: 'conversation-1', ...agentScope },
+        },
+        select: expect.any(Object),
       });
     });
 
@@ -271,13 +372,11 @@ describe('voicemailRoutes', () => {
         contentType: 'audio/mpeg',
         contentLength: voicemailBytes.byteLength,
       });
+      expect(updateManyRecordings).toHaveBeenCalledWith({
+        where: { id: 'recording-1', deletedAt: null },
+        data: { objectKey: recordingKey, storedAt: expect.any(Date) },
+      });
       expect(updateRecording.mock.calls).toEqual([
-        [
-          {
-            where: { id: 'recording-1' },
-            data: { objectKey: recordingKey, storedAt: expect.any(Date) },
-          },
-        ],
         [
           {
             where: { id: 'recording-1' },
@@ -285,6 +384,34 @@ describe('voicemailRoutes', () => {
           },
         ],
       ]);
+    });
+
+    test('drops the copy when the recording is deleted while it is being fetched', async () => {
+      // The claim is taken, and the write that records the copy finds the
+      // recording deleted by an admin in the meantime.
+      updateManyRecordings
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 });
+
+      const response = await play();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.rawPayload).toEqual(voicemailBytes);
+      expect(mediaStore.keys()).toEqual([]);
+      expect(updateRecording).not.toHaveBeenCalled();
+      expect(twilioRequests().map(({ method }) => method)).toEqual(['GET']);
+    });
+
+    test('serves the audio, and copies nothing, when another copy holds the claim', async () => {
+      updateManyRecordings.mockResolvedValue({ count: 0 });
+
+      const response = await play();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.rawPayload).toEqual(voicemailBytes);
+      expect(mediaStore.keys()).toEqual([]);
+      expect(updateRecording).not.toHaveBeenCalled();
+      expect(twilioRequests().map(({ method }) => method)).toEqual(['GET']);
     });
 
     test('plays the voicemail, and keeps it at Twilio, when the store refuses the copy', async () => {
@@ -317,7 +444,11 @@ describe('voicemailRoutes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(mediaStore.keys()).toEqual([recordingKey]);
-      expect(updateRecording).toHaveBeenCalledTimes(1);
+      expect(updateRecording).not.toHaveBeenCalled();
+      expect(updateManyRecordings).toHaveBeenCalledWith({
+        where: { id: 'recording-1', deletedAt: null },
+        data: { objectKey: recordingKey, storedAt: expect.any(Date) },
+      });
       expect(warn).toHaveBeenCalledWith(
         { conversationUuid: 'conversation-1', recordingSid, status: 500 },
         'Twilio did not delete the recording; it stays there until a later sweep',
@@ -333,8 +464,11 @@ describe('voicemailRoutes', () => {
       expect(response.statusCode).toBe(200);
       expect(findMemberships).not.toHaveBeenCalled();
       expect(findFirst).toHaveBeenCalledWith({
-        where: { conversationUuid: 'conversation-1' },
-        select,
+        where: {
+          id: 'recording-1',
+          call: { conversationUuid: 'conversation-1' },
+        },
+        select: expect.any(Object),
       });
     });
 
@@ -365,7 +499,7 @@ describe('voicemailRoutes', () => {
       'sends no request, and so no credentials, for a stored URL on $name',
       async ({ stored }) => {
         const warn = vi.spyOn(app.log, 'warn');
-        findFirst.mockResolvedValue(callWith(announced(stored)));
+        findFirst.mockResolvedValue(announced(stored));
 
         const response = await play();
 
@@ -382,10 +516,8 @@ describe('voicemailRoutes', () => {
     test('sends no request for a recording of an account other than its own', async () => {
       const warn = vi.spyOn(app.log, 'warn');
       findFirst.mockResolvedValue(
-        callWith(
-          announced(
-            recording.replace(accountSid, 'ACcccccccccccccccccccccccccccccccc'),
-          ),
+        announced(
+          recording.replace(accountSid, 'ACcccccccccccccccccccccccccccccccc'),
         ),
       );
 
@@ -411,7 +543,7 @@ describe('voicemailRoutes', () => {
       expect(response.statusCode).toBe(410);
       expect(response.json()).toEqual({
         error: 'Gone',
-        message: 'This voicemail is no longer available',
+        message: 'This recording is no longer available',
       });
       expect(mediaStore.keys()).toEqual([]);
       expect(updateRecording).not.toHaveBeenCalled();
@@ -510,7 +642,7 @@ describe('voicemailRoutes', () => {
       expect(response.statusCode).toBe(502);
       expect(response.json()).toEqual({
         error: 'Bad Gateway',
-        message: 'The voicemail could not be loaded',
+        message: 'The recording could not be loaded',
       });
     });
 
@@ -573,7 +705,7 @@ describe('voicemailRoutes', () => {
       expect(response.statusCode).toBe(502);
       expect(response.json()).toEqual({
         error: 'Bad Gateway',
-        message: 'The voicemail is too large to play',
+        message: 'The recording is too large to play',
       });
       expect(mediaStore.keys()).toEqual([]);
       expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
@@ -610,7 +742,106 @@ describe('voicemailRoutes', () => {
     });
   });
 
-  test('answers 404 for a call outside the agent scope, as for one that does not exist', async () => {
+  describe('deleting a recording', () => {
+    beforeEach(async () => {
+      await app.close();
+      app = await buildApp({ user: admin });
+      findFirst.mockResolvedValue(settled);
+      await mediaStore.put({
+        key: recordingKey,
+        contentType: 'audio/mpeg',
+        body: copiedBytes,
+      });
+    });
+
+    test('empties the store, marks the row and writes one audit entry', async () => {
+      const response = await remove();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        id: 'recording-1',
+        deletion: { reason: 'MANUAL', at: expect.any(String) },
+      });
+      expect(mediaStore.keys()).toEqual([]);
+      expect(updateManyRecordings).toHaveBeenCalledWith({
+        where: { id: 'recording-1', deletedAt: null, objectKey: recordingKey },
+        data: {
+          deletedAt: expect.any(Date),
+          deletionReason: 'MANUAL',
+          objectKey: null,
+        },
+      });
+      expect(createAuditEntry).toHaveBeenCalledTimes(1);
+      expect(createAuditEntry).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: 'recording.deleted',
+          entityType: 'CallRecording',
+          entityId: 'recording-1',
+          userId: 'user-9',
+          changes: { context: 'VOICEMAIL', reason: 'MANUAL' },
+        }),
+      });
+    });
+
+    test('reports the sweep’s deletion, and writes no second entry, for a recording already deleted', async () => {
+      findFirst.mockResolvedValue({
+        ...settled,
+        objectKey: null,
+        deletedAt: new Date('2026-06-20T10:05:00.000Z'),
+        deletionReason: 'RETENTION_POLICY',
+      });
+
+      const response = await remove();
+
+      expect(response.statusCode).toBe(200);
+      // What is stored, not what this request asked for.
+      expect(response.json()).toEqual({
+        id: 'recording-1',
+        deletion: {
+          reason: 'RETENTION_POLICY',
+          at: '2026-06-20T10:05:00.000Z',
+        },
+      });
+      expect(createAuditEntry).not.toHaveBeenCalled();
+    });
+
+    test('answers 502, and keeps the recording, when the store refuses', async () => {
+      vi.spyOn(mediaStore, 'delete').mockRejectedValue(
+        new Error('bucket unavailable'),
+      );
+
+      const response = await remove();
+
+      expect(response.statusCode).toBe(502);
+      expect(updateManyRecordings).not.toHaveBeenCalled();
+      expect(createAuditEntry).not.toHaveBeenCalled();
+    });
+
+    test('answers 404 for a recording that does not exist', async () => {
+      findFirst.mockResolvedValue(null);
+
+      const response = await remove('recording-404');
+
+      expect(response.statusCode).toBe(404);
+      expect(mediaStore.keys()).toEqual([recordingKey]);
+    });
+
+    test.each([
+      { name: 'an agent', user: agent },
+      { name: 'a supervisor', user: supervisor },
+    ])('is refused to $name, who may hear it', async ({ user }) => {
+      await app.close();
+      app = await buildApp({ user });
+
+      const response = await remove();
+
+      expect(response.statusCode).toBe(403);
+      expect(findFirst).not.toHaveBeenCalled();
+      expect(mediaStore.keys()).toEqual([recordingKey]);
+    });
+  });
+
+  test('answers 404 for a recording outside the agent scope, as for one that does not exist', async () => {
     findFirst.mockResolvedValue(null);
 
     const response = await play();
@@ -618,17 +849,8 @@ describe('voicemailRoutes', () => {
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({
       error: 'Not Found',
-      message: 'Call not found',
+      message: 'Recording not found',
     });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  test('answers 404 for a call that left no voicemail', async () => {
-    findFirst.mockResolvedValue(callWith(null));
-
-    const response = await play();
-
-    expect(response.statusCode).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -646,7 +868,7 @@ describe('voicemailRoutes', () => {
   test('does not read a recording to answer a HEAD', async () => {
     const response = await app.inject({
       method: 'HEAD',
-      url: '/api/calls/conversation-1/voicemail',
+      url: '/api/calls/conversation-1/recordings/recording-1',
     });
 
     expect(response.statusCode).toBe(404);

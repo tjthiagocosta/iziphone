@@ -7,6 +7,7 @@ import {
   type CallRecord,
   callCounterparty,
   callLine,
+  type Role,
 } from '@repo/dto';
 import {
   callRecordInclude,
@@ -18,7 +19,8 @@ import { buildCallListWhere } from './call-scope.js';
 /**
  * Reads call history in the shape the API publishes. Every read takes the
  * caller's scope as a filter, so a call outside it is missing rather than
- * forbidden.
+ * forbidden, and their role, which decides how much of a call they are told
+ * about once they may see it.
  */
 export class CallHistoryService {
   constructor(
@@ -28,6 +30,7 @@ export class CallHistoryService {
   async listForUser(
     scope: Prisma.CallWhereInput,
     query: CallListQuery,
+    role: Role,
   ): Promise<CallListResponse> {
     const where = buildCallListWhere(scope, query);
 
@@ -43,7 +46,7 @@ export class CallHistoryService {
     ]);
 
     return {
-      calls: await this.withParties(calls),
+      calls: await this.withParties(calls, role),
       total,
       limit: query.limit,
       offset: query.offset,
@@ -54,6 +57,7 @@ export class CallHistoryService {
   async findInScope(
     scope: Prisma.CallWhereInput,
     conversationUuid: string,
+    role: Role,
   ): Promise<CallRecord | null> {
     const call = await this.db.call.findFirst({
       where: { conversationUuid, ...scope },
@@ -64,7 +68,7 @@ export class CallHistoryService {
       return null;
     }
 
-    const [record] = await this.withParties([call]);
+    const [record] = await this.withParties([call], role);
     return record ?? null;
   }
 
@@ -78,6 +82,7 @@ export class CallHistoryService {
    */
   private async withParties(
     calls: readonly PersistedCall[],
+    role: Role,
   ): Promise<CallRecord[]> {
     const contactNumbers = [...new Set(calls.map(callCounterparty))];
     const lineNumbers = [...new Set(calls.map(callLine))];
@@ -109,6 +114,7 @@ export class CallHistoryService {
         call,
         contactByNumber.get(callCounterparty(call)) ?? null,
         lineByNumber.get(callLine(call)) ?? null,
+        role,
       ),
     );
   }

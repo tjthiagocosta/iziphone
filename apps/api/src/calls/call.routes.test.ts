@@ -18,6 +18,27 @@ const agent: AuthUser = {
 
 const supervisor: AuthUser = { ...agent, id: 'user-8', role: 'SUPERVISOR' };
 
+/** Both recordings of a call: the voicemail anyone on the line may hear, and
+ * the recording of the conversation, which `recordings:listen` reserves. */
+const storedRecordings = [
+  {
+    id: 'recording-1',
+    context: 'VOICEMAIL' as const,
+    duration: 12,
+    deletedAt: null,
+    deletionReason: null,
+    createdAt: new Date('2026-03-20T00:05:00.000Z'),
+  },
+  {
+    id: 'recording-2',
+    context: 'CONFERENCE' as const,
+    duration: 42,
+    deletedAt: null,
+    deletionReason: null,
+    createdAt: new Date('2026-03-20T00:04:00.000Z'),
+  },
+];
+
 const include = {
   user: { select: { id: true, email: true } },
   department: { select: { id: true, name: true } },
@@ -25,6 +46,17 @@ const include = {
     where: { eventType: 'VOICEMAIL_COMPLETED' },
     select: { id: true },
     take: 1,
+  },
+  recordings: {
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      context: true,
+      duration: true,
+      deletedAt: true,
+      deletionReason: true,
+      createdAt: true,
+    },
   },
 };
 
@@ -59,6 +91,7 @@ const storedCall = {
   recordingUrl:
     'https://api.twilio.com/2010-04-01/Accounts/ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Recordings/REaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   events: [],
+  recordings: [],
   createdAt: new Date('2026-03-20T00:00:00.000Z'),
   updatedAt: new Date('2026-03-20T00:04:12.000Z'),
 };
@@ -69,6 +102,7 @@ const callDto = {
   contact: null,
   line: null,
   hasVoicemail: false,
+  recordings: [],
   createdAt: '2026-03-20T00:00:00.000Z',
   updatedAt: '2026-03-20T00:04:12.000Z',
 };
@@ -235,6 +269,71 @@ describe('callRoutes', () => {
       include,
     });
     expect(single.json()).toEqual(callDto);
+  });
+
+  test('does not tell an agent the conversation was recorded', async () => {
+    findMany.mockResolvedValue([
+      { ...storedCall, recordings: storedRecordings },
+    ]);
+    count.mockResolvedValue(1);
+    findFirst.mockResolvedValue({
+      ...storedCall,
+      recordings: storedRecordings,
+    });
+
+    const list = await app.inject({ method: 'GET', url: '/api/calls' });
+    const single = await app.inject({
+      method: 'GET',
+      url: '/api/calls/conversation-1',
+    });
+
+    // The conference recording is missing from both replies, not just hidden
+    // by the client: without `recordings:listen` its audio is refused too.
+    for (const recordings of [
+      list.json().calls[0].recordings,
+      single.json().recordings,
+    ]) {
+      expect(recordings).toEqual([
+        {
+          id: 'recording-1',
+          context: 'VOICEMAIL',
+          duration: 12,
+          deletion: null,
+          createdAt: '2026-03-20T00:05:00.000Z',
+        },
+      ]);
+    }
+  });
+
+  test.each([
+    { role: 'supervisor', user: supervisor },
+    { role: 'admin', user: { ...agent, id: 'user-9', role: 'ADMIN' as const } },
+  ])('tells a $role about both recordings', async ({ user }) => {
+    await app.close();
+    app = await buildApp(user);
+    findMany.mockResolvedValue([
+      { ...storedCall, recordings: storedRecordings },
+    ]);
+    count.mockResolvedValue(1);
+    findFirst.mockResolvedValue({
+      ...storedCall,
+      recordings: storedRecordings,
+    });
+
+    const list = await app.inject({ method: 'GET', url: '/api/calls' });
+    const single = await app.inject({
+      method: 'GET',
+      url: '/api/calls/conversation-1',
+    });
+
+    for (const recordings of [
+      list.json().calls[0].recordings,
+      single.json().recordings,
+    ]) {
+      expect(
+        recordings.map((recording: { id: string }) => recording.id),
+      ).toEqual(['recording-1', 'recording-2']);
+    }
   });
 
   test('answers 404 when a call record is outside the agent scope', async () => {

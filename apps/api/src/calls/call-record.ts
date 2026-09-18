@@ -4,7 +4,13 @@ import type {
   CallDirection,
   CallLine,
   CallRecord,
+  CallRecordingContext,
+  CallRecordingDeletion,
+  CallRecordingDeletionReason,
+  CallRecordingSummary,
+  Role,
 } from '@repo/dto';
+import { canListenToRecording } from './call-scope.js';
 
 /**
  * Relations every call read needs so it can be mapped to the API shape. The
@@ -18,6 +24,17 @@ export const callRecordInclude = {
     where: { eventType: 'VOICEMAIL_COMPLETED' },
     select: { id: true },
     take: 1,
+  },
+  recordings: {
+    orderBy: { createdAt: 'desc' },
+    select: {
+      id: true,
+      context: true,
+      duration: true,
+      deletedAt: true,
+      deletionReason: true,
+      createdAt: true,
+    },
   },
 } satisfies Prisma.CallInclude;
 
@@ -39,8 +56,53 @@ export interface PersistedCall {
   user: { id: string; email: string } | null;
   department: { id: string; name: string } | null;
   events: ReadonlyArray<{ id: string }>;
+  recordings: readonly PersistedRecording[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface PersistedRecording {
+  id: string;
+  context: CallRecordingContext;
+  duration: number | null;
+  deletedAt: Date | null;
+  deletionReason: CallRecordingDeletionReason | null;
+  createdAt: Date;
+}
+
+/**
+ * A recording's deletion as the API publishes it, and null while the audio is
+ * still there. A row marked deleted without a reason was deleted by hand:
+ * that is the only kind of deletion there was before the policy existed.
+ */
+export function toRecordingDeletion(
+  deletedAt: Date | null,
+  reason: CallRecordingDeletionReason | null,
+): CallRecordingDeletion | null {
+  if (deletedAt === null) {
+    return null;
+  }
+
+  return { reason: reason ?? 'MANUAL', at: deletedAt.toISOString() };
+}
+
+/**
+ * A recording as a call's card shows it: what it is, how long, and whether its
+ * audio is still there. Nothing that names where the audio lives.
+ */
+function toRecordingSummary(
+  recording: PersistedRecording,
+): CallRecordingSummary {
+  return {
+    id: recording.id,
+    context: recording.context,
+    duration: recording.duration,
+    deletion: toRecordingDeletion(
+      recording.deletedAt,
+      recording.deletionReason,
+    ),
+    createdAt: recording.createdAt.toISOString(),
+  };
 }
 
 /**
@@ -63,6 +125,7 @@ export function toCallRecordDto(
   call: PersistedCall,
   contact: CallContact | null,
   line: CallLine | null,
+  role: Role,
 ): CallRecord {
   return {
     id: call.id,
@@ -84,6 +147,15 @@ export function toCallRecordDto(
     contact,
     line,
     hasVoicemail: call.events.length > 0,
+    /*
+     * A recording the reader may not hear is not mentioned at all: telling an
+     * agent that the conversation was recorded, and when it was deleted, is
+     * what `recordings:listen` reserves for supervisors and admins, and a
+     * summary the audio route would refuse is of no use to the client either.
+     */
+    recordings: call.recordings
+      .filter((recording) => canListenToRecording(role, recording.context))
+      .map(toRecordingSummary),
     createdAt: call.createdAt.toISOString(),
     updatedAt: call.updatedAt.toISOString(),
   };

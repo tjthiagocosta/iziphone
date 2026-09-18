@@ -1,4 +1,8 @@
-import type { CallEventType, CallRecordingContext } from '@repo/db';
+import type {
+  CallEventType,
+  CallRecordingContext,
+  CallRecordingDeletionReason,
+} from '@repo/db';
 
 /*
  * The rules of owning a recording that need no I/O. Twilio makes the
@@ -10,23 +14,28 @@ import type { CallEventType, CallRecordingContext } from '@repo/db';
 
 /** Where a recording stands, as its row records it. */
 export interface RecordingWhereabouts {
-  /** The copy in the media store; null until one exists. */
+  /** The copy in the media store; null until one exists, and again once deleted. */
   objectKey: string | null;
   /** When the recording was deleted at Twilio; null while Twilio still has it. */
   providerDeletedAt: Date | null;
+  /** When the audio was deleted here, by the retention policy or by hand. */
+  deletedAt: Date | null;
+  deletionReason: CallRecordingDeletionReason | null;
 }
 
 export type PlaybackSource =
   | { source: 'store'; key: string }
   /** Fetch from Twilio, and a fetch that succeeds completes the copy. */
   | { source: 'provider' }
+  /** Deleted on purpose; the reason is what the caller is told. */
+  | { source: 'deleted'; reason: CallRecordingDeletionReason | null }
   /** No copy, and Twilio no longer has it: there is nothing to play. */
   | { source: 'gone' };
 
 export type CopyPlan =
   /** Fetch from Twilio, store, record the copy, then delete at Twilio. */
   | { copy: 'fetch' }
-  /** The copy exists; only the deletion at Twilio is still owed. */
+  /** There is nothing to copy; only the deletion at Twilio is still owed. */
   | { copy: 'skip'; deleteAtProvider: true }
   /** Copied and deleted, or lost on both sides: nothing left to do. */
   | { copy: 'skip'; deleteAtProvider: false };
@@ -35,6 +44,11 @@ export type CopyPlan =
 export function playbackSource(
   recording: RecordingWhereabouts,
 ): PlaybackSource {
+  // Checked first: a deleted recording is not fetched from Twilio again.
+  if (recording.deletedAt !== null) {
+    return { source: 'deleted', reason: recording.deletionReason };
+  }
+
   if (recording.objectKey !== null) {
     return { source: 'store', key: recording.objectKey };
   }
@@ -47,9 +61,18 @@ export function playbackSource(
 /**
  * What a copy attempt does. A recording with no copy is fetched only while
  * Twilio still has it; one with a copy but not yet deleted at Twilio (an
- * earlier deletion failed) owes only the deletion.
+ * earlier deletion failed) owes only the deletion. A deleted recording is
+ * never fetched, and still owes Twilio the deletion when it was deleted here
+ * before a copy was ever made.
  */
 export function copyPlan(recording: RecordingWhereabouts): CopyPlan {
+  if (recording.deletedAt !== null) {
+    return {
+      copy: 'skip',
+      deleteAtProvider: recording.providerDeletedAt === null,
+    };
+  }
+
   if (recording.objectKey === null) {
     return recording.providerDeletedAt === null
       ? { copy: 'fetch' }

@@ -1,14 +1,22 @@
 import { Readable } from 'node:stream';
-import type { CallRecordingContext, Prisma, PrismaClient } from '@repo/db';
+import type {
+  CallRecordingContext,
+  CallRecordingDeletionReason,
+  Prisma,
+  PrismaClient,
+} from '@repo/db';
+import type { CallRecordingDeletion } from '@repo/dto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { TwilioCredentials } from '../config.js';
 import { HttpError } from '../infra/index.js';
 import type { MediaStore } from '../media-store/index.js';
+import { toRecordingDeletion } from './call-record.js';
 import {
   copyPlan,
   playbackSource,
   recordingObjectKey,
 } from './recording-copy.js';
+import { claimableCopyWhere } from './retention.js';
 import {
   type TwilioRecordingRef,
   twilioRecordingRef,
@@ -34,17 +42,25 @@ const MAX_MEDIA_BYTES: Record<CallRecordingContext, number> = {
   CONFERENCE: 64 * 1024 * 1024,
 };
 
+/**
+ * How many times a deletion reads the row again when a copy landed under it.
+ * Two would do; the third is for the copy that lands during the second.
+ */
+const DELETE_ATTEMPTS = 3;
+
 /** What Twilio documents for recording media: `audio/mpeg`, and `audio/x-wav` for WAV. */
 const AUDIO_CONTENT_TYPES = new Set(['audio/mpeg', 'audio/x-wav', 'audio/wav']);
 
 /** The columns of a recording the service decides from. */
-const RECORDING_SELECT = {
+export const RECORDING_SELECT = {
   id: true,
   context: true,
   recordingSid: true,
   providerUrl: true,
   objectKey: true,
   providerDeletedAt: true,
+  deletedAt: true,
+  deletionReason: true,
 } satisfies Prisma.CallRecordingSelect;
 
 export type CallRecordingRow = Prisma.CallRecordingGetPayload<{
@@ -63,9 +79,36 @@ export interface RecordingAnnouncement {
 
 export interface RecordingMedia {
   contentType: string;
-  contentLength: number;
+  /** Null when the audio is streamed from Twilio and its length was not declared. */
+  contentLength: number | null;
   body: Buffer | Readable;
 }
+
+/** What a copy attempt got done, for the sweep that has to report it. */
+export interface RecordingCopyResult {
+  /** The audio is now in the media store. */
+  copied: boolean;
+  /** Twilio no longer holds the recording. */
+  providerDeleted: boolean;
+}
+
+/** What became of a request to delete a recording's audio. */
+export type RecordingDeletion =
+  | {
+      outcome: 'deleted';
+      /** This deletion is also what removed the recording at Twilio. */
+      providerDeleted: boolean;
+      /** What is now stored against the row, for the reply to publish. */
+      deletion: CallRecordingDeletion;
+    }
+  /**
+   * Somebody else deleted it first; nothing was changed. Their deletion is
+   * what is stored, so a manual delete that lost to the sweep reports the
+   * sweep's reason. Null only when the row itself is gone.
+   */
+  | { outcome: 'already-deleted'; deletion: CallRecordingDeletion | null }
+  /** The store refused; the recording is still playable and still owed. */
+  | { outcome: 'failed' };
 
 /** The audio Twilio is sending, read piece by piece as it is consumed. */
 interface ProviderAudio {
@@ -117,7 +160,7 @@ type ProviderAccess =
 export class CallRecordingService {
   constructor(
     private readonly db: Pick<PrismaClient, 'call' | 'callRecording'>,
-    private readonly mediaStore: Pick<MediaStore, 'put' | 'get'>,
+    private readonly mediaStore: Pick<MediaStore, 'put' | 'get' | 'delete'>,
     private readonly credentials: TwilioCredentials | null,
     private readonly log: Pick<FastifyBaseLogger, 'info' | 'warn' | 'error'>,
   ) {}
@@ -161,15 +204,23 @@ export class CallRecordingService {
   /**
    * Copies the recording into the store and deletes it at Twilio. Nothing
    * here throws: any failure leaves the recording playable from Twilio, with
-   * the reason logged, and the next play tries again.
+   * the reason logged, and the next play or sweep tries again.
+   *
+   * The copy is claimed on the row first, so a redelivered event, a fallback
+   * play and the retention sweep meeting on one recording fetch it once
+   * between them rather than once each.
    */
   async copy(
     recording: CallRecordingRow,
     conversationUuid: string,
-  ): Promise<void> {
+  ): Promise<RecordingCopyResult> {
+    const nothingDone: RecordingCopyResult = {
+      copied: false,
+      providerDeleted: false,
+    };
     const plan = copyPlan(recording);
     if (plan.copy === 'skip' && !plan.deleteAtProvider) {
-      return;
+      return nothingDone;
     }
 
     const provider = this.providerAccess(recording, conversationUuid);
@@ -180,12 +231,23 @@ export class CallRecordingService {
           'Cannot copy the recording without Twilio credentials; playback will fetch it from Twilio',
         );
       }
-      return;
+      return nothingDone;
     }
 
     if (plan.copy === 'skip') {
-      await this.deleteAtProvider(recording, provider, conversationUuid);
-      return;
+      return {
+        copied: false,
+        providerDeleted: await this.deleteAtProvider(
+          recording,
+          provider,
+          conversationUuid,
+        ),
+      };
+    }
+
+    const claim = await this.claimCopy(recording, conversationUuid);
+    if (!claim) {
+      return nothingDone;
     }
 
     const fetched = await this.fetchFromProvider(
@@ -198,52 +260,158 @@ export class CallRecordingService {
         { conversationUuid, recordingSid: recording.recordingSid },
         'Recording not yet available at Twilio; playback will fetch it from Twilio until it is copied',
       );
-      return;
+      await this.releaseCopyClaim(recording, claim);
+      return nothingDone;
     }
     if (fetched.status !== 'ok') {
-      return;
+      await this.releaseCopyClaim(recording, claim);
+      return nothingDone;
     }
 
     if (await this.store(recording, conversationUuid, fetched)) {
-      await this.deleteAtProvider(recording, provider, conversationUuid);
+      return {
+        copied: true,
+        providerDeleted: await this.deleteAtProvider(
+          recording,
+          provider,
+          conversationUuid,
+        ),
+      };
     }
+
+    await this.releaseCopyClaim(recording, claim);
+    return nothingDone;
   }
 
   /**
-   * The audio of a call's voicemail. Every failure is an `HttpError`: 404 for
-   * a call outside the scope or without a voicemail, 503 without Twilio
-   * credentials while the copy is still owed, 410 once neither side has the
-   * recording, and 502 for anything else that goes wrong upstream.
+   * Deletes the recording's audio: the copy from the store, and the original
+   * at Twilio when it is still there. The row stays, marked with when and why,
+   * so the call's history says the recording was deleted instead of offering a
+   * player for audio that is gone.
+   *
+   * The store is emptied before the row is marked: a store that refuses leaves
+   * a recording that still plays and is deleted again on the next attempt,
+   * where the other order would leave a row nobody can play and an object
+   * nobody knows about.
+   *
+   * The caller's row was read some time ago and a copy may have landed since,
+   * so the key it held is pinned in the guard. A row that moved is read again
+   * and deleted with the key it has now; the audio the copy wrote is never
+   * left behind with nothing pointing at it.
    */
-  async openVoicemail(
-    scope: Prisma.CallWhereInput,
+  async deleteAudio(
+    recording: CallRecordingRow,
     conversationUuid: string,
-  ): Promise<RecordingMedia> {
-    const call = await this.db.call.findFirst({
-      where: { conversationUuid, ...scope },
-      select: {
-        recordings: {
-          where: { context: 'VOICEMAIL' },
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: RECORDING_SELECT,
-        },
-      },
-    });
+    reason: CallRecordingDeletionReason,
+  ): Promise<RecordingDeletion> {
+    const context = { conversationUuid, recordingSid: recording.recordingSid };
+    let row = recording;
 
-    if (!call) {
-      throw new HttpError('Call not found', 404);
+    for (let attempt = 1; attempt <= DELETE_ATTEMPTS; attempt += 1) {
+      if (row.deletedAt !== null) {
+        return {
+          outcome: 'already-deleted',
+          deletion: toRecordingDeletion(row.deletedAt, row.deletionReason),
+        };
+      }
+
+      if (row.objectKey !== null) {
+        try {
+          await this.mediaStore.delete(row.objectKey);
+        } catch (error) {
+          this.log.warn(
+            { ...context, err: error },
+            'Could not delete the recording from the store; it stays until a later attempt',
+          );
+          return { outcome: 'failed' };
+        }
+      }
+
+      const deletedAt = new Date();
+      const { count } = await this.db.callRecording.updateMany({
+        where: { id: row.id, deletedAt: null, objectKey: row.objectKey },
+        data: { deletedAt, deletionReason: reason, objectKey: null },
+      });
+
+      if (count === 1) {
+        this.log.info(
+          { ...context, reason, context: row.context },
+          'Deleted a recording',
+        );
+
+        // Deleted here before the copy ever succeeded: Twilio still has the
+        // only one, and a deletion nobody asked for would leave it there.
+        let providerDeleted = false;
+        if (row.providerDeletedAt === null) {
+          const provider = this.providerAccess(row, conversationUuid);
+          if (provider.status === 'ok') {
+            providerDeleted = await this.deleteAtProvider(
+              row,
+              provider,
+              conversationUuid,
+            );
+          }
+        }
+
+        return {
+          outcome: 'deleted',
+          providerDeleted,
+          deletion: { reason, at: deletedAt.toISOString() },
+        };
+      }
+
+      const current = await this.db.callRecording.findFirst({
+        where: { id: row.id },
+        select: RECORDING_SELECT,
+      });
+
+      if (!current) {
+        return { outcome: 'already-deleted', deletion: null };
+      }
+
+      row = current;
     }
 
-    const recording = call.recordings[0];
-    if (!recording) {
-      throw new HttpError('This call has no voicemail', 404);
-    }
-
-    return this.open(recording, conversationUuid);
+    this.log.warn(
+      context,
+      'A copy kept landing while the recording was being deleted; it stays until a later attempt',
+    );
+    return { outcome: 'failed' };
   }
 
-  private async open(
+  /**
+   * The recording of a call the caller may see, or a 404 that does not say
+   * whether the call, the recording or the caller's access is what is missing.
+   */
+  async findInScope(
+    scope: Prisma.CallWhereInput,
+    conversationUuid: string,
+    recordingId: string,
+  ): Promise<CallRecordingRow> {
+    const recording = await this.db.callRecording.findFirst({
+      where: { id: recordingId, call: { conversationUuid, ...scope } },
+      select: RECORDING_SELECT,
+    });
+
+    if (!recording) {
+      throw new HttpError('Recording not found', 404);
+    }
+
+    return recording;
+  }
+
+  /**
+   * The audio of a recording. Every failure is an `HttpError`: 503 without
+   * Twilio credentials while the copy is still owed, 410 once the recording is
+   * deleted or neither side has it, and 502 for anything that goes wrong
+   * upstream.
+   *
+   * A voicemail fetched from Twilio because the copy is still owed completes
+   * that copy on its way to the user. A recording of a whole call does not: it
+   * is streamed straight through, because holding hours of audio in memory to
+   * save the sweep one fetch is the wrong trade.
+   */
+  async open(
     recording: CallRecordingRow,
     conversationUuid: string,
   ): Promise<RecordingMedia> {
@@ -264,8 +432,12 @@ export class CallRecordingService {
       return this.open({ ...recording, objectKey: null }, conversationUuid);
     }
 
+    if (source.source === 'deleted') {
+      throw new HttpError(deletedMessage(source.reason), 410);
+    }
+
     if (source.source === 'gone') {
-      throw new HttpError('This voicemail is no longer available', 410);
+      throw new HttpError('This recording is no longer available', 410);
     }
 
     const provider = this.providerAccess(recording, conversationUuid);
@@ -273,7 +445,7 @@ export class CallRecordingService {
       throw new HttpError('Twilio credentials are not configured', 503);
     }
     if (provider.status === 'refused') {
-      throw new HttpError('The voicemail could not be loaded', 502);
+      throw new HttpError('The recording could not be loaded', 502);
     }
 
     const fetched = await this.fetchFromProvider(
@@ -282,10 +454,18 @@ export class CallRecordingService {
       conversationUuid,
     );
     if (fetched.status === 'not-found') {
-      throw new HttpError('This voicemail is no longer available', 410);
+      throw new HttpError('This recording is no longer available', 410);
     }
     if (fetched.status === 'failed') {
       throw playbackFailure(fetched.reason);
+    }
+
+    if (recording.context !== 'VOICEMAIL') {
+      return {
+        contentType: fetched.contentType,
+        contentLength: fetched.contentLength,
+        body: Readable.from(fetched.pieces, { objectMode: false }),
+      };
     }
 
     // Fetched once: this play completes the copy on its way to the user. The
@@ -305,8 +485,15 @@ export class CallRecordingService {
       throw playbackFailure(reason);
     }
 
-    if (await this.store(recording, conversationUuid, audio)) {
-      await this.deleteAtProvider(recording, provider, conversationUuid);
+    // The user is served either way; the copy only happens if this play is the
+    // one that claims it, so a play racing the sweep stores the audio once.
+    const claim = await this.claimCopy(recording, conversationUuid);
+    if (claim) {
+      if (await this.store(recording, conversationUuid, audio)) {
+        await this.deleteAtProvider(recording, provider, conversationUuid);
+      } else {
+        await this.releaseCopyClaim(recording, claim);
+      }
     }
 
     return {
@@ -314,6 +501,51 @@ export class CallRecordingService {
       contentLength: audio.body.byteLength,
       body: audio.body,
     };
+  }
+
+  /**
+   * Takes the copy of this recording for the caller, answering the moment the
+   * claim was written, or null when somebody else holds it. A claim older than
+   * `COPY_CLAIM_STALE_MS` belonged to an attempt that never finished and is
+   * taken over.
+   */
+  private async claimCopy(
+    recording: CallRecordingRow,
+    conversationUuid: string,
+  ): Promise<Date | null> {
+    const now = new Date();
+
+    const { count } = await this.db.callRecording.updateMany({
+      where: { id: recording.id, ...claimableCopyWhere(now) },
+      data: { copyStartedAt: now },
+    });
+
+    if (count === 1) {
+      return now;
+    }
+
+    // Either another attempt holds the claim, or the recording was deleted
+    // between the row being read and this write; neither is this one's to copy.
+    this.log.info(
+      { conversationUuid, recordingSid: recording.recordingSid },
+      'This recording is being copied elsewhere or is already deleted; leaving it alone',
+    );
+    return null;
+  }
+
+  /**
+   * Hands the claim back after an attempt that stored nothing, so the next one
+   * starts at once instead of waiting for the claim to go stale. Guarded on
+   * the moment this attempt wrote, so a claim already taken over is left alone.
+   */
+  private async releaseCopyClaim(
+    recording: CallRecordingRow,
+    claimedAt: Date,
+  ): Promise<void> {
+    await this.db.callRecording.updateMany({
+      where: { id: recording.id, copyStartedAt: claimedAt },
+      data: { copyStartedAt: null },
+    });
   }
 
   private providerAccess(
@@ -391,11 +623,22 @@ export class CallRecordingService {
       return false;
     }
 
+    /*
+     * Guarded on the deletion: a recording deleted while this copy was running
+     * must not come back as an object nothing points at. The deletion left the
+     * row saying the audio is gone, so what this copy just stored is the only
+     * thing left to clean up.
+     */
     try {
-      await this.db.callRecording.update({
-        where: { id: recording.id },
+      const { count } = await this.db.callRecording.updateMany({
+        where: { id: recording.id, deletedAt: null },
         data: { objectKey: key, storedAt: new Date() },
       });
+
+      if (count !== 1) {
+        await this.discard(key, context);
+        return false;
+      }
     } catch (error) {
       this.log.warn(
         { ...context, err: error },
@@ -408,17 +651,46 @@ export class CallRecordingService {
   }
 
   /**
+   * Drops audio the row does not point at, so that a recording deleted while
+   * its copy was running leaves nothing behind. A store that refuses leaves an
+   * object nothing references; it is logged, and the next copy overwrites the
+   * key.
+   */
+  private async discard(
+    key: string,
+    context: { conversationUuid: string; recordingSid: string },
+  ): Promise<void> {
+    this.log.info(
+      context,
+      'The recording was deleted while it was being copied; dropping the copy',
+    );
+
+    try {
+      await this.mediaStore.delete(key);
+    } catch (error) {
+      this.log.warn(
+        { ...context, err: error },
+        'Could not drop the copy of a recording that was deleted while it was being copied',
+      );
+    }
+  }
+
+  /**
    * Deletes the recording at Twilio, and records that it did. Twilio answers
    * 204 for a deletion and 404 for a recording it no longer has, which is
    * the same outcome. Anything else is logged and left for a later sweep,
    * with the copy kept: deleting is the one step that cannot be undone, so
    * it is never retried here.
+   *
+   * Answers whether Twilio's copy is gone *and* the row now says so: a
+   * deletion the row did not record is owed again, and deleting a recording
+   * Twilio no longer has costs one request.
    */
   private async deleteAtProvider(
     recording: CallRecordingRow,
     provider: Extract<ProviderAccess, { status: 'ok' }>,
     conversationUuid: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const context = { conversationUuid, recordingSid: recording.recordingSid };
     const exchange = new AbortController();
     let status: number;
@@ -440,7 +712,7 @@ export class CallRecordingService {
         { ...context, reason: error instanceof Error ? error.name : 'unknown' },
         'Could not reach Twilio to delete the recording; it stays there until a later sweep',
       );
-      return;
+      return false;
     }
 
     if (status !== 204 && status !== 404) {
@@ -448,7 +720,7 @@ export class CallRecordingService {
         { ...context, status },
         'Twilio did not delete the recording; it stays there until a later sweep',
       );
-      return;
+      return false;
     }
 
     try {
@@ -461,7 +733,10 @@ export class CallRecordingService {
         { ...context, err: error },
         'Deleted the recording at Twilio but could not record it',
       );
+      return false;
     }
+
+    return true;
   }
 
   /**
@@ -543,10 +818,17 @@ function playbackFailure(
 ) {
   return new HttpError(
     reason === 'too-large'
-      ? 'The voicemail is too large to play'
-      : 'The voicemail could not be loaded',
+      ? 'The recording is too large to play'
+      : 'The recording could not be loaded',
     502,
   );
+}
+
+/** What a caller is told about a recording that was deleted on purpose. */
+function deletedMessage(reason: CallRecordingDeletionReason | null): string {
+  return reason === 'RETENTION_POLICY'
+    ? 'This recording was deleted by the retention policy'
+    : 'This recording was deleted';
 }
 
 /** What stopped the audio; anything but the cap is Twilio cutting it off. */
