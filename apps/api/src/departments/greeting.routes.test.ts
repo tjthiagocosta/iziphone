@@ -52,12 +52,20 @@ function buildApps(initial: SettingsRow) {
   pipelineSet.mockReturnValue(pipeline);
   const db = {
     departmentSettings: {
-      findFirst: vi.fn(async () => ({ ...row })),
-      findUnique: vi.fn(
-        async ({ where }: { where: { voicemailGreetingId: string } }) =>
-          row.voicemailGreetingId === where.voicemailGreetingId
-            ? { voicemailGreetingKey: row.voicemailGreetingKey }
-            : null,
+      /*
+       * Serves both `findSettings` (filters by departmentId) and `open`
+       * (filters by voicemailGreetingId).
+       */
+      findFirst: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { voicemailGreetingId?: string; departmentId?: string };
+        }) =>
+          where.voicemailGreetingId !== undefined &&
+          where.voicemailGreetingId !== row.voicemailGreetingId
+            ? null
+            : { ...row },
       ),
       updateMany: vi.fn(
         async ({

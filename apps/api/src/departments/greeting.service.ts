@@ -208,10 +208,16 @@ export class DepartmentGreetingService {
     return true;
   }
 
-  /** The greeting's bytes and type for the public route; `null` when the id names nothing. */
+  /**
+   * The greeting's bytes and type for the public route; `null` when the id
+   * names nothing, including a greeting whose department was since deleted.
+   */
   async open(greetingId: string): Promise<StoredObject | null> {
-    const settings = await this.db.departmentSettings.findUnique({
-      where: { voicemailGreetingId: greetingId },
+    const settings = await this.db.departmentSettings.findFirst({
+      where: {
+        voicemailGreetingId: greetingId,
+        department: { deletedAt: null },
+      },
       select: { voicemailGreetingKey: true },
     });
 
@@ -250,20 +256,32 @@ export class DepartmentGreetingService {
     }
   }
 
-  /**
-   * Best effort: the row no longer names this object, so a failure here
-   * leaves an orphan in the bucket, not a broken greeting. The warning is
-   * what there is to find it by.
-   */
-  private async discard(key: string, departmentId: string): Promise<void> {
-    try {
-      await this.mediaStore.delete(key);
-    } catch (error) {
-      this.log.warn(
-        { err: error, departmentId, key },
-        'Could not delete a voicemail greeting the department no longer uses',
-      );
-    }
+  private discard(key: string, departmentId: string): Promise<void> {
+    return discardGreetingObject(this.mediaStore, this.log, key, departmentId);
+  }
+}
+
+/**
+ * Deletes a voicemail greeting object from the media store. Best effort: the
+ * settings row no longer names this object by the time this runs, so a
+ * failure here leaves an orphan in the bucket, not a broken request. The
+ * warning is what there is to find it by. Shared by `DepartmentGreetingService`
+ * (replace, remove) and `DepartmentService` (delete), the two places a
+ * greeting object stops being the current one.
+ */
+export async function discardGreetingObject(
+  mediaStore: MediaStore,
+  log: FastifyBaseLogger,
+  key: string,
+  departmentId: string,
+): Promise<void> {
+  try {
+    await mediaStore.delete(key);
+  } catch (error) {
+    log.warn(
+      { err: error, departmentId, key },
+      'Could not delete a voicemail greeting the department no longer uses',
+    );
   }
 }
 

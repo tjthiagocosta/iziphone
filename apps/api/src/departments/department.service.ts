@@ -18,10 +18,12 @@ import {
   AdminServiceError,
   isUniqueConstraintViolation,
 } from '../admin/index.js';
+import type { MediaStore } from '../media-store/index.js';
 import {
   departmentGreetingUrl,
   type RoutingCacheService,
 } from '../routing/index.js';
+import { discardGreetingObject } from './greeting.service.js';
 
 const departmentInclude = {
   settings: true,
@@ -65,6 +67,7 @@ export class DepartmentService {
     private readonly routingCache: RoutingCacheService,
     /** Where this API is reached from outside; the greeting URL is built on it. */
     private readonly publicUrl: string,
+    private readonly mediaStore: MediaStore,
   ) {}
 
   async list(query: DepartmentListQuery): Promise<DepartmentListResponse> {
@@ -272,7 +275,14 @@ export class DepartmentService {
       return false;
     }
 
-    await this.db.$transaction(async (tx) => {
+    // Read and clear the greeting inside the same transaction, with the
+    // clear conditioned on the id just read: a greeting an admin replaces or
+    // uploads concurrently, after this read but before this write, must not
+    // be silently overwritten and leaked in the store. Losing that race
+    // leaves the concurrent greeting on the row, harmless once the
+    // department is deleted since `open()` already refuses a deleted
+    // department's greeting.
+    const discardedGreeting = await this.db.$transaction(async (tx) => {
       await tx.department.update({
         where: { id },
         data: { deletedAt: new Date(), updatedBy: actorId },
@@ -286,17 +296,29 @@ export class DepartmentService {
           updatedBy: actorId,
         },
       });
+
+      const greeting = await this.clearGreeting(tx, id);
+
       await this.auditLog.create(
         {
           action: 'department.deleted',
           entityType: 'Department',
           entityId: id,
           userId: actorId,
+          changes: greeting
+            ? { greetingDiscarded: true, greetingId: greeting.id }
+            : undefined,
           ipAddress,
         },
         tx,
       );
+
+      return greeting;
     });
+
+    if (discardedGreeting) {
+      await this.discardGreeting(discardedGreeting.key, id);
+    }
 
     await this.routingCache.refreshPhoneNumbers(
       department.phoneNumbers.map((pn) => pn.phoneNumber),
@@ -790,6 +812,42 @@ export class DepartmentService {
     await this.routingCache.refreshPhoneNumbers([phoneNumber.phoneNumber]);
 
     return true;
+  }
+
+  private discardGreeting(key: string, departmentId: string): Promise<void> {
+    return discardGreetingObject(this.mediaStore, this.log, key, departmentId);
+  }
+
+  /**
+   * Nulls the greeting fields if the row still names the id just read, the
+   * same guard `DepartmentGreetingService.replaceGreeting` uses: a greeting
+   * uploaded or replaced concurrently, between this read and this write, is
+   * left alone rather than silently overwritten and its object leaked.
+   */
+  private async clearGreeting(
+    tx: Prisma.TransactionClient,
+    departmentId: string,
+  ): Promise<{ id: string; key: string } | null> {
+    const settings = await tx.departmentSettings.findUnique({
+      where: { departmentId },
+      select: { voicemailGreetingId: true, voicemailGreetingKey: true },
+    });
+
+    if (!settings?.voicemailGreetingId || !settings.voicemailGreetingKey) {
+      return null;
+    }
+
+    const { count } = await tx.departmentSettings.updateMany({
+      where: {
+        departmentId,
+        voicemailGreetingId: settings.voicemailGreetingId,
+      },
+      data: { voicemailGreetingId: null, voicemailGreetingKey: null },
+    });
+
+    return count === 1
+      ? { id: settings.voicemailGreetingId, key: settings.voicemailGreetingKey }
+      : null;
   }
 
   private findActiveDepartment(id: string): Promise<{ id: string } | null> {

@@ -50,6 +50,7 @@ export const adminDepartmentRoutes: FastifyPluginAsync = async (fastify) => {
     auditLog,
     routingCache,
     fastify.config.publicUrl,
+    fastify.mediaStore,
   );
   const greetingService = new DepartmentGreetingService({
     db: fastify.db,

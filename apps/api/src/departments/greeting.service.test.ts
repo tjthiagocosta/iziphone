@@ -28,9 +28,14 @@ interface SettingsRow {
 /** A department whose settings row starts as given and follows every update. */
 function buildService(
   settings: SettingsRow | null,
-  options: { mediaStore?: InMemoryMediaStore; transactionFails?: boolean } = {},
+  options: {
+    mediaStore?: InMemoryMediaStore;
+    transactionFails?: boolean;
+    departmentDeleted?: boolean;
+  } = {},
 ) {
   const row = settings ? { ...settings } : null;
+  const departmentDeleted = options.departmentDeleted ?? false;
   /* Writes only when the row still holds the id the caller read, like Postgres would. */
   const settingsUpdateMany = vi.fn(
     async ({
@@ -48,17 +53,32 @@ function buildService(
       return { count: 1 };
     },
   );
-  const settingsFindFirst = vi.fn(async () => (row ? { ...row } : null));
-  const settingsFindUnique = vi.fn(
-    async ({ where }: { where: { voicemailGreetingId: string } }) =>
-      row && row.voicemailGreetingId === where.voicemailGreetingId
-        ? { voicemailGreetingKey: row.voicemailGreetingKey }
-        : null,
+  /*
+   * Serves both `findSettings` (filters by departmentId) and `open` (filters
+   * by voicemailGreetingId); both exclude a soft-deleted department.
+   */
+  const settingsFindFirst = vi.fn(
+    async ({
+      where,
+    }: {
+      where: { voicemailGreetingId?: string; departmentId?: string };
+    }) => {
+      if (!row || departmentDeleted) {
+        return null;
+      }
+      if (
+        where.voicemailGreetingId !== undefined &&
+        where.voicemailGreetingId !== row.voicemailGreetingId
+      ) {
+        return null;
+      }
+
+      return { ...row };
+    },
   );
   const db = {
     departmentSettings: {
       findFirst: settingsFindFirst,
-      findUnique: settingsFindUnique,
       updateMany: settingsUpdateMany,
     },
     $transaction: async (run: (tx: unknown) => unknown) => {
@@ -261,7 +281,13 @@ describe('DepartmentGreetingService.upload', () => {
     const put = mediaStore.put.bind(mediaStore);
     vi.spyOn(mediaStore, 'put').mockImplementation(async (input) => {
       await put(input);
-      // The other admin's upload lands between this one's read and write.
+      // The other admin's upload, bytes and all, lands between this one's
+      // read and write.
+      await put({
+        key: 'greetings/dept-1/theirs.mp3',
+        contentType: 'audio/mpeg',
+        body: WAV,
+      });
       Object.assign(row ?? {}, {
         voicemailGreetingId: 'theirs',
         voicemailGreetingKey: 'greetings/dept-1/theirs.mp3',
@@ -280,8 +306,8 @@ describe('DepartmentGreetingService.upload', () => {
       voicemailGreetingId: 'theirs',
       voicemailGreetingKey: 'greetings/dept-1/theirs.mp3',
     });
-    // The file this request stored is taken back out; theirs is not touched.
-    expect(mediaStore.keys()).toEqual([]);
+    // The file this request stored is taken back out; theirs is kept.
+    expect(mediaStore.keys()).toEqual(['greetings/dept-1/theirs.mp3']);
     expect(auditCreate).not.toHaveBeenCalled();
     expect(refreshDepartment).not.toHaveBeenCalled();
   });
@@ -449,6 +475,24 @@ describe('DepartmentGreetingService.open', () => {
       voicemailGreetingId: 'greeting-1',
       voicemailGreetingKey: 'greetings/dept-1/greeting-1.mp3',
     });
+
+    expect(await service.open('greeting-1')).toBeNull();
+  });
+
+  test('resolves null once the owning department is soft-deleted', async () => {
+    const mediaStore = new InMemoryMediaStore();
+    await mediaStore.put({
+      key: 'greetings/dept-1/greeting-1.mp3',
+      contentType: 'audio/mpeg',
+      body: MP3,
+    });
+    const { service } = buildService(
+      {
+        voicemailGreetingId: 'greeting-1',
+        voicemailGreetingKey: 'greetings/dept-1/greeting-1.mp3',
+      },
+      { mediaStore, departmentDeleted: true },
+    );
 
     expect(await service.open('greeting-1')).toBeNull();
   });
