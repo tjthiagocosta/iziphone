@@ -5,6 +5,7 @@ import { callLineRoutes, callRoutes, voicemailRoutes } from './calls/index.js';
 import type { ApiConfig } from './config.js';
 import {
   adminDepartmentRoutes,
+  departmentGreetingRoutes,
   userDepartmentRoutes,
 } from './departments/index.js';
 import { healthRoutes } from './health/index.js';
@@ -68,6 +69,7 @@ export async function registerRoutes(
 ): Promise<void> {
   await fastify.register(healthRoutes);
   await fastify.register(messageMediaRoutes);
+  await fastify.register(departmentGreetingRoutes);
   await fastify.register(authRoutes);
   await fastify.register(sessionRoutes);
   await fastify.register(internalApiRoutes, { token: config.internalApiToken });

@@ -6,6 +6,7 @@ import {
 } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
+import { departmentGreetingUrl } from './greeting-url.js';
 
 /*
  * The call controller never reads Postgres. It routes inbound calls from the
@@ -48,9 +49,14 @@ export interface RoutingCacheWarmResult {
   users: number;
 }
 
+/**
+ * @param publicUrl where this API is reached from outside; the greeting the
+ *   controller hands Twilio to `<Play>` is served from it.
+ */
 export function projectDepartmentRouting(
   department: RoutingDepartmentRow,
   cachedAt: string,
+  publicUrl: string,
 ): CachedRouting {
   const orderedUsers = department.users.map((membership) => ({
     userId: membership.userId,
@@ -70,7 +76,9 @@ export function projectDepartmentRouting(
           ringDuration: settings.ringDuration,
           closedHoursRoutingType: settings.closedHoursRoutingType,
           closedHoursExternalNumber: settings.closedHoursExternalNumber,
-          voicemailGreetingUrl: settings.voicemailGreetingUrl,
+          voicemailGreetingUrl: settings.voicemailGreetingId
+            ? departmentGreetingUrl(publicUrl, settings.voicemailGreetingId)
+            : null,
           businessHours: department.businessHours.map((hours) => ({
             dayOfWeek: hours.dayOfWeek,
             isOpen: hours.isOpen,
@@ -151,6 +159,7 @@ export class RoutingCacheService {
     private readonly redis: Redis,
     private readonly db: PrismaClient,
     private readonly ttlSeconds: number,
+    private readonly publicUrl: string,
     private readonly log: FastifyBaseLogger,
   ) {}
 
@@ -218,6 +227,7 @@ export class RoutingCacheService {
       const routing = projectDepartmentRouting(
         department,
         new Date().toISOString(),
+        this.publicUrl,
       );
       this.queueDepartmentSummary(pipeline, routing);
 
@@ -269,7 +279,11 @@ export class RoutingCacheService {
         continue;
       }
 
-      const routing = projectDepartmentRouting(department, cachedAt);
+      const routing = projectDepartmentRouting(
+        department,
+        cachedAt,
+        this.publicUrl,
+      );
       this.queueDepartmentSummary(pipeline, routing);
 
       for (const number of department.phoneNumbers) {
@@ -325,7 +339,7 @@ export class RoutingCacheService {
 
     if (row.department && !row.department.deletedAt) {
       return routingEntry(
-        projectDepartmentRouting(row.department, cachedAt),
+        projectDepartmentRouting(row.department, cachedAt, this.publicUrl),
         row,
       );
     }

@@ -7,6 +7,7 @@ export const internalRoutingRoutes: FastifyPluginAsync = async (fastify) => {
     fastify.redis,
     fastify.db,
     fastify.config.routingCacheTtlSeconds,
+    fastify.config.publicUrl,
     fastify.log,
   );
 

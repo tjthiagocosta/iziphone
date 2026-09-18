@@ -57,7 +57,8 @@ describe('internalRoutingRoutes', () => {
           ringDuration: 20,
           closedHoursRoutingType: 'VOICEMAIL',
           closedHoursExternalNumber: null,
-          voicemailGreetingUrl: null,
+          voicemailGreetingId: null,
+          voicemailGreetingKey: null,
         },
         businessHours: [
           { dayOfWeek: 1, isOpen: true, openTime: '09:00', closeTime: '18:00' },

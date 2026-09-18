@@ -61,6 +61,7 @@ export async function buildApp(config: ApiConfig) {
     fastify.redis,
     fastify.db,
     fastify.config.routingCacheTtlSeconds,
+    fastify.config.publicUrl,
     fastify.log,
   );
   const callEventSubscriber = new CallEventSubscriberService(

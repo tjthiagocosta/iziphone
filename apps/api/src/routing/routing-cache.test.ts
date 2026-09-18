@@ -16,6 +16,7 @@ import {
 
 const CACHED_AT = '2026-03-20T00:00:00.000Z';
 const TTL = 3600;
+const PUBLIC_URL = 'https://api.example.com';
 const DEPARTMENT_LINE = '+15555550101';
 const DIRECT_LINE = '+15555550102';
 
@@ -44,7 +45,8 @@ function supportDepartment(
       ringDuration: 20,
       closedHoursRoutingType: 'VOICEMAIL',
       closedHoursExternalNumber: null,
-      voicemailGreetingUrl: null,
+      voicemailGreetingId: null,
+      voicemailGreetingKey: null,
     },
     businessHours: [
       { dayOfWeek: 1, isOpen: true, openTime: '09:00', closeTime: '18:00' },
@@ -89,7 +91,7 @@ function writtenValue(set: ReturnType<typeof vi.fn>, key: string): unknown {
 describe('routing projection', () => {
   test('should project a department into routing the controller can parse', () => {
     const routing = CachedRoutingSchema.parse(
-      projectDepartmentRouting(supportDepartment(), CACHED_AT),
+      projectDepartmentRouting(supportDepartment(), CACHED_AT, PUBLIC_URL),
     );
 
     expect(routing).toEqual({
@@ -131,10 +133,35 @@ describe('routing projection', () => {
       projectDepartmentRouting(
         supportDepartment({ settings: null }),
         CACHED_AT,
+        PUBLIC_URL,
       ),
     );
 
     expect(routing.settings).toBeUndefined();
+  });
+
+  test('should carry the uploaded greeting as the URL this API serves it from', () => {
+    const department = supportDepartment();
+    const routing = CachedRoutingSchema.parse(
+      projectDepartmentRouting(
+        {
+          ...department,
+          settings: {
+            ...department.settings,
+            voicemailGreetingId: 'greeting-abc',
+            voicemailGreetingKey: 'greetings/dept-1/greeting-abc.mp3',
+          },
+        } as RoutingDepartmentRow,
+        CACHED_AT,
+        PUBLIC_URL,
+      ),
+    );
+
+    // The controller hands this URL to Twilio as it is; nothing but the
+    // public base and the id may go into it.
+    expect(routing.settings?.voicemailGreetingUrl).toBe(
+      'https://api.example.com/media/greetings/greeting-abc',
+    );
   });
 
   test('should project a direct line into user routing', () => {
@@ -163,7 +190,7 @@ describe('RoutingCacheService', () => {
         })),
       },
     } as unknown as PrismaClient;
-    const service = new RoutingCacheService(redis, db, TTL, log);
+    const service = new RoutingCacheService(redis, db, TTL, PUBLIC_URL, log);
 
     const routing = await service.lookupByPhone(DEPARTMENT_LINE);
 
@@ -207,7 +234,7 @@ describe('RoutingCacheService', () => {
         user: { id: 'user-11', name: 'Gone', deletedAt: new Date() },
       });
     const db = { phoneNumber: { findFirst } } as unknown as PrismaClient;
-    const service = new RoutingCacheService(redis, db, TTL, log);
+    const service = new RoutingCacheService(redis, db, TTL, PUBLIC_URL, log);
 
     const live = await service.lookupByPhone(DIRECT_LINE);
     const deleted = await service.lookupByPhone('+15555550103');
@@ -230,7 +257,7 @@ describe('RoutingCacheService', () => {
     const { redis } = fakeRedis();
     const findFirst = vi.fn(async () => null);
     const db = { phoneNumber: { findFirst } } as unknown as PrismaClient;
-    const service = new RoutingCacheService(redis, db, TTL, log);
+    const service = new RoutingCacheService(redis, db, TTL, PUBLIC_URL, log);
 
     await service.lookupByPhone(DEPARTMENT_LINE);
 
@@ -256,7 +283,7 @@ describe('RoutingCacheService', () => {
         user: { id: 'user-9', name: 'Agent Nine', deletedAt: null },
       });
     const db = { phoneNumber: { findFirst } } as unknown as PrismaClient;
-    const service = new RoutingCacheService(redis, db, TTL, log);
+    const service = new RoutingCacheService(redis, db, TTL, PUBLIC_URL, log);
 
     await service.refreshPhoneNumbers([DEPARTMENT_LINE, DIRECT_LINE]);
 
@@ -275,6 +302,7 @@ describe('RoutingCacheService', () => {
       redis,
       {} as PrismaClient,
       TTL,
+      PUBLIC_URL,
       log,
     );
 
@@ -297,7 +325,7 @@ describe('RoutingCacheService', () => {
         ),
       },
     } as unknown as PrismaClient;
-    const service = new RoutingCacheService(redis, db, TTL, log);
+    const service = new RoutingCacheService(redis, db, TTL, PUBLIC_URL, log);
 
     await service.refreshDepartment('dept-1');
 
@@ -328,7 +356,7 @@ describe('RoutingCacheService', () => {
     const db = {
       department: { findFirst: vi.fn(async () => null) },
     } as unknown as PrismaClient;
-    const service = new RoutingCacheService(redis, db, TTL, log);
+    const service = new RoutingCacheService(redis, db, TTL, PUBLIC_URL, log);
 
     await service.refreshDepartment('dept-gone');
 
@@ -364,7 +392,7 @@ describe('RoutingCacheService', () => {
         ]),
       },
     } as unknown as PrismaClient;
-    const service = new RoutingCacheService(redis, db, TTL, log);
+    const service = new RoutingCacheService(redis, db, TTL, PUBLIC_URL, log);
 
     const result = await service.warmAll();
 

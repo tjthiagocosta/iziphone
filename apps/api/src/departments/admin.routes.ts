@@ -3,31 +3,62 @@ import {
   AssignPhoneNumberToDepartmentSchema,
   CreateDepartmentSchema,
   CreateHolidaySchema,
+  DepartmentGreetingResponseSchema,
   DepartmentListQuerySchema,
   UpdateAgentOrderSchema,
   UpdateBusinessHoursSchema,
   UpdateDepartmentSchema,
   UpdateDepartmentSettingsSchema,
   UpdateHolidaySchema,
+  VOICEMAIL_GREETING_MAX_SIZE_BYTES,
+  VOICEMAIL_GREETING_MIME_TYPES,
+  VOICEMAIL_GREETING_UNKNOWN_MIME_TYPE,
 } from '@repo/dto';
 import type { FastifyPluginAsync } from 'fastify';
 import { AuditLogService } from '../admin/index.js';
 import { authenticatedUser } from '../auth/index.js';
 import { RoutingCacheService } from '../routing/index.js';
 import { DepartmentService } from './department.service.js';
+import { DepartmentGreetingService } from './greeting.service.js';
 
 export const adminDepartmentRoutes: FastifyPluginAsync = async (fastify) => {
+  /* A greeting arrives as raw audio bytes; Fastify only parses JSON by default. */
+  for (const mimeType of [
+    ...VOICEMAIL_GREETING_MIME_TYPES,
+    VOICEMAIL_GREETING_UNKNOWN_MIME_TYPE,
+  ]) {
+    if (!fastify.hasContentTypeParser(mimeType)) {
+      fastify.addContentTypeParser(
+        mimeType,
+        { parseAs: 'buffer' },
+        (_request, body, done) => done(null, body),
+      );
+    }
+  }
+
+  const auditLog = new AuditLogService(fastify.db);
+  const routingCache = new RoutingCacheService(
+    fastify.redis,
+    fastify.db,
+    fastify.config.routingCacheTtlSeconds,
+    fastify.config.publicUrl,
+    fastify.log,
+  );
   const departmentService = new DepartmentService(
     fastify.db,
     fastify.log,
-    new AuditLogService(fastify.db),
-    new RoutingCacheService(
-      fastify.redis,
-      fastify.db,
-      fastify.config.routingCacheTtlSeconds,
-      fastify.log,
-    ),
+    auditLog,
+    routingCache,
+    fastify.config.publicUrl,
   );
+  const greetingService = new DepartmentGreetingService({
+    db: fastify.db,
+    mediaStore: fastify.mediaStore,
+    publicUrl: fastify.config.publicUrl,
+    auditLog,
+    routingCache,
+    log: fastify.log,
+  });
 
   fastify.get('/', async (request, reply) => {
     const query = DepartmentListQuerySchema.parse(request.query);
@@ -145,6 +176,53 @@ export const adminDepartmentRoutes: FastifyPluginAsync = async (fastify) => {
       );
 
       if (!success) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Department not found',
+        });
+      }
+
+      return reply.status(204).send();
+    },
+  );
+
+  fastify.put<{ Params: { id: string } }>(
+    '/:id/greeting',
+    { bodyLimit: VOICEMAIL_GREETING_MAX_SIZE_BYTES },
+    async (request, reply) => {
+      const voicemailGreetingUrl = await greetingService.upload(
+        request.params.id,
+        {
+          contentType: request.headers['content-type'],
+          bytes: Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0),
+        },
+        authenticatedUser(request).id,
+        request.ip,
+      );
+
+      if (!voicemailGreetingUrl) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Department not found',
+        });
+      }
+
+      return reply.send(
+        DepartmentGreetingResponseSchema.parse({ voicemailGreetingUrl }),
+      );
+    },
+  );
+
+  fastify.delete<{ Params: { id: string } }>(
+    '/:id/greeting',
+    async (request, reply) => {
+      const found = await greetingService.remove(
+        request.params.id,
+        authenticatedUser(request).id,
+        request.ip,
+      );
+
+      if (!found) {
         return reply.status(404).send({
           error: 'Not Found',
           message: 'Department not found',

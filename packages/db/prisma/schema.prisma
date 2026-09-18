@@ -255,8 +255,13 @@ model DepartmentSettings {
   closedHoursRoutingType    ClosedHoursRouting @default(VOICEMAIL) @map("closed_hours_routing_type")
   closedHoursExternalNumber String?            @map("closed_hours_external_number")
 
-  ringDuration         Int     @default(30) @map("ring_duration") // seconds (10-45)
-  voicemailGreetingUrl String? @map("voicemail_greeting_url")
+  ringDuration Int @default(30) @map("ring_duration") // seconds (10-45)
+
+  // The greeting an admin uploaded. The id names it in its public URL, so it
+  // is unguessable and changes with every upload; the key is where the media
+  // store holds the bytes (`greetings/<departmentId>/<id>.<ext>`).
+  voicemailGreetingId  String? @unique @map("voicemail_greeting_id")
+  voicemailGreetingKey String? @map("voicemail_greeting_key")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

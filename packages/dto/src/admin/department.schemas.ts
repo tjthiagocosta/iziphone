@@ -119,10 +119,40 @@ export const UpdateDepartmentSettingsSchema = z.object({
     .min(RING_DURATION_MIN_SECONDS)
     .max(RING_DURATION_MAX_SECONDS)
     .optional(),
-  voicemailGreetingUrl: z
-    .url({ protocol: /^https?$/ })
-    .nullable()
-    .optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Voicemail greeting
+// ---------------------------------------------------------------------------
+
+/**
+ * What an admin may upload as a department's greeting: the formats Twilio's
+ * `<Play>` supports whose files start with a recognizable header, under the
+ * names browsers give them. The API checks the bytes as well as the type.
+ */
+export const VOICEMAIL_GREETING_MIME_TYPES = [
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/wav',
+  'audio/wave',
+  'audio/x-wav',
+  'audio/vnd.wave',
+  'audio/aiff',
+  'audio/x-aiff',
+] as const;
+
+/**
+ * The type a greeting is sent under when the browser could not name one
+ * (Linux browsers know no type for `.aiff`, for instance). It says nothing
+ * about the format, so the API decides from the bytes alone.
+ */
+export const VOICEMAIL_GREETING_UNKNOWN_MIME_TYPE = 'application/octet-stream';
+
+export const VOICEMAIL_GREETING_MAX_SIZE_BYTES = 5 * 1024 * 1024;
+
+/** What `PUT /api/admin/departments/:id/greeting` answers. */
+export const DepartmentGreetingResponseSchema = z.object({
+  voicemailGreetingUrl: z.url(),
 });
 
 // ---------------------------------------------------------------------------
@@ -289,6 +319,9 @@ export type AssignPhoneNumberToDepartment = z.infer<
 >;
 export type DepartmentSettingsResponse = z.infer<
   typeof DepartmentSettingsResponseSchema
+>;
+export type DepartmentGreetingResponse = z.infer<
+  typeof DepartmentGreetingResponseSchema
 >;
 export type BusinessHoursResponse = z.infer<typeof BusinessHoursResponseSchema>;
 export type HolidayResponse = z.infer<typeof HolidayResponseSchema>;

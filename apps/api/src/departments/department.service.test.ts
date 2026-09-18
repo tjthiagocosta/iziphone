@@ -8,6 +8,7 @@ import { DepartmentService } from './department.service.js';
 
 const MAIN_LINE = '+15555550101';
 const SECOND_LINE = '+15555550102';
+const PUBLIC_URL = 'https://api.example.com';
 
 const log = { info: vi.fn(), error: vi.fn() } as unknown as FastifyBaseLogger;
 
@@ -29,6 +30,7 @@ function buildService(tables: Record<string, unknown>) {
     log,
     { create: auditCreate } as unknown as AuditLogService,
     routingCache as unknown as RoutingCacheService,
+    PUBLIC_URL,
   );
 
   return { service, db, auditCreate, routingCache };

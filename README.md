@@ -9,7 +9,7 @@ Own your phone system. iziphone runs on your own server and your own Twilio acco
 ## What it does
 
 - **Browser softphone.** Agents make and receive calls from the web app using the Twilio Voice SDK. No desk phones, no desktop client.
-- **Department routing.** Inbound calls to a number ring the members of its department. Members can be online or offline, and a call can go to voicemail when nobody answers.
+- **Department routing.** Inbound calls to a number ring the members of its department. Members can be online or offline, and a call can go to voicemail when nobody answers, with a greeting the admin recorded and uploaded or the built-in spoken one.
 - **Conference-first calls.** Every call is a Twilio conference, so hold, transfer and supervisor features are consistent for inbound and outbound calls.
 - **Hold and transfer.** Put the other party on hold with hold music and hand the call to a teammate, who sees who is calling and who is transferring before answering.
 - **Shared SMS and MMS inboxes.** Text conversations per phone number, shared across a team, with media attachments and STOP keyword suppression.
@@ -87,7 +87,7 @@ iziphone/
 
 **Three services, one database.** The web app talks to the API over HTTP with a session cookie. The API owns the database and all business logic. The call controller handles everything time-sensitive on a live call and never touches the database.
 
-**Media lives in an S3-compatible bucket.** MMS attachments and call recordings are written to and read from object storage by the API alone (`apps/api/src/media-store`), and served to browsers and to Twilio through the API's own routes, so the bucket stays private. Twilio makes the recordings; as soon as it reports one complete, the API copies the file into the bucket, records it on the call and deletes it at Twilio, so playback and retention depend on your bucket, not on Twilio's storage. While a copy is still owed (Twilio not ready yet, the bucket down), playback fetches from Twilio and completes the copy on the way. Any provider that speaks the S3 API works; see [Object storage](#object-storage).
+**Media lives in an S3-compatible bucket.** MMS attachments, voicemail greetings and call recordings are written to and read from object storage by the API alone (`apps/api/src/media-store`), and served to browsers and to Twilio through the API's own routes, so the bucket stays private. Twilio makes the recordings; as soon as it reports one complete, the API copies the file into the bucket, records it on the call and deletes it at Twilio, so playback and retention depend on your bucket, not on Twilio's storage. While a copy is still owed (Twilio not ready yet, the bucket down), playback fetches from Twilio and completes the copy on the way. Any provider that speaks the S3 API works; see [Object storage](#object-storage).
 
 **The call controller reads routing from Redis.** When an admin changes a department, a phone number, or a user, the API writes a routing snapshot to Redis (keys under `routing:phone:*`). Inbound webhooks resolve the destination from that cache. If a key is missing, the controller falls back to an HTTP call to the API's internal routes.
 
@@ -230,7 +230,7 @@ Twilio signs every webhook. Signature validation is enforced when `NODE_ENV` is 
 
 ## Object storage
 
-The API keeps MMS attachments in one S3-compatible bucket and is the only service that talks to it. Six `STORAGE_*` variables select the provider; nothing else changes between them. The bucket does not need to be public: media is served through the API's `/media` routes, and Twilio fetches outbound attachments from there.
+The API keeps MMS attachments and department voicemail greetings in one S3-compatible bucket and is the only service that talks to it. Six `STORAGE_*` variables select the provider; nothing else changes between them. The bucket does not need to be public: media is served through the API's `/media` routes, and Twilio fetches outbound attachments and greetings from there.
 
 | Provider | `STORAGE_ENDPOINT` | `STORAGE_REGION` | `STORAGE_FORCE_PATH_STYLE` |
 |---|---|---|---|

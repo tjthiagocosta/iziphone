@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   BusinessHoursItemSchema,
   CreateHolidaySchema,
+  DepartmentGreetingResponseSchema,
   DepartmentListQuerySchema,
   UpdateAgentOrderSchema,
   UpdateBusinessHoursSchema,
@@ -109,11 +110,27 @@ describe('UpdateDepartmentSettingsSchema', () => {
     ).toBe(true);
   });
 
-  test('only accepts http(s) greeting URLs', () => {
-    const result = UpdateDepartmentSettingsSchema.safeParse({
-      voicemailGreetingUrl: 'ftp://example.com/greeting.mp3',
+  test('no longer takes a greeting URL; the greeting is uploaded instead', () => {
+    const parsed = UpdateDepartmentSettingsSchema.parse({
+      ringDuration: 30,
+      voicemailGreetingUrl: 'https://example.com/greeting.mp3',
     });
-    expect(result.success).toBe(false);
+    expect(parsed).toEqual({ ringDuration: 30 });
+  });
+});
+
+describe('DepartmentGreetingResponseSchema', () => {
+  test('carries the absolute URL Twilio and the browser play', () => {
+    expect(
+      DepartmentGreetingResponseSchema.safeParse({
+        voicemailGreetingUrl: 'https://api.example.com/media/greetings/abc',
+      }).success,
+    ).toBe(true);
+    expect(
+      DepartmentGreetingResponseSchema.safeParse({
+        voicemailGreetingUrl: '/media/greetings/abc',
+      }).success,
+    ).toBe(false);
   });
 });
 

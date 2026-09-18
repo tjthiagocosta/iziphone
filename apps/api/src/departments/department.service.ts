@@ -18,7 +18,10 @@ import {
   AdminServiceError,
   isUniqueConstraintViolation,
 } from '../admin/index.js';
-import type { RoutingCacheService } from '../routing/index.js';
+import {
+  departmentGreetingUrl,
+  type RoutingCacheService,
+} from '../routing/index.js';
 
 const departmentInclude = {
   settings: true,
@@ -60,6 +63,8 @@ export class DepartmentService {
     private readonly log: FastifyBaseLogger,
     private readonly auditLog: AuditLogService,
     private readonly routingCache: RoutingCacheService,
+    /** Where this API is reached from outside; the greeting URL is built on it. */
+    private readonly publicUrl: string,
   ) {}
 
   async list(query: DepartmentListQuery): Promise<DepartmentListResponse> {
@@ -119,7 +124,7 @@ export class DepartmentService {
       include: departmentInclude,
     });
 
-    return department ? toDepartmentResponse(department) : null;
+    return department ? toDepartmentResponse(department, this.publicUrl) : null;
   }
 
   /** @throws AdminServiceError 409 when the name is already taken. */
@@ -172,7 +177,7 @@ export class DepartmentService {
         'Department created',
       );
 
-      return toDepartmentResponse(department);
+      return toDepartmentResponse(department, this.publicUrl);
     } catch (error) {
       throw translateUniqueViolation(error);
     }
@@ -240,7 +245,7 @@ export class DepartmentService {
         await this.routingCache.refreshDepartment(id);
       }
 
-      return toDepartmentResponse(department);
+      return toDepartmentResponse(department, this.publicUrl);
     } catch (error) {
       throw translateUniqueViolation(error);
     }
@@ -335,7 +340,7 @@ export class DepartmentService {
       return updated;
     });
 
-    return toDepartmentResponse(restored);
+    return toDepartmentResponse(restored, this.publicUrl);
   }
 
   async updateSettings(
@@ -358,7 +363,6 @@ export class DepartmentService {
           closedHoursRoutingType: data.closedHoursRoutingType,
           closedHoursExternalNumber: data.closedHoursExternalNumber,
           ringDuration: data.ringDuration,
-          voicemailGreetingUrl: data.voicemailGreetingUrl,
         },
       });
       await this.auditLog.create(
@@ -802,7 +806,10 @@ function translateUniqueViolation(error: unknown): unknown {
     : error;
 }
 
-function toDepartmentResponse(department: DepartmentRow): DepartmentResponse {
+function toDepartmentResponse(
+  department: DepartmentRow,
+  publicUrl: string,
+): DepartmentResponse {
   return {
     id: department.id,
     name: department.name,
@@ -817,7 +824,12 @@ function toDepartmentResponse(department: DepartmentRow): DepartmentResponse {
           closedHoursExternalNumber:
             department.settings.closedHoursExternalNumber,
           ringDuration: department.settings.ringDuration,
-          voicemailGreetingUrl: department.settings.voicemailGreetingUrl,
+          voicemailGreetingUrl: department.settings.voicemailGreetingId
+            ? departmentGreetingUrl(
+                publicUrl,
+                department.settings.voicemailGreetingId,
+              )
+            : null,
         }
       : null,
     businessHours: department.businessHours.map((hours) => ({

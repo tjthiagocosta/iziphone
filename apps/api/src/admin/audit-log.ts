@@ -14,6 +14,8 @@ export type AuditAction =
   | 'department.deleted'
   | 'department.restored'
   | 'department.settings_updated'
+  | 'department.greeting_uploaded'
+  | 'department.greeting_removed'
   | 'department.business_hours_updated'
   | 'department.holiday_created'
   | 'department.holiday_updated'
