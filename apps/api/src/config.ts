@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { resolveRoutingCacheTtl } from '@repo/events';
 import { z } from 'zod';
+import type { MailConfig } from './mail/index.js';
 import type { MediaStoreConfig } from './media-store/index.js';
 
 /*
@@ -36,6 +37,14 @@ const EnvSchema = z.object({
     .string()
     .min(16, 'must be at least 16 characters (openssl rand -base64 32)'),
   DEPARTMENT_CACHE_TTL_SECONDS: z.string().optional(),
+  SMTP_URL: z
+    .url()
+    .refine(
+      (value) => value.startsWith('smtp://') || value.startsWith('smtps://'),
+      'must be an smtp:// or smtps:// URL',
+    )
+    .optional(),
+  EMAIL_FROM: z.string().min(1).optional(),
   WEBHOOK_BASE_URL: z.url().optional(),
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -86,6 +95,13 @@ export interface ApiConfig {
    * one bucket (too strict) or can forge a new one per request (no limit).
    */
   trustProxy: TrustProxySetting;
+  /**
+   * Public base URL of the web app, without a trailing slash. It is the first
+   * `CORS_ORIGIN` entry, which is the browser origin this API is there to
+   * serve; invite and reset links are built on it. A second entry is another
+   * origin allowed to call the API, not another home page.
+   */
+  webUrl: string;
   databaseUrl: string;
   redisUrl: string;
   authSecret: string;
@@ -96,6 +112,11 @@ export interface ApiConfig {
   twilio: TwilioCredentials | null;
   /** Public base URL of the call controller; Twilio voice webhooks point at it. */
   callControllerPublicUrl: string | null;
+  /**
+   * Null when no SMTP server is configured. The API still issues invite and
+   * reset links then; the admin console shows them to be passed on by hand.
+   */
+  mail: MailConfig | null;
   /** The S3-compatible bucket that holds media; only the API talks to it. */
   storage: MediaStoreConfig;
 }
@@ -122,16 +143,18 @@ export function loadApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
 
   const values = parsed.data;
   const twilio = resolveTwilio(values);
+  const corsOrigins = values.CORS_ORIGIN.split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 
   return {
     nodeEnv: values.NODE_ENV,
     logLevel: values.LOG_LEVEL,
     listen: { host: values.API_HOST, port: values.API_PORT },
     publicUrl: stripTrailingSlash(values.BETTER_AUTH_URL),
-    corsOrigins: values.CORS_ORIGIN.split(',')
-      .map((origin) => origin.trim())
-      .filter((origin) => origin.length > 0),
+    corsOrigins,
     trustProxy: resolveTrustProxy(values.TRUST_PROXY),
+    webUrl: resolveWebUrl(corsOrigins),
     databaseUrl: values.DATABASE_URL,
     redisUrl: values.REDIS_URL,
     authSecret: values.BETTER_AUTH_SECRET,
@@ -143,6 +166,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
     callControllerPublicUrl: values.WEBHOOK_BASE_URL
       ? stripTrailingSlash(values.WEBHOOK_BASE_URL)
       : null,
+    mail: resolveMail(values),
     storage: {
       endpoint: values.STORAGE_ENDPOINT ?? null,
       region: values.STORAGE_REGION,
@@ -269,6 +293,40 @@ function resolveTwilio(values: {
   }
 
   return { accountSid, authToken };
+}
+
+function resolveMail(values: {
+  SMTP_URL?: string | undefined;
+  EMAIL_FROM?: string | undefined;
+}): MailConfig | null {
+  const { SMTP_URL: smtpUrl, EMAIL_FROM: from } = values;
+
+  if (!smtpUrl && !from) {
+    return null;
+  }
+
+  if (!smtpUrl || !from) {
+    throw new ApiConfigError(['SMTP_URL and EMAIL_FROM must be set together']);
+  }
+
+  return { smtpUrl, from };
+}
+
+/**
+ * Where the browser reaches the web app. There is no separate setting for it:
+ * the origin the API answers a browser from is the origin its links point at,
+ * so the two cannot drift apart.
+ */
+function resolveWebUrl(corsOrigins: readonly string[]): string {
+  const first = corsOrigins[0];
+
+  if (!first || !z.url().safeParse(first).success) {
+    throw new ApiConfigError([
+      'CORS_ORIGIN: the first entry must be the web app URL, e.g. https://app.example.com',
+    ]);
+  }
+
+  return stripTrailingSlash(first);
 }
 
 /** `.env` files leave placeholders like `TWILIO_HOLD_AUDIO_URL=`; treat them as unset. */

@@ -24,6 +24,7 @@ describe('loadApiConfig', () => {
       publicUrl: 'https://api.example.com',
       corsOrigins: ['http://localhost:3000'],
       trustProxy: false,
+      webUrl: 'http://localhost:3000',
       databaseUrl: requiredEnv.DATABASE_URL,
       redisUrl: 'redis://localhost:6379',
       authSecret: requiredEnv.BETTER_AUTH_SECRET,
@@ -31,6 +32,7 @@ describe('loadApiConfig', () => {
       routingCacheTtlSeconds: 86400,
       twilio: null,
       callControllerPublicUrl: null,
+      mail: null,
       storage: {
         endpoint: null,
         region: 'us-east-1',
@@ -56,6 +58,8 @@ describe('loadApiConfig', () => {
       WEBHOOK_BASE_URL: 'https://calls.example.com/',
       TWILIO_ACCOUNT_SID: 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       TWILIO_AUTH_TOKEN: 'not-a-real-token',
+      SMTP_URL: 'smtps://api:not-a-real-key@smtp.example.com:465',
+      EMAIL_FROM: 'Phone system <no-reply@example.com>',
       STORAGE_ENDPOINT: 'https://storage.example.com',
       STORAGE_FORCE_PATH_STYLE: 'false',
       STORAGE_KEY_PREFIX: 'iziphone',
@@ -69,6 +73,11 @@ describe('loadApiConfig', () => {
       'https://app.example.com',
       'https://admin.example.com',
     ]);
+    expect(config.webUrl).toBe('https://app.example.com');
+    expect(config.mail).toEqual({
+      smtpUrl: 'smtps://api:not-a-real-key@smtp.example.com:465',
+      from: 'Phone system <no-reply@example.com>',
+    });
     expect(config.routingCacheTtlSeconds).toBe(600);
     expect(config.callControllerPublicUrl).toBe('https://calls.example.com');
     expect(config.twilio).toEqual({
@@ -241,6 +250,34 @@ describe('loadApiConfig', () => {
     ).toThrowError(
       /TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set together/,
     );
+  });
+
+  test('rejects half-configured mail settings', () => {
+    expect(() =>
+      loadApiConfig({ ...requiredEnv, EMAIL_FROM: 'no-reply@example.com' }),
+    ).toThrowError(/SMTP_URL and EMAIL_FROM must be set together/);
+    expect(() =>
+      loadApiConfig({
+        ...requiredEnv,
+        SMTP_URL: 'smtp://smtp.example.com:587',
+      }),
+    ).toThrowError(/SMTP_URL and EMAIL_FROM must be set together/);
+  });
+
+  test('rejects an SMTP url that is not SMTP', () => {
+    expect(() =>
+      loadApiConfig({
+        ...requiredEnv,
+        SMTP_URL: 'https://smtp.example.com',
+        EMAIL_FROM: 'no-reply@example.com',
+      }),
+    ).toThrowError(/SMTP_URL: must be an smtp:\/\/ or smtps:\/\/ URL/);
+  });
+
+  test('rejects a CORS origin that cannot carry a link', () => {
+    expect(() =>
+      loadApiConfig({ ...requiredEnv, CORS_ORIGIN: 'app.example.com' }),
+    ).toThrowError(/CORS_ORIGIN: the first entry must be the web app URL/);
   });
 
   test('rejects an unusable routing cache ttl', () => {

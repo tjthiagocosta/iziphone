@@ -87,6 +87,8 @@ iziphone/
 
 **Three services, one database.** The web app talks to the API over HTTP with a session cookie. The API owns the database and all business logic. The call controller handles everything time-sensitive on a live call and never touches the database.
 
+**A closed system with links as the way in.** There is no self-registration: the API refuses sign-up, an admin creates users, and a user chooses their own password through a single-use link — an invite that lasts 7 days, or a reset that lasts 1 hour. Only the SHA-256 of a link's token is stored, issuing a new link of the same kind retires the previous one, and spending one signs every other device out. Email delivers links but is not the mechanism: the admin console always shows the link to copy, so the system works before SMTP is configured. Deleting a user ends their sessions, removes the password they could return with and discards any outstanding link; restoring them issues a fresh invite, since there is no password left to come back to.
+
 **Media lives in an S3-compatible bucket.** MMS attachments, voicemail greetings and call recordings are written to and read from object storage by the API alone (`apps/api/src/media-store`), and served to browsers and to Twilio through the API's own routes, so the bucket stays private. Twilio makes the recordings; as soon as it reports one complete, the API copies the file into the bucket, records it on the call and deletes it at Twilio, so playback and retention depend on your bucket, not on Twilio's storage. While a copy is still owed (Twilio not ready yet, the bucket down), playback fetches from Twilio and completes the copy on the way. Any provider that speaks the S3 API works; see [Object storage](#object-storage).
 
 **The call controller reads routing from Redis.** When an admin changes a department, a phone number, or a user, the API writes a routing snapshot to Redis (keys under `routing:phone:*`). Inbound webhooks resolve the destination from that cache. If a key is missing, the controller falls back to an HTTP call to the API's internal routes.
@@ -185,13 +187,31 @@ pnpm dev
 
 ### First admin account
 
-New accounts are created with the `AGENT` role, and only an admin can change roles. To bootstrap the first admin:
+There is no sign-up: every deployment is a closed system, and people get in
+through an invite link an admin issues. The first admin is created by one
+command, which refuses to run once the deployment has an administrator:
 
-1. Open http://localhost:3000/register and create your account.
-2. Run `pnpm db:studio`, open the `User` table, and set your row's `role` to `ADMIN`.
-3. Sign in again. The admin console is at http://localhost:3000/admin.
+```bash
+pnpm --filter @repo/api bootstrap-admin --email admin@example.com --name "Your Name"
+```
 
-From there you can add phone numbers, departments and other users through the UI.
+It creates the `ADMIN` user with no password, prints a single-use invite link
+(good for 7 days), and emails it as well when SMTP is configured. Open the link,
+choose a password, and you land in the app signed in. The admin console is at
+http://localhost:3000/admin.
+
+In a container the command runs from the built output, with the same
+environment the API uses:
+
+```bash
+node dist/bootstrap-admin.js --email admin@example.com
+```
+
+From the admin console you add phone numbers, departments and other users.
+Adding a user invites them: the console shows their link to copy, so onboarding
+works before SMTP is configured. A user who is locked out gets a reset link —
+from the console, or by asking for one on the sign-in page — and no admin ever
+sets somebody else's password.
 
 Other useful commands:
 
@@ -269,7 +289,9 @@ All services and the Prisma CLI read the root `.env`. `.env.example` documents e
 | `BETTER_AUTH_SECRET` | api, call-controller | Session signing secret. Also signs the socket JWT. Generate with `openssl rand -base64 32` |
 | `BETTER_AUTH_URL` | api | Public URL of the API. Auth callbacks, Twilio messaging webhooks and media links are built on it |
 | `INTERNAL_API_TOKEN` | api, call-controller | Shared secret the call controller presents on the API's `/internal` routes. Generate with `openssl rand -base64 32` |
-| `CORS_ORIGIN` | api, call-controller | Allowed browser origin (the web app URL) |
+| `CORS_ORIGIN` | api, call-controller | Allowed browser origin (the web app URL). Its first entry is also where invite and reset links point |
+| `SMTP_URL` | api | Optional. Where to send mail, as `smtp://user:pass@host:587` or `smtps://…`. Set it together with `EMAIL_FROM` |
+| `EMAIL_FROM` | api | Optional. The `From` header, e.g. `Phone system <no-reply@example.com>`. Without these two the API sends no mail and the admin console shows every link to copy |
 | `NEXT_PUBLIC_API_URL` | web | API URL the browser calls |
 | `NEXT_PUBLIC_CALL_CONTROLLER_URL` | web | Call controller URL for Socket.IO and voice tokens |
 | `WEBHOOK_BASE_URL` | api, call-controller | Public HTTPS base URL of the call controller that Twilio can reach |

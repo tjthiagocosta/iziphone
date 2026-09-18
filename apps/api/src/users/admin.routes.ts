@@ -7,7 +7,7 @@ import {
 } from '@repo/dto';
 import type { FastifyPluginAsync } from 'fastify';
 import { AuditLogService } from '../admin/index.js';
-import { authenticatedUser } from '../auth/index.js';
+import { AccessLinkService, authenticatedUser } from '../auth/index.js';
 import { RoutingCacheService } from '../routing/index.js';
 import { UserService } from './user.service.js';
 
@@ -21,6 +21,12 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
       fastify.db,
       fastify.config.routingCacheTtlSeconds,
       fastify.config.publicUrl,
+      fastify.log,
+    ),
+    new AccessLinkService(
+      fastify.db,
+      fastify.mailer,
+      fastify.config.webUrl,
       fastify.log,
     ),
   );
@@ -48,13 +54,58 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(user);
   });
 
+  /** Creating a user invites them; the answer carries the link to pass on. */
   fastify.post('/', async (request, reply) => {
     const data = CreateUserSchema.parse(request.body);
     const actor = authenticatedUser(request);
 
-    const user = await userService.create(data, actor.id, request.ip);
-    return reply.status(201).send(user);
+    const invited = await userService.create(data, actor.id, request.ip);
+    return reply.status(201).send(invited);
   });
+
+  /** Resends an invite, which retires the previous link. */
+  fastify.post<{ Params: { id: string } }>(
+    '/:id/invite',
+    async (request, reply) => {
+      const actor = authenticatedUser(request);
+      const invite = await userService.sendInvite(
+        request.params.id,
+        actor.id,
+        request.ip,
+      );
+
+      if (!invite) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'User not found',
+        });
+      }
+
+      return reply.send(invite);
+    },
+  );
+
+  /** A reset link for a user who is locked out. No admin ever sets a password. */
+  fastify.post<{ Params: { id: string } }>(
+    '/:id/password-reset',
+    async (request, reply) => {
+      const actor = authenticatedUser(request);
+      const link = await userService.sendPasswordReset(
+        request.params.id,
+        actor.id,
+        request.ip,
+      );
+
+      if (!link) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'User not found',
+        });
+      }
+
+      return reply.send(link);
+    },
+  );
 
   fastify.patch<{ Params: { id: string } }>('/:id', async (request, reply) => {
     const data = UpdateUserSchema.parse(request.body);
@@ -107,20 +158,22 @@ export const adminUserRoutes: FastifyPluginAsync = async (fastify) => {
     '/:id/restore',
     async (request, reply) => {
       const actor = authenticatedUser(request);
-      const user = await userService.restore(
+      // Answers with the invite as well: a restored user has no password, so
+      // the link is what the admin has to pass on.
+      const restored = await userService.restore(
         request.params.id,
         actor.id,
         request.ip,
       );
 
-      if (!user) {
+      if (!restored) {
         return reply.status(404).send({
           error: 'Not Found',
           message: 'User not found or not deleted',
         });
       }
 
-      return reply.send(user);
+      return reply.send(restored);
     },
   );
 

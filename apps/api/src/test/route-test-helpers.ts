@@ -2,11 +2,13 @@ import type { PrismaClient } from '@repo/db';
 import Fastify, {
   type FastifyInstance,
   type FastifyPluginAsync,
+  type FastifyServerOptions,
 } from 'fastify';
 import type { Redis } from 'ioredis';
 import type { Auth, AuthUser, Role } from '../auth/index.js';
 import { type ApiConfig, loadApiConfig } from '../config.js';
 import { apiErrorHandler } from '../infra/index.js';
+import { InMemoryMailer, type Mailer } from '../mail/index.js';
 import { InMemoryMediaStore, type MediaStore } from '../media-store/index.js';
 
 export const defaultAuthUser: AuthUser = {
@@ -24,6 +26,7 @@ export const testApiConfig: ApiConfig = loadApiConfig({
     'postgresql://iziphone:not-a-real-password@db.example.com:5432/iziphone',
   BETTER_AUTH_SECRET: 'a-fictional-secret-that-is-long-enough',
   BETTER_AUTH_URL: 'https://api.example.com',
+  CORS_ORIGIN: 'https://app.example.com',
   INTERNAL_API_TOKEN: 'a-fictional-internal-token-value',
   WEBHOOK_BASE_URL: 'https://calls.example.com',
   TWILIO_ACCOUNT_SID: 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -41,16 +44,20 @@ interface CreateApiRouteAppOptions {
   redis?: Partial<Redis>;
   /** Defaults to an in-memory store, so routes that keep media run unchanged. */
   mediaStore?: Partial<MediaStore>;
+  /** Defaults to an in-memory mailer, whose `sent` array the test can read. */
+  mailer?: Mailer;
   auth?: Partial<Auth>;
   registerOptions?: Record<string, unknown>;
   user?: AuthUser | null;
+  /** Off by default; set it to assert on what a route does or does not log. */
+  logger?: FastifyServerOptions['logger'];
 }
 
 export async function createApiRouteApp(
   plugin: FastifyPluginAsync,
   options: CreateApiRouteAppOptions = {},
 ): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: options.logger ?? false });
   const user = options.user === undefined ? defaultAuthUser : options.user;
 
   app.setErrorHandler(apiErrorHandler);
@@ -61,6 +68,7 @@ export async function createApiRouteApp(
     'mediaStore',
     (options.mediaStore ?? new InMemoryMediaStore()) as MediaStore,
   );
+  app.decorate('mailer', options.mailer ?? new InMemoryMailer());
   app.decorate('auth', (options.auth ?? {}) as Auth);
   app.decorate('requireAuth', async (request, reply) => {
     if (!user) {

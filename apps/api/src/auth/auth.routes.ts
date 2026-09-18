@@ -77,8 +77,10 @@ async function forwardResponse(response: Response, reply: FastifyReply) {
 }
 
 /**
- * Mounts Better Auth at /api/auth/* (sign-up, sign-in, sign-out, session)
- * and adds the socket token endpoint the call controller verifies.
+ * Mounts Better Auth at /api/auth/* (sign-in, sign-out, session) and adds the
+ * socket token endpoint the call controller verifies. Sign-up is disabled in
+ * `better-auth.ts`, so that path answers a refusal: people get in through an
+ * invite link, whose routes are in `access-link.routes.ts`.
  */
 export const authRoutes: FastifyPluginAsync = async (fastify) => {
   const { config } = fastify;

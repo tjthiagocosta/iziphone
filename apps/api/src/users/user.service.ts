@@ -1,21 +1,23 @@
 import type { Prisma, PrismaClient } from '@repo/db';
 import type {
+  AccessLinkResponse,
   CreateUser,
+  InvitedUserResponse,
+  SetPasswordPurpose,
   UpdateUser,
   UserListQuery,
   UserListResponse,
   UserResponse,
 } from '@repo/dto';
-import bcrypt from 'bcryptjs';
 import type { FastifyBaseLogger } from 'fastify';
-import type { AuditLogService } from '../admin/index.js';
+import type { AuditAction, AuditLogService } from '../admin/index.js';
 import {
   AdminServiceError,
   isUniqueConstraintViolation,
 } from '../admin/index.js';
+import type { AccessLinkService } from '../auth/index.js';
+import { hasCredentialPassword, inviteStatus } from '../auth/index.js';
 import type { RoutingCacheService } from '../routing/index.js';
-
-const PASSWORD_HASH_ROUNDS = 12;
 
 const userInclude = {
   departments: {
@@ -40,6 +42,19 @@ const userInclude = {
       isPrimary: true,
     },
   },
+  /*
+   * The credential is itself the record of whether someone can sign in: there
+   * is no status column beside it to fall out of step. The hash is read only
+   * to answer that yes-or-no question and never leaves this file.
+   */
+  accounts: {
+    where: { providerId: 'credential' },
+    select: { password: true },
+  },
+  setPasswordTokens: {
+    where: { purpose: 'INVITE' },
+    select: { expiresAt: true, consumedAt: true },
+  },
 } as const satisfies Prisma.UserInclude;
 
 type UserRow = Prisma.UserGetPayload<{ include: typeof userInclude }>;
@@ -50,6 +65,7 @@ export class UserService {
     private readonly log: FastifyBaseLogger,
     private readonly auditLog: AuditLogService,
     private readonly routingCache: RoutingCacheService,
+    private readonly accessLinks: AccessLinkService,
   ) {}
 
   async list(query: UserListQuery): Promise<UserListResponse> {
@@ -84,8 +100,12 @@ export class UserService {
       this.db.user.count({ where }),
     ]);
 
+    // One moment for the whole page, so two rows cannot disagree about
+    // whether the same invite is still live.
+    const now = new Date();
+
     return {
-      users: users.map(toUserResponse),
+      users: users.map((user) => toUserResponse(user, now)),
       total,
       page,
       limit,
@@ -102,19 +122,20 @@ export class UserService {
     return user ? toUserResponse(user) : null;
   }
 
-  /** @throws AdminServiceError 409 when the email is already taken. */
+  /**
+   * Creates a user and the invite that lets them in. They get no password
+   * here: the link they follow is where the only one they will ever have is
+   * chosen, so nobody but its owner knows it.
+   *
+   * @throws AdminServiceError 409 when the email is already taken.
+   */
   async create(
     data: CreateUser,
     actorId: string,
     ipAddress?: string,
-  ): Promise<UserResponse> {
-    const hashedPassword = await bcrypt.hash(
-      data.password,
-      PASSWORD_HASH_ROUNDS,
-    );
-
+  ): Promise<InvitedUserResponse> {
     try {
-      const { user, assignedNumbers } = await this.db.$transaction(
+      const { user, assignedNumbers, link } = await this.db.$transaction(
         async (tx) => {
           const created = await tx.user.create({
             data: {
@@ -122,13 +143,6 @@ export class UserService {
               name: data.name,
               role: data.role,
               createdBy: actorId,
-              accounts: {
-                create: {
-                  accountId: data.email,
-                  providerId: 'credential',
-                  password: hashedPassword,
-                },
-              },
               departments: data.departmentIds?.length
                 ? {
                     create: data.departmentIds.map((departmentId, index) => ({
@@ -139,6 +153,25 @@ export class UserService {
                 : undefined,
             },
             select: { id: true },
+          });
+
+          /*
+           * The credential exists from the start, with no password in it.
+           * Better Auth finds it by the user's id and refuses a sign-in while
+           * it holds none, which is exactly the "invited, not yet in" state.
+           */
+          await tx.account.create({
+            data: {
+              userId: created.id,
+              accountId: created.id,
+              providerId: 'credential',
+            },
+          });
+
+          const link = await this.accessLinks.issueIn(tx, {
+            userId: created.id,
+            purpose: 'INVITE',
+            issuedBy: actorId,
           });
 
           if (data.phoneNumberIds?.length) {
@@ -176,6 +209,7 @@ export class UserService {
 
           return {
             user,
+            link,
             assignedNumbers: user.phoneNumbers.map((pn) => pn.phoneNumber),
           };
         },
@@ -183,12 +217,85 @@ export class UserService {
 
       await this.routingCache.refreshPhoneNumbers(assignedNumbers);
       await this.refreshDepartments(user.departments);
-      this.log.info({ userId: user.id, actorId }, 'User created');
+      this.log.info({ userId: user.id, actorId }, 'User invited');
 
-      return toUserResponse(user);
+      // Only now that the account is committed, so the link in the email
+      // always opens something.
+      const invite = await this.accessLinks.deliver(link, {
+        email: user.email,
+        name: user.name,
+      });
+
+      return { user: toUserResponse(user), invite };
     } catch (error) {
       throw translateUniqueViolation(error);
     }
+  }
+
+  /**
+   * Issues a fresh invite for someone who has not got in yet, and retires the
+   * previous one. Returns null when there is no such live user.
+   *
+   * @throws AdminServiceError 409 when they already have a password.
+   */
+  async sendInvite(
+    id: string,
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<AccessLinkResponse | null> {
+    const user = await this.findForAccessLink(id);
+
+    if (!user) {
+      return null;
+    }
+
+    if (user.hasPassword) {
+      throw new AdminServiceError(
+        'This user has already set a password. Send a password reset link instead.',
+        409,
+      );
+    }
+
+    return this.issueAndDeliver(
+      user,
+      'INVITE',
+      'user.invited',
+      actorId,
+      ipAddress,
+    );
+  }
+
+  /**
+   * Issues a reset link for someone who is locked out. An admin never learns
+   * or chooses the password itself.
+   *
+   * @throws AdminServiceError 409 when they have never set one.
+   */
+  async sendPasswordReset(
+    id: string,
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<AccessLinkResponse | null> {
+    const user = await this.findForAccessLink(id);
+
+    if (!user) {
+      return null;
+    }
+
+    if (!user.hasPassword) {
+      throw new AdminServiceError(
+        'This user has never set a password. Send an invite link instead.',
+        409,
+      );
+    }
+
+    return this.issueAndDeliver(
+      user,
+      'RESET',
+      'user.password_reset_issued',
+      actorId,
+      ipAddress,
+    );
   }
 
   /** @throws AdminServiceError 409 when the new email is already taken. */
@@ -204,9 +311,6 @@ export class UserService {
       return null;
     }
 
-    const hashedPassword = data.password
-      ? await bcrypt.hash(data.password, PASSWORD_HASH_ROUNDS)
-      : undefined;
     const changes: Record<string, unknown> = {};
 
     if (data.email && data.email !== existingUser.email) {
@@ -217,9 +321,6 @@ export class UserService {
     }
     if (data.role && data.role !== existingUser.role) {
       changes.role = { from: existingUser.role, to: data.role };
-    }
-    if (hashedPassword) {
-      changes.password = 'changed';
     }
 
     try {
@@ -234,13 +335,6 @@ export class UserService {
           },
           include: userInclude,
         });
-
-        if (hashedPassword) {
-          await tx.account.updateMany({
-            where: { userId: id, providerId: 'credential' },
-            data: { password: hashedPassword },
-          });
-        }
 
         if (Object.keys(changes).length > 0) {
           await this.auditLog.create(
@@ -296,6 +390,19 @@ export class UserService {
         where: { userId: id },
         data: { userId: null, status: 'RESERVED', updatedBy: actorId },
       });
+      /*
+       * Deleting a user is the only off-boarding control this product has, so
+       * it has to end access, not just hide the row. Three things go with it,
+       * in the same transaction as the deletion: the sessions they are signed
+       * in with, the password they could sign in again with, and any link that
+       * would let them set a new one. A restored user is invited afresh.
+       */
+      await tx.session.deleteMany({ where: { userId: id } });
+      await tx.account.updateMany({
+        where: { userId: id, providerId: 'credential' },
+        data: { password: null },
+      });
+      await tx.setPasswordToken.deleteMany({ where: { userId: id } });
       await this.auditLog.create(
         {
           action: 'user.deleted',
@@ -318,11 +425,17 @@ export class UserService {
     return true;
   }
 
+  /**
+   * Brings a deleted user back, with a fresh invite. Deleting took their
+   * password and their links away, so clearing `deletedAt` on its own would
+   * hand back an account nobody can sign into; the invite is what makes the
+   * restore mean anything.
+   */
   async restore(
     id: string,
     actorId: string,
     ipAddress?: string,
-  ): Promise<UserResponse | null> {
+  ): Promise<InvitedUserResponse | null> {
     const user = await this.db.user.findUnique({
       where: { id },
       select: { id: true, deletedAt: true },
@@ -332,7 +445,14 @@ export class UserService {
       return null;
     }
 
-    const restored = await this.db.$transaction(async (tx) => {
+    const { restored, link } = await this.db.$transaction(async (tx) => {
+      // Issued before the row is read back, so the invite this returns is the
+      // same one the response reports as pending.
+      const issued = await this.accessLinks.issueIn(tx, {
+        userId: id,
+        purpose: 'INVITE',
+        issuedBy: actorId,
+      });
       const updated = await tx.user.update({
         where: { id },
         data: { deletedAt: null, updatedBy: actorId },
@@ -344,16 +464,23 @@ export class UserService {
           entityType: 'User',
           entityId: id,
           userId: actorId,
+          changes: { purpose: 'INVITE' },
           ipAddress,
         },
         tx,
       );
-      return updated;
+      return { restored: updated, link: issued };
     });
 
     await this.refreshDepartments(restored.departments);
+    this.log.info({ userId: id, actorId }, 'User restored and invited');
 
-    return toUserResponse(restored);
+    const invite = await this.accessLinks.deliver(link, {
+      email: restored.email,
+      name: restored.name,
+    });
+
+    return { user: toUserResponse(restored), invite };
   }
 
   async assignPhoneNumber(
@@ -538,6 +665,77 @@ export class UserService {
       await this.routingCache.refreshDepartment(departmentId);
     }
   }
+
+  private async findForAccessLink(
+    id: string,
+  ): Promise<AccessLinkTarget | null> {
+    const user = await this.db.user.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        accounts: {
+          where: { providerId: 'credential' },
+          select: { password: true },
+        },
+      },
+    });
+
+    return user
+      ? {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          hasPassword: hasCredentialPassword(user.accounts),
+        }
+      : null;
+  }
+
+  private async issueAndDeliver(
+    user: AccessLinkTarget,
+    purpose: SetPasswordPurpose,
+    action: AuditAction,
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<AccessLinkResponse> {
+    const link = await this.db.$transaction(async (tx) => {
+      const issued = await this.accessLinks.issueIn(tx, {
+        userId: user.id,
+        purpose,
+        issuedBy: actorId,
+      });
+      // Which kind of link, never the link: the audit log is read by people
+      // who must not be able to take over an account from it.
+      await this.auditLog.create(
+        {
+          action,
+          entityType: 'User',
+          entityId: user.id,
+          userId: actorId,
+          changes: { purpose },
+          ipAddress,
+        },
+        tx,
+      );
+      return issued;
+    });
+
+    this.log.info({ userId: user.id, actorId, purpose }, 'Access link issued');
+
+    return this.accessLinks.deliver(link, {
+      email: user.email,
+      name: user.name,
+    });
+  }
+}
+
+/** The facts an access link needs about the person it is for. */
+interface AccessLinkTarget {
+  id: string;
+  email: string;
+  name: string | null;
+  hasPassword: boolean;
 }
 
 function translateUniqueViolation(error: unknown): unknown {
@@ -546,7 +744,7 @@ function translateUniqueViolation(error: unknown): unknown {
     : error;
 }
 
-function toUserResponse(user: UserRow): UserResponse {
+function toUserResponse(user: UserRow, now: Date = new Date()): UserResponse {
   return {
     id: user.id,
     email: user.email,
@@ -554,6 +752,14 @@ function toUserResponse(user: UserRow): UserResponse {
     role: user.role,
     emailVerified: user.emailVerified,
     image: user.image,
+    inviteStatus: inviteStatus(
+      {
+        hasPassword: hasCredentialPassword(user.accounts),
+        // At most one, since a user has one live invite at a time.
+        invite: user.setPasswordTokens[0] ?? null,
+      },
+      now,
+    ),
     departments: user.departments.map((membership) => ({
       id: membership.id,
       departmentId: membership.department.id,

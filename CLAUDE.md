@@ -22,7 +22,9 @@ packages/events       Redis channels, event schemas, cache types, JWT verify
 `apps/api/src` is organized by feature, not by layer: `auth/`, `calls/`,
 `departments/`, `users/`, `phone-numbers/`, `messaging/`, `routing/` (the
 cache the call controller reads and the `/internal` routing lookups), `admin/`
-(audit log, service errors, dashboard stats), `health/`, `media-store/` (the
+(audit log, service errors, dashboard stats), `health/`, `mail/` (the `Mailer`
+behind `fastify.mailer`; SMTP when it is configured, a null mailer that reports
+"not configured" when it is not), `media-store/` (the
 S3-compatible bucket behind the `MediaStore` interface; features own their
 keys, the store owns every S3 detail), and `infra/` (Prisma, Redis, rate
 limiting, the error handler). Each module has an `index.ts` that
@@ -99,7 +101,7 @@ rules below refine them.
 - Use only fictional data in tests, fixtures, and docs: phone numbers in the reserved 555-01xx range, emails at `example.com`, made-up people and businesses.
 - Never commit `.env` files, credentials, real phone numbers, customer or contact data, recordings, or transcripts.
 - Do not log message bodies, transcripts, or full phone numbers at info level.
-- Do not add default admin credentials, demo logins, seed scripts, or auth bypasses. The first admin is created by registering and promoting the user in the database (see README).
+- Do not add default admin credentials, demo logins, seed scripts, or auth bypasses. Sign-up is closed: the first admin is created by `pnpm --filter @repo/api bootstrap-admin --email <address>`, which refuses once one exists, and everybody else is invited from the admin console (see README). Nobody, including an admin, sets another person's password: a single-use link does.
 
 ## Things that will bite you
 

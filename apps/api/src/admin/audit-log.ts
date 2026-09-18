@@ -2,6 +2,10 @@ import type { Prisma, PrismaClient } from '@repo/db';
 
 export type AuditAction =
   | 'user.created'
+  /** A fresh invite link for someone who has not set a password yet. */
+  | 'user.invited'
+  /** A reset link for someone who is locked out; never the password itself. */
+  | 'user.password_reset_issued'
   | 'user.updated'
   | 'user.deleted'
   | 'user.restored'

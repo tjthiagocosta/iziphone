@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { adminSettingsRoutes, adminStatsRoutes } from './admin/index.js';
-import { authRoutes, sessionRoutes } from './auth/index.js';
+import { accessLinkRoutes, authRoutes, sessionRoutes } from './auth/index.js';
 import { callLineRoutes, callRoutes, recordingRoutes } from './calls/index.js';
 import type { ApiConfig } from './config.js';
 import {
@@ -71,6 +71,9 @@ export async function registerRoutes(
   await fastify.register(healthRoutes);
   await fastify.register(messageMediaRoutes);
   await fastify.register(departmentGreetingRoutes);
+  // Before the Better Auth proxy only for readability: Fastify prefers these
+  // literal paths over its `/api/auth/*` wildcard whatever the order.
+  await fastify.register(accessLinkRoutes);
   await fastify.register(authRoutes);
   await fastify.register(sessionRoutes);
   await fastify.register(internalApiRoutes, { token: config.internalApiToken });

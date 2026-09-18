@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "bootstrap-admin": "tsx src/bootstrap-admin.ts",
     "build": "tsc",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "dev": "tsx watch --clear-screen=false src/index.ts",
@@ -26,6 +27,7 @@
     "fastify": "^5.12.3",
     "fastify-plugin": "^6.0.0",
     "ioredis": "^6.0.0",
+    "nodemailer": "^10.0.10",
     "twilio": "^6.1.0",
     "zod": "^4.5.4"
   },

@@ -13,7 +13,8 @@ export interface AuthOptions {
   secureCookies: boolean;
 }
 
-const BCRYPT_ROUNDS = 12;
+/** The one cost factor in the system; the access-link flow hashes with it too. */
+export const BCRYPT_ROUNDS = 12;
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 const SESSION_REFRESH_SECONDS = 60 * 60 * 24;
 
@@ -31,6 +32,13 @@ export function createAuth(options: AuthOptions) {
 
     emailAndPassword: {
       enabled: true,
+      /*
+       * Every deployment is one company's own phone system, run by its admin.
+       * Nobody arrives by registering: an admin invites them, and the invite
+       * link is what sets the first password. Leaving this open would hand a
+       * stranger a session, a voice token and the customer's Twilio bill.
+       */
+      disableSignUp: true,
       requireEmailVerification: false,
       password: {
         hash: (password) => bcrypt.hash(password, BCRYPT_ROUNDS),
