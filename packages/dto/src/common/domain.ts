@@ -10,6 +10,18 @@ export const RoleSchema = z.enum(['ADMIN', 'SUPERVISOR', 'AGENT']);
 export type Role = z.infer<typeof RoleSchema>;
 export const ROLES = RoleSchema.options;
 
+/** Why a set-password link was issued: to bring someone in, or to let them back in. */
+export const SetPasswordPurposeSchema = z.enum(['INVITE', 'RESET']);
+export type SetPasswordPurpose = z.infer<typeof SetPasswordPurposeSchema>;
+
+/**
+ * How far a user is through getting in. Derived from the credential and the
+ * outstanding invite, never stored: `active` once they have set a password,
+ * `pending` while an invite of theirs is still live, `expired` otherwise.
+ */
+export const InviteStatusSchema = z.enum(['pending', 'expired', 'active']);
+export type InviteStatus = z.infer<typeof InviteStatusSchema>;
+
 export const PhoneNumberTypeSchema = z.enum(['LOCAL', 'TOLL_FREE']);
 export type PhoneNumberType = z.infer<typeof PhoneNumberTypeSchema>;
 

@@ -82,6 +82,13 @@ enum MessageProviderEventProcessingState {
   ORPHANED
 }
 
+/// Why a set-password link was issued. The two differ only in how long they
+/// live and what the page and the email say.
+enum SetPasswordPurpose {
+  INVITE
+  RESET
+}
+
 // ============================================
 // Auth Models (Better Auth)
 // ============================================
@@ -103,6 +110,7 @@ model User {
   preparedMessageMedia MessagePreparedMedia[]
   sessions             Session[]
   accounts             Account[]
+  setPasswordTokens    SetPasswordToken[]
 
   // Audit fields
   createdAt DateTime  @default(now()) @map("created_at")
@@ -145,6 +153,27 @@ model Account {
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
   @@map("accounts")
+}
+
+/// A single-use link that lets one person choose a password: the invite that
+/// brings them into the system, and the reset that gets them back in. Only the
+/// SHA-256 of the token is stored, so a copy of this table does not open any
+/// account. One live link per user and purpose: issuing a new one replaces the
+/// previous one, which is what makes a resend a rotation.
+model SetPasswordToken {
+  id         String             @id @default(cuid())
+  tokenHash  String             @unique @map("token_hash")
+  purpose    SetPasswordPurpose
+  userId     String             @map("user_id")
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime           @map("expires_at")
+  consumedAt DateTime?          @map("consumed_at")
+  /// The admin who issued it; null when the person asked for it themselves.
+  issuedBy   String?            @map("issued_by")
+  createdAt  DateTime           @default(now()) @map("created_at")
+
+  @@unique([userId, purpose])
+  @@map("set_password_tokens")
 }
 
 model Verification {

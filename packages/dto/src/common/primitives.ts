@@ -3,6 +3,36 @@ import { z } from 'zod';
 /** Identifier of a stored entity. Shape is opaque to clients; only emptiness is rejected. */
 export const EntityIdSchema = z.string().trim().min(1, 'ID is required');
 
+/**
+ * An email address, always lower-cased. Better Auth looks an account up in
+ * lower case on sign-in, so an address stored with a capital letter would never
+ * match and its owner could never sign in.
+ *
+ * Trimming and lower-casing happen before the format check, not after: a
+ * pasted address often carries a trailing space, and checking first would
+ * reject it instead of cleaning it up.
+ */
+export const EmailSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .pipe(z.email('Invalid email address').max(254));
+
+export const PASSWORD_MIN_LENGTH = 8;
+export const PASSWORD_MAX_LENGTH = 128;
+
+/** The policy every password goes through, whoever is setting it. */
+export const PasswordSchema = z
+  .string()
+  .min(
+    PASSWORD_MIN_LENGTH,
+    `Password must be at least ${PASSWORD_MIN_LENGTH} characters`,
+  )
+  .max(
+    PASSWORD_MAX_LENGTH,
+    `Password must be at most ${PASSWORD_MAX_LENGTH} characters`,
+  );
+
 /** ISO 8601 timestamp with a zone designator, as produced by `Date#toISOString()`. */
 export const IsoDateTimeSchema = z.iso.datetime({ offset: true });
 

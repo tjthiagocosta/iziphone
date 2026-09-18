@@ -1,44 +1,35 @@
 import { z } from 'zod';
-import { RoleSchema } from '../common/domain.js';
+import { AccessLinkResponseSchema } from '../common/access-link.schemas.js';
+import { InviteStatusSchema, RoleSchema } from '../common/domain.js';
 import {
   PaginationMetaSchema,
   PaginationQuerySchema,
 } from '../common/pagination.js';
 import {
+  EmailSchema,
   EntityIdSchema,
   IsoDateTimeSchema,
   QueryBooleanSchema,
 } from '../common/primitives.js';
 import { PhoneNumberSummarySchema } from './department.schemas.js';
 
-export const PASSWORD_MIN_LENGTH = 8;
-export const PASSWORD_MAX_LENGTH = 128;
-
-const EmailSchema = z.email('Invalid email address').max(254);
 const NameSchema = z
   .string()
   .trim()
   .min(1, 'Name is required')
   .max(100, 'Name must be 100 characters or less');
-const PasswordSchema = z
-  .string()
-  .min(
-    PASSWORD_MIN_LENGTH,
-    `Password must be at least ${PASSWORD_MIN_LENGTH} characters`,
-  )
-  .max(
-    PASSWORD_MAX_LENGTH,
-    `Password must be at most ${PASSWORD_MAX_LENGTH} characters`,
-  );
 
 // ---------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------
 
+/**
+ * Creating a user is inviting them: nobody but its owner ever chooses an
+ * account's password, so there is no password field here or in the update.
+ */
 export const CreateUserSchema = z.object({
   email: EmailSchema,
   name: NameSchema,
-  password: PasswordSchema,
   role: RoleSchema.default('AGENT'),
   departmentIds: z.array(EntityIdSchema).optional(),
   phoneNumberIds: z.array(EntityIdSchema).optional(),
@@ -47,7 +38,6 @@ export const CreateUserSchema = z.object({
 export const UpdateUserSchema = z.object({
   email: EmailSchema.optional(),
   name: NameSchema.optional(),
-  password: PasswordSchema.optional(),
   role: RoleSchema.optional(),
 });
 
@@ -92,6 +82,8 @@ export const UserResponseSchema = z.object({
   role: RoleSchema,
   emailVerified: z.boolean(),
   image: z.string().nullable(),
+  /** Whether they can sign in yet, and whether their invite is still live. */
+  inviteStatus: InviteStatusSchema,
   departments: z.array(UserDepartmentResponseSchema),
   phoneNumbers: z.array(UserPhoneNumberResponseSchema),
   createdAt: IsoDateTimeSchema,
@@ -101,6 +93,12 @@ export const UserResponseSchema = z.object({
 
 export const UserListResponseSchema = PaginationMetaSchema.extend({
   users: z.array(UserResponseSchema),
+});
+
+/** What creating a user answers: the user, and the link that lets them in. */
+export const InvitedUserResponseSchema = z.object({
+  user: UserResponseSchema,
+  invite: AccessLinkResponseSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -121,3 +119,4 @@ export type UserPhoneNumberResponse = z.infer<
 >;
 export type UserResponse = z.infer<typeof UserResponseSchema>;
 export type UserListResponse = z.infer<typeof UserListResponseSchema>;
+export type InvitedUserResponse = z.infer<typeof InvitedUserResponseSchema>;
