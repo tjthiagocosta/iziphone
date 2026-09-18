@@ -87,7 +87,7 @@ iziphone/
 
 **Three services, one database.** The web app talks to the API over HTTP with a session cookie. The API owns the database and all business logic. The call controller handles everything time-sensitive on a live call and never touches the database.
 
-**Media lives in an S3-compatible bucket.** MMS attachments are written to and read from object storage by the API alone (`apps/api/src/media-store`), and served to browsers and to Twilio through the API's own `/media` routes, so the bucket stays private. Any provider that speaks the S3 API works; see [Object storage](#object-storage).
+**Media lives in an S3-compatible bucket.** MMS attachments and call recordings are written to and read from object storage by the API alone (`apps/api/src/media-store`), and served to browsers and to Twilio through the API's own routes, so the bucket stays private. Twilio makes the recordings; as soon as it reports one complete, the API copies the file into the bucket, records it on the call and deletes it at Twilio, so playback and retention depend on your bucket, not on Twilio's storage. While a copy is still owed (Twilio not ready yet, the bucket down), playback fetches from Twilio and completes the copy on the way. Any provider that speaks the S3 API works; see [Object storage](#object-storage).
 
 **The call controller reads routing from Redis.** When an admin changes a department, a phone number, or a user, the API writes a routing snapshot to Redis (keys under `routing:phone:*`). Inbound webhooks resolve the destination from that cache. If a key is missing, the controller falls back to an HTTP call to the API's internal routes.
 
@@ -222,7 +222,7 @@ pnpm clean               # Remove build outputs
 
    Messaging and MMS need the API public as well, because Twilio fetches media from it. Point `BETTER_AUTH_URL` and `NEXT_PUBLIC_API_URL` at the API alias — the session cookie is issued for the API's own origin, so they must agree. Add a third `-R` for the web app on 3000 and set `CORS_ORIGIN` to it; keeping every origin under `nouva.cloud` keeps the cookie same-site.
 5. Optionally set `TWILIO_HOLD_AUDIO_URL` to a public MP3 or WAV for hold music. A Twilio-hosted classical track is used when it is empty.
-6. Turn on **Enforce HTTP Auth on Media URLs** in the console's Voice settings, as Twilio recommends. The API already fetches a voicemail with the account's credentials and serves the audio to the softphone itself, so nothing here relies on recording URLs being public; while the setting is off, anyone who holds a recording's URL can download it without signing in.
+6. Turn on **Enforce HTTP Auth on Media URLs** in the console's Voice settings, as Twilio recommends. The API fetches every recording with the account's credentials, keeps its own copy and serves the audio to the softphone itself, so nothing here relies on recording URLs being public; while the setting is off, anyone who holds a recording's URL can download it from Twilio without signing in, until the API has deleted it there.
 
 Every line must be a voice-capable number on this Twilio account, because Twilio accepts only the account's own (or verified) numbers as caller ID. For US calls to be signed with full STIR/SHAKEN attestation, the account also needs an approved Business Profile and a SHAKEN/STIR trust product in Trust Hub with the numbers assigned to it.
 

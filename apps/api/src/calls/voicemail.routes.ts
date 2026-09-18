@@ -2,7 +2,7 @@ import { CallConversationParamsSchema } from '@repo/dto';
 import type { FastifyPluginAsync } from 'fastify';
 import { authenticatedUser } from '../auth/index.js';
 import { loadCallScope } from './call-scope.js';
-import { VoicemailService } from './voicemail.service.js';
+import { CallRecordingService } from './recording.service.js';
 
 /**
  * The audio of a call's voicemail, for anyone who may see the call (see
@@ -11,8 +11,9 @@ import { VoicemailService } from './voicemail.service.js';
  * about recordings of the conversations themselves.
  */
 export const voicemailRoutes: FastifyPluginAsync = async (fastify) => {
-  const voicemail = new VoicemailService(
+  const recordings = new CallRecordingService(
     fastify.db,
+    fastify.mediaStore,
     fastify.config.twilio,
     fastify.log,
   );
@@ -21,7 +22,7 @@ export const voicemailRoutes: FastifyPluginAsync = async (fastify) => {
     '/api/calls/:conversationUuid/voicemail',
     {
       preHandler: [fastify.requireAuth],
-      // A HEAD would fetch and drain the whole recording to answer nothing.
+      // A HEAD would read the whole recording to answer nothing.
       exposeHeadRoute: false,
     },
     async (request, reply) => {
@@ -30,22 +31,20 @@ export const voicemailRoutes: FastifyPluginAsync = async (fastify) => {
         request.params,
       );
 
-      const media = await voicemail.open(
+      const media = await recordings.openVoicemail(
         await loadCallScope(fastify.db, user),
         conversationUuid,
       );
 
-      reply
-        .header('content-type', media.contentType)
-        // Who may hear it can change, so every play is authorized afresh.
-        .header('cache-control', 'private, no-store')
-        .header('x-content-type-options', 'nosniff');
-
-      if (media.contentLength !== null) {
-        reply.header('content-length', media.contentLength);
-      }
-
-      return reply.send(media.stream);
+      return (
+        reply
+          .header('content-type', media.contentType)
+          .header('content-length', media.contentLength)
+          // Who may hear it can change, so every play is authorized afresh.
+          .header('cache-control', 'private, no-store')
+          .header('x-content-type-options', 'nosniff')
+          .send(media.body)
+      );
     },
   );
 };

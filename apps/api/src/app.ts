@@ -2,7 +2,10 @@ import cors from '@fastify/cors';
 import formbody from '@fastify/formbody';
 import Fastify from 'fastify';
 import { authPlugin } from './auth/index.js';
-import { CallEventSubscriberService } from './calls/index.js';
+import {
+  CallEventSubscriberService,
+  CallRecordingService,
+} from './calls/index.js';
 import type { ApiConfig } from './config.js';
 import {
   apiErrorHandler,
@@ -64,6 +67,12 @@ export async function buildApp(config: ApiConfig) {
     fastify.redis,
     fastify.db,
     fastify.log,
+    new CallRecordingService(
+      fastify.db,
+      fastify.mediaStore,
+      fastify.config.twilio,
+      fastify.log,
+    ),
   );
 
   fastify.addHook('onReady', async () => {

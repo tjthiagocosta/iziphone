@@ -21,6 +21,9 @@ import {
 } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
+import type { CallRecordingService } from './recording.service.js';
+import { recordingContextOf, recordingEventType } from './recording-copy.js';
+import { twilioRecordingSid } from './twilio-recording.js';
 
 const CALL_EVENT_TYPES = new Set<string>(Object.values(CallEventType));
 
@@ -31,11 +34,6 @@ const END_STATUS_EVENT: Record<CallEndedEvent['status'], CallEventType> = {
   failed: 'CALL_FAILED',
   'no-answer': 'CALL_NO_ANSWER',
 };
-
-/** The controller only records voicemails today; an absent context means one. */
-function isVoicemail(context: string | undefined): boolean {
-  return context === undefined || context === 'voicemail';
-}
 
 interface TimelineEntry {
   callId: string;
@@ -48,9 +46,10 @@ interface TimelineEntry {
 
 /**
  * Persists the call history the call controller publishes over Redis: one
- * `Call` row per conversation plus a `CallEvent` timeline. Phone numbers and
- * transcripts are stored, never logged; a failing event is logged and dropped
- * so one bad message cannot stop the consumer.
+ * `Call` row per conversation plus a `CallEvent` timeline, and the recordings
+ * Twilio announces, which `recordings` copies into the media store. Phone
+ * numbers and transcripts are stored, never logged; a failing event is logged
+ * and dropped so one bad message cannot stop the consumer.
  */
 export class CallEventSubscriberService {
   private subscriber: Redis | null = null;
@@ -59,6 +58,10 @@ export class CallEventSubscriberService {
     private readonly redis: Redis,
     private readonly db: PrismaClient,
     private readonly logger: FastifyBaseLogger,
+    private readonly recordings: Pick<
+      CallRecordingService,
+      'register' | 'copy'
+    >,
   ) {}
 
   async start(): Promise<void> {
@@ -382,30 +385,43 @@ export class CallEventSubscriberService {
     });
   }
 
+  /**
+   * Twilio finished a recording. It is recorded and put on the timeline
+   * first, so that it is playable from Twilio whatever becomes of the copy,
+   * and copied into the media store after.
+   */
   private async onRecordingReady(
     event: CallRecordingReadyEvent,
   ): Promise<void> {
     const existing = await this.findCall(event.conversationUuid);
     if (!existing) return;
 
-    await this.db.call.update({
-      where: { id: existing.id },
-      data: { recordingUrl: event.recordingUrl },
+    const context = recordingContextOf(event.context);
+    const recording = await this.recordings.register({
+      callId: existing.id,
+      conversationUuid: event.conversationUuid,
+      context,
+      providerUrl: event.recordingUrl,
+      duration: event.duration,
     });
-
-    if (!isVoicemail(event.context)) return;
+    if (!recording) return;
 
     await this.addTimelineEntry({
       callId: existing.id,
-      eventType: 'VOICEMAIL_COMPLETED',
+      eventType: recordingEventType(context),
       actorType: 'PROVIDER',
-      description: 'Voicemail recording ready',
+      description:
+        context === 'VOICEMAIL'
+          ? 'Voicemail recording ready'
+          : 'Call recording ready',
       metadata: {
-        recordingUrl: event.recordingUrl,
+        recordingSid: recording.recordingSid,
         duration: event.duration,
         context: event.context,
       },
     });
+
+    await this.recordings.copy(recording, event.conversationUuid);
   }
 
   private async onTranscriptionReady(
@@ -419,7 +435,7 @@ export class CallEventSubscriberService {
       data: { transcript: event.transcript },
     });
 
-    if (!isVoicemail(event.context)) return;
+    if (recordingContextOf(event.context) !== 'VOICEMAIL') return;
 
     await this.addTimelineEntry({
       callId: existing.id,
@@ -427,7 +443,11 @@ export class CallEventSubscriberService {
       actorType: 'PROVIDER',
       description: 'Voicemail transcription ready',
       metadata: {
-        recordingUrl: event.recordingUrl,
+        // The SID names the recording the transcript is of; its URL at Twilio
+        // stops working once the recording is copied and deleted there.
+        recordingSid: event.recordingUrl
+          ? twilioRecordingSid(event.recordingUrl)
+          : null,
         context: event.context,
       },
     });
