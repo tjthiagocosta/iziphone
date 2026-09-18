@@ -598,6 +598,20 @@ describe('CallFlow', () => {
       closedHoursExternalNumber: '+15555550199',
     };
 
+    // Every configured greeting here is confirmed playable by default: this
+    // block is about which greeting is chosen, not about the probe itself
+    // (that lives in greeting-probe.test.ts and telephony.service.test.ts).
+    const fetchMock = vi.fn<typeof fetch>();
+    beforeEach(() => {
+      fetchMock.mockResolvedValue(
+        new Response(null, {
+          status: 200,
+          headers: { 'content-type': 'audio/mpeg' },
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+    });
+
     function accept(flow: CallFlow) {
       return flow.acceptInboundCall({
         callSid: 'CAcall1',
@@ -809,6 +823,29 @@ describe('CallFlow', () => {
       await accept(plain.flow);
       expect(plain.log.warn).not.toHaveBeenCalled();
       expect(plain.telephonyLog.warn).not.toHaveBeenCalled();
+    });
+
+    test('speaks the built-in greeting when a configured greeting cannot be fetched, and logs once', async () => {
+      fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+      const { flow, telephonyLog } = buildFlow({
+        routing: greeted,
+        online: [],
+      });
+
+      expectSpokenGreeting(await accept(flow), 'Nobody is available');
+      expect(telephonyLog.warn).toHaveBeenCalledTimes(1);
+      expect(telephonyLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'unreachable' }),
+        expect.stringContaining('not playable'),
+      );
+    });
+
+    test('probes nothing when no greeting is configured', async () => {
+      const { flow } = buildFlow({ online: [] });
+
+      await accept(flow);
+
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

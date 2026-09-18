@@ -46,7 +46,15 @@ describe('TelephonyService', () => {
   const fetchMock = vi.fn<typeof fetch>();
 
   beforeEach(() => {
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    // Playable by default: most tests here are not about the greeting probe,
+    // and a voicemail greeting URL that the probe cannot confirm is spoken
+    // instead of played (see the "voicemail greeting probe" tests below).
+    fetchMock.mockResolvedValue(
+      new Response(null, {
+        status: 200,
+        headers: { 'content-type': 'audio/mpeg' },
+      }),
+    );
     vi.stubGlobal('fetch', fetchMock);
   });
 
@@ -509,10 +517,13 @@ describe('TelephonyService', () => {
     expect(twiml).toContain('record="record-from-start"');
   });
 
-  test('voicemail TwiML greets, records and labels the recording with its reason', () => {
+  test('voicemail TwiML greets, records and labels the recording with its reason', async () => {
     const { telephony } = createFakeTelephony();
 
-    const twiml = telephony.buildVoicemailTwiml(inboundState(), 'closed-hours');
+    const twiml = await telephony.buildVoicemailTwiml(
+      inboundState(),
+      'closed-hours',
+    );
 
     expect(twiml).toContain('We are currently closed');
     expect(twiml).not.toContain('<Play');
@@ -525,14 +536,14 @@ describe('TelephonyService', () => {
     expect(twiml).toContain('transcribe="true"');
   });
 
-  test('voicemail TwiML plays the custom greeting instead of speaking, then records as usual', () => {
+  test('voicemail TwiML plays the custom greeting instead of speaking, then records as usual', async () => {
     const { telephony } = createFakeTelephony();
-    const spoken = telephony.buildVoicemailTwiml(
+    const spoken = await telephony.buildVoicemailTwiml(
       inboundState(),
       'closed-hours',
     );
 
-    const twiml = telephony.buildVoicemailTwiml(
+    const twiml = await telephony.buildVoicemailTwiml(
       inboundState({
         voicemailGreetingUrl: 'https://example.com/greeting.mp3?v=2&lang=en',
       }),
@@ -585,6 +596,38 @@ describe('TelephonyService', () => {
     expect(telephonyLog.warn).not.toHaveBeenCalled();
   });
 
+  test('the caller has already ended the call when the redirect lands', async () => {
+    const { telephony, twilio, telephonyLog } = createFakeTelephony();
+    twilio.failWith('CAcall1', { status: 404 });
+
+    await expect(
+      telephony.redirectLegToVoicemail(
+        'CAcall1',
+        inboundState(),
+        'routing-timeout',
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(telephonyLog.info).toHaveBeenCalledWith(
+      { conversationUuid: 'CAcall1', legUuid: 'CAcall1' },
+      expect.stringContaining('ended'),
+    );
+    expect(telephonyLog.warn).not.toHaveBeenCalled();
+  });
+
+  test('a redirect still fails loudly for anything other than a leg that is already gone', async () => {
+    const { telephony, twilio } = createFakeTelephony();
+    twilio.failWith('CAcall1', { status: 500 });
+
+    await expect(
+      telephony.redirectLegToVoicemail(
+        'CAcall1',
+        inboundState(),
+        'routing-timeout',
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+
   test('a greeting URL too long for an inline redirect costs the greeting, not the voicemail', async () => {
     const { telephony, twilio, telephonyLog } = createFakeTelephony();
     const voicemailGreetingUrl = `https://example.com/greeting.mp3?token=${'a'.repeat(4000)}`;
@@ -613,6 +656,9 @@ describe('TelephonyService', () => {
     expect(
       JSON.stringify(vi.mocked(telephonyLog.warn).mock.calls),
     ).not.toContain('example.com');
+    // A URL that cannot fit the TwiML could not be played either way: the
+    // length guard runs first so it never costs a probe.
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test('the greeting is measured as it is written into the TwiML, not as it is configured', async () => {
@@ -623,7 +669,7 @@ describe('TelephonyService', () => {
     expect(escaped).toHaveLength(plain.length);
 
     expect(
-      telephony.buildVoicemailTwiml(
+      await telephony.buildVoicemailTwiml(
         inboundState({ voicemailGreetingUrl: plain }),
         'closed-hours',
       ),
@@ -631,7 +677,7 @@ describe('TelephonyService', () => {
 
     // A caller answered with voicemail straight away and one pulled out of
     // the conference hear the same thing.
-    const direct = telephony.buildVoicemailTwiml(
+    const direct = await telephony.buildVoicemailTwiml(
       inboundState({ voicemailGreetingUrl: escaped }),
       'closed-hours',
     );
@@ -649,7 +695,109 @@ describe('TelephonyService', () => {
     expect(redirected.length).toBeLessThanOrEqual(4000);
   });
 
-  test('a greeting plays for every reason or for none, up to exactly what a redirect can carry', () => {
+  describe('voicemail greeting probe', () => {
+    const voicemailGreetingUrl = 'https://example.com/greetings/support.mp3';
+
+    test('plays a greeting the probe confirms is reachable audio', async () => {
+      const { telephony, telephonyLog } = createFakeTelephony();
+      fetchMock.mockResolvedValue(
+        new Response(null, {
+          status: 200,
+          headers: { 'content-type': 'audio/mpeg' },
+        }),
+      );
+
+      const twiml = await telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl }),
+        'closed-hours',
+      );
+
+      expect(twiml).toContain(`<Play>${voicemailGreetingUrl}</Play>`);
+      expect(fetchMock).toHaveBeenCalledWith(
+        voicemailGreetingUrl,
+        expect.objectContaining({ method: 'HEAD' }),
+      );
+      expect(telephonyLog.warn).not.toHaveBeenCalled();
+    });
+
+    test('speaks the built-in greeting when the probe cannot reach the URL, and logs once', async () => {
+      const { telephony, telephonyLog } = createFakeTelephony();
+      fetchMock.mockResolvedValue(new Response(null, { status: 404 }));
+
+      const twiml = await telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl }),
+        'closed-hours',
+      );
+
+      expect(twiml).not.toContain('<Play');
+      expect(twiml).toContain('We are currently closed');
+      expect(telephonyLog.warn).toHaveBeenCalledTimes(1);
+      expect(telephonyLog.warn).toHaveBeenCalledWith(
+        {
+          conversationUuid: 'CAcall1',
+          greetingPath: '/greetings/support.mp3',
+          outcome: 'unreachable',
+        },
+        expect.stringContaining('not playable'),
+      );
+    });
+
+    test('speaks the built-in greeting when the URL does not answer with audio', async () => {
+      const { telephony, telephonyLog } = createFakeTelephony();
+      fetchMock.mockResolvedValue(
+        new Response(null, {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        }),
+      );
+
+      const twiml = await telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl }),
+        'closed-hours',
+      );
+
+      expect(twiml).not.toContain('<Play');
+      expect(telephonyLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'not-audio' }),
+        expect.stringContaining('not playable'),
+      );
+    });
+
+    test('speaks the built-in greeting when the probe times out', async () => {
+      const { telephony, telephonyLog } = createFakeTelephony();
+      fetchMock.mockRejectedValue(
+        Object.assign(new Error('The operation was aborted'), {
+          name: 'TimeoutError',
+        }),
+      );
+
+      const twiml = await telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl }),
+        'closed-hours',
+      );
+
+      expect(twiml).not.toContain('<Play');
+      expect(telephonyLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'timed-out' }),
+        expect.stringContaining('not playable'),
+      );
+    });
+
+    test('probes nothing and logs nothing when no greeting is configured', async () => {
+      const { telephony, telephonyLog } = createFakeTelephony();
+
+      const twiml = await telephony.buildVoicemailTwiml(
+        inboundState(),
+        'closed-hours',
+      );
+
+      expect(twiml).not.toContain('<Play');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(telephonyLog.warn).not.toHaveBeenCalled();
+    });
+  });
+
+  test('a greeting plays for every reason or for none, up to exactly what a redirect can carry', async () => {
     const { telephony } = createFakeTelephony();
     const longestReason = VOICEMAIL_REASONS.reduce((longest, reason) =>
       reason.length > longest.length ? reason : longest,
@@ -657,21 +805,23 @@ describe('TelephonyService', () => {
     const probe = 'https://example.com/greeting.mp3?token=';
     const room =
       4000 -
-      telephony.buildVoicemailTwiml(
-        inboundState({ voicemailGreetingUrl: probe }),
-        longestReason,
+      (
+        await telephony.buildVoicemailTwiml(
+          inboundState({ voicemailGreetingUrl: probe }),
+          longestReason,
+        )
       ).length;
     const largestThatFits = probe + 'a'.repeat(room);
 
     expect(
-      telephony.buildVoicemailTwiml(
+      await telephony.buildVoicemailTwiml(
         inboundState({ voicemailGreetingUrl: largestThatFits }),
         longestReason,
       ),
     ).toHaveLength(4000);
 
     for (const reason of VOICEMAIL_REASONS) {
-      const fits = telephony.buildVoicemailTwiml(
+      const fits = await telephony.buildVoicemailTwiml(
         inboundState({ voicemailGreetingUrl: largestThatFits }),
         reason,
       );
@@ -680,7 +830,7 @@ describe('TelephonyService', () => {
 
       // One character more fits the shorter reasons but not the longest, and
       // the number must not greet some of its callers and not others.
-      const oneTooMany = telephony.buildVoicemailTwiml(
+      const oneTooMany = await telephony.buildVoicemailTwiml(
         inboundState({ voicemailGreetingUrl: `${largestThatFits}a` }),
         reason,
       );

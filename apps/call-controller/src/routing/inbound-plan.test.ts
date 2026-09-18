@@ -2,6 +2,7 @@ import type { CachedRouting, CachedRoutingSettings } from '@repo/events';
 import { describe, expect, test } from 'vitest';
 import {
   chooseVoicemailGreeting,
+  type GreetingProbeOutcome,
   planInboundCall,
   usableGreetingUrl,
   VOICEMAIL_REASONS,
@@ -214,27 +215,47 @@ describe('usableGreetingUrl', () => {
 });
 
 describe('chooseVoicemailGreeting', () => {
-  test('a custom recording replaces the built-in greeting for every reason', () => {
+  test('a custom recording confirmed reachable replaces the built-in greeting for every reason', () => {
     const url = 'https://example.com/greeting.mp3';
 
-    expect(chooseVoicemailGreeting('closed-hours', url)).toEqual({
+    expect(chooseVoicemailGreeting('closed-hours', url, 'reachable')).toEqual({
       kind: 'recording',
       url,
     });
-    expect(chooseVoicemailGreeting('routing-timeout', url)).toEqual({
-      kind: 'recording',
-      url,
-    });
+    expect(
+      chooseVoicemailGreeting('routing-timeout', url, 'reachable'),
+    ).toEqual({ kind: 'recording', url });
   });
 
   test('without one the reason picks the spoken greeting', () => {
-    expect(chooseVoicemailGreeting('closed-hours', undefined)).toEqual({
+    expect(
+      chooseVoicemailGreeting('closed-hours', undefined, undefined),
+    ).toEqual({
       kind: 'spoken',
       text: voicemailGreeting('closed-hours'),
     });
-    expect(chooseVoicemailGreeting('missing-routing', undefined)).toEqual({
+    expect(
+      chooseVoicemailGreeting('missing-routing', undefined, undefined),
+    ).toEqual({
       kind: 'spoken',
       text: voicemailGreeting('missing-routing'),
     });
+  });
+
+  test('every unconfirmed probe outcome speaks the built-in greeting instead of the recording', () => {
+    const url = 'https://example.com/greeting.mp3';
+    const outcomes: Array<GreetingProbeOutcome | undefined> = [
+      'unreachable',
+      'not-audio',
+      'timed-out',
+      undefined,
+    ];
+
+    for (const outcome of outcomes) {
+      expect(chooseVoicemailGreeting('closed-hours', url, outcome)).toEqual({
+        kind: 'spoken',
+        text: voicemailGreeting('closed-hours'),
+      });
+    }
   });
 });

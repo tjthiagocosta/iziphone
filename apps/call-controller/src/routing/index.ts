@@ -2,8 +2,10 @@ export {
   type BusinessHoursStatus,
   checkBusinessHours,
 } from './business-hours.js';
+export { probeGreetingUrl } from './greeting-probe.js';
 export {
   chooseVoicemailGreeting,
+  type GreetingProbeOutcome,
   type InboundCallPlan,
   planInboundCall,
   usableGreetingUrl,

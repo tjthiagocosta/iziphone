@@ -8,6 +8,7 @@ import type { TwilioVoiceConfig } from '../config.js';
 import {
   chooseVoicemailGreeting,
   maskPhoneNumber,
+  probeGreetingUrl,
   VOICEMAIL_REASONS,
   type VoicemailGreeting,
   type VoicemailReason,
@@ -570,16 +571,31 @@ export class TelephonyService {
     }
   }
 
-  /** Replace what a leg is doing with the voicemail prompt. */
+  /**
+   * Replace what a leg is doing with the voicemail prompt. Tolerates a leg
+   * that has already ended: building the TwiML can wait up to two seconds
+   * on the greeting probe, and the caller can hang up during that wait.
+   */
   async redirectLegToVoicemail(
     legUuid: string,
     state: Pick<CallState, 'conversationUuid' | 'voicemailGreetingUrl'>,
     reason: VoicemailReason,
   ): Promise<void> {
     const { client } = this.requireVoice();
-    await client.calls(legUuid).update({
-      twiml: this.buildVoicemailTwiml(state, reason),
-    });
+    const twiml = await this.buildVoicemailTwiml(state, reason);
+
+    try {
+      await client.calls(legUuid).update({ twiml });
+    } catch (error) {
+      if (responseStatus(error) === 404) {
+        this.deps.log.info(
+          { conversationUuid: state.conversationUuid, legUuid },
+          'Leg ended before the voicemail redirect could be applied',
+        );
+        return;
+      }
+      throw error;
+    }
   }
 
   // TwiML --------------------------------------------------------------------
@@ -622,36 +638,59 @@ export class TelephonyService {
   /**
    * Greet the caller and record their message. Takes the call state rather
    * than its id so that no voicemail can be built without the greeting the
-   * called number asked for. A recording whose URL would not fit gives way to
-   * the built-in words.
+   * called number asked for. A configured greeting is probed with a HEAD
+   * request right here, because Twilio's <Play> aborts the whole document
+   * (and never runs the <Record> after it) on a fetch it cannot complete or
+   * parse as audio; only a confirmed greeting is ever played, everything else
+   * gives way to the built-in words. The length guard runs first and skips
+   * the probe entirely for a URL that could not be played anyway, since it
+   * would not fit even a reachable recording into the TwiML.
    */
-  buildVoicemailTwiml(
+  async buildVoicemailTwiml(
     state: Pick<CallState, 'conversationUuid' | 'voicemailGreetingUrl'>,
     reason: VoicemailReason,
-  ): string {
-    const { conversationUuid } = state;
-    const greeting = chooseVoicemailGreeting(
-      reason,
-      state.voicemailGreetingUrl,
-    );
+  ): Promise<string> {
+    const { conversationUuid, voicemailGreetingUrl } = state;
 
     if (
-      greeting.kind === 'spoken' ||
-      this.fitsInlineForEveryReason(conversationUuid, greeting)
+      voicemailGreetingUrl &&
+      !this.fitsInlineForEveryReason(conversationUuid, {
+        kind: 'recording',
+        url: voicemailGreetingUrl,
+      })
     ) {
-      return this.renderVoicemailTwiml(conversationUuid, reason, greeting);
+      // The URL stays out of the log; the length is what the warning is about.
+      this.deps.log.warn(
+        { conversationUuid, greetingUrlLength: voicemailGreetingUrl.length },
+        'Voicemail greeting URL is too long for the TwiML; speaking the built-in greeting',
+      );
+      return this.renderVoicemailTwiml(
+        conversationUuid,
+        reason,
+        chooseVoicemailGreeting(reason, undefined, undefined),
+      );
     }
 
-    // The URL stays out of the log; the length is what the warning is about.
-    this.deps.log.warn(
-      { conversationUuid, greetingUrlLength: greeting.url.length },
-      'Voicemail greeting URL is too long for the TwiML; speaking the built-in greeting',
-    );
+    const probeOutcome = voicemailGreetingUrl
+      ? await probeGreetingUrl(voicemailGreetingUrl, { fetch })
+      : undefined;
+
+    if (voicemailGreetingUrl && probeOutcome !== 'reachable') {
+      // The URL may carry a signed token; only its path is safe to log.
+      this.deps.log.warn(
+        {
+          conversationUuid,
+          greetingPath: new URL(voicemailGreetingUrl).pathname,
+          outcome: probeOutcome,
+        },
+        'Voicemail greeting is not playable; speaking the built-in greeting instead',
+      );
+    }
 
     return this.renderVoicemailTwiml(
       conversationUuid,
       reason,
-      chooseVoicemailGreeting(reason, undefined),
+      chooseVoicemailGreeting(reason, voicemailGreetingUrl, probeOutcome),
     );
   }
 

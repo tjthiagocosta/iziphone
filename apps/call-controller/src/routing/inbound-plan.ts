@@ -53,6 +53,19 @@ export type VoicemailGreeting =
   | { kind: 'spoken'; text: string };
 
 /**
+ * What a `HEAD` probe of a configured greeting URL found, right before the
+ * voicemail TwiML is rendered. Twilio's `<Play>` aborts the whole document on
+ * a failed or non-audio fetch and the `<Record>` after it never runs (see
+ * `.claude/research/2026-09-18/twilio-play-failure.md`), so the controller
+ * must only ever emit `<Play>` for a URL it has just confirmed itself.
+ */
+export type GreetingProbeOutcome =
+  | 'reachable'
+  | 'unreachable'
+  | 'not-audio'
+  | 'timed-out';
+
+/**
  * The greeting URL of a routing entry, if it is one Twilio can be pointed at.
  * The cache types it as any string, so anything but an absolute http(s) URL
  * counts as no greeting rather than reaching the caller as broken audio. The
@@ -70,13 +83,16 @@ export function usableGreetingUrl(
 
 /**
  * A department's own recording replaces the built-in greeting whatever sent
- * the caller to voicemail; without one the reason picks the words.
+ * the caller to voicemail, but only once a probe has just confirmed Twilio
+ * can fetch and play it. Without a confirmed recording, or with none
+ * configured, the reason picks the words.
  */
 export function chooseVoicemailGreeting(
   reason: VoicemailReason,
   customGreetingUrl: string | undefined,
+  probeOutcome: GreetingProbeOutcome | undefined,
 ): VoicemailGreeting {
-  return customGreetingUrl
+  return customGreetingUrl && probeOutcome === 'reachable'
     ? { kind: 'recording', url: customGreetingUrl }
     : { kind: 'spoken', text: voicemailGreeting(reason) };
 }
