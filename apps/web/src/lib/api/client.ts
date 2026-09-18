@@ -36,7 +36,10 @@ export class ApiError extends Error {
 
 export interface RequestOptions<T> {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  /** Sent as JSON. */
+  /**
+   * Sent as JSON; a `Blob` (a file the user picked) goes as it is, under its
+   * own type, or as `application/octet-stream` when the browser gave it none.
+   */
   body?: unknown;
   /** Validates the response body. Omit for endpoints that answer with none. */
   schema?: ResponseSchema<T>;
@@ -150,7 +153,9 @@ async function request<T>(
   init: Pick<RequestInit, 'credentials' | 'headers'>,
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (body !== undefined) {
+  if (body instanceof Blob) {
+    headers.set('Content-Type', body.type || 'application/octet-stream');
+  } else if (body !== undefined) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -158,7 +163,8 @@ async function request<T>(
     method,
     headers,
     credentials: init.credentials,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body:
+      body === undefined || body instanceof Blob ? body : JSON.stringify(body),
   });
 
   if (!response.ok) {

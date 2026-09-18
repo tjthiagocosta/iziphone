@@ -24,6 +24,7 @@ import {
   getDepartment,
   getDepartments,
   removeDepartmentAgent,
+  removeDepartmentGreeting,
   removeDepartmentPhoneNumber,
   restoreDepartment,
   updateAgentOrder,
@@ -31,6 +32,7 @@ import {
   updateDepartment,
   updateDepartmentSettings,
   updateHoliday,
+  uploadDepartmentGreeting,
 } from '@/lib/api/admin';
 
 interface UseDepartmentsOptions {
@@ -199,6 +201,36 @@ export function useDepartmentMutations() {
     },
     [],
   );
+
+  const uploadGreeting = useCallback(async (id: string, file: Blob) => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      return await uploadDepartmentGreeting(id, file);
+    } catch (err) {
+      const error =
+        err instanceof Error ? err : new Error('Failed to upload greeting');
+      setError(error);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const removeGreeting = useCallback(async (id: string) => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      await removeDepartmentGreeting(id);
+    } catch (err) {
+      const error =
+        err instanceof Error ? err : new Error('Failed to remove greeting');
+      setError(error);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   const setBusinessHours = useCallback(
     async (id: string, hours: BusinessHoursItem[]) => {
@@ -377,6 +409,8 @@ export function useDepartmentMutations() {
     remove,
     restore,
     updateSettings,
+    uploadGreeting,
+    removeGreeting,
     setBusinessHours,
     createHoliday,
     editHoliday,

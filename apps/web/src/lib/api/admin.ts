@@ -10,6 +10,8 @@ import {
   type CreateDepartment,
   type CreateHoliday,
   type CreateUser,
+  type DepartmentGreetingResponse,
+  DepartmentGreetingResponseSchema,
   type DepartmentListQuery,
   type DepartmentListResponse,
   DepartmentListResponseSchema,
@@ -195,6 +197,24 @@ export function updateDepartmentSettings(
   return requestApi(`/api/admin/departments/${id(departmentId)}/settings`, {
     method: 'PATCH',
     body: data,
+  });
+}
+
+/** Makes the file the department's voicemail greeting; it goes as its own type. */
+export function uploadDepartmentGreeting(
+  departmentId: string,
+  file: Blob,
+): Promise<DepartmentGreetingResponse> {
+  return requestApi(`/api/admin/departments/${id(departmentId)}/greeting`, {
+    method: 'PUT',
+    body: file,
+    schema: DepartmentGreetingResponseSchema,
+  });
+}
+
+export function removeDepartmentGreeting(departmentId: string): Promise<void> {
+  return requestApi(`/api/admin/departments/${id(departmentId)}/greeting`, {
+    method: 'DELETE',
   });
 }
 

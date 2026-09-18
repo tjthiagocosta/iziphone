@@ -46,6 +46,8 @@ export default function DepartmentDetailPage() {
   const {
     update,
     updateSettings,
+    uploadGreeting,
+    removeGreeting,
     setBusinessHours,
     reorderAgents,
     addAgent,
@@ -211,6 +213,14 @@ export default function DepartmentDetailPage() {
                   }}
                   onReorderAgents={async (data) => {
                     await reorderAgents(departmentId, data);
+                    refetch();
+                  }}
+                  onUploadGreeting={async (file) => {
+                    await uploadGreeting(departmentId, file);
+                    refetch();
+                  }}
+                  onRemoveGreeting={async () => {
+                    await removeGreeting(departmentId);
                     refetch();
                   }}
                   isLoading={isMutating}

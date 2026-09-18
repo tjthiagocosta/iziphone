@@ -88,6 +88,45 @@ describe('requestApi', () => {
     );
   });
 
+  test('sends a file as it is, under the type the browser gave it', async () => {
+    const fetchMock = stubFetch(jsonResponse(200, { id: 'greeting-1' }));
+    const file = new Blob([new Uint8Array([0x49, 0x44, 0x33])], {
+      type: 'audio/mpeg',
+    });
+
+    await requestApi('/api/admin/departments/dept-1/greeting', {
+      method: 'PUT',
+      body: file,
+      schema: UserSchema,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(init.body).toBe(file);
+    expect(new Headers(init.headers).get('content-type')).toBe('audio/mpeg');
+  });
+
+  test('sends a file the browser gave no type to as an octet stream', async () => {
+    const fetchMock = stubFetch(jsonResponse(200, { id: 'greeting-1' }));
+    const file = new Blob([new Uint8Array([0x46, 0x4f, 0x52, 0x4d])]);
+
+    await requestApi('/api/admin/departments/dept-1/greeting', {
+      method: 'PUT',
+      body: file,
+      schema: UserSchema,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(new Headers(init.headers).get('content-type')).toBe(
+      'application/octet-stream',
+    );
+  });
+
   test('resolves with nothing when no schema is given', async () => {
     stubFetch(jsonResponse(204));
 

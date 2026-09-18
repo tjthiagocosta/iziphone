@@ -21,6 +21,7 @@ import {
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { AgentOrderDialog } from './AgentOrderDialog';
+import { VoicemailGreetingField } from './VoicemailGreetingField';
 
 interface RoutingSettingsProps {
   settings: DepartmentSettingsResponse;
@@ -29,7 +30,29 @@ interface RoutingSettingsProps {
   onReorderAgents: (data: {
     agentOrder: Array<{ userId: string; order: number }>;
   }) => Promise<void>;
+  /** The greeting is stored as soon as it is chosen; it is not part of Save. */
+  onUploadGreeting: (file: File) => Promise<void>;
+  onRemoveGreeting: () => Promise<void>;
   isLoading?: boolean;
+}
+
+/** What Save may send: the response also carries the id and the greeting URL, which are not settings. */
+function editableSettings({
+  timezone,
+  is24Hours,
+  openHoursRoutingType,
+  closedHoursRoutingType,
+  closedHoursExternalNumber,
+  ringDuration,
+}: DepartmentSettingsResponse): UpdateDepartmentSettings {
+  return {
+    timezone,
+    is24Hours,
+    openHoursRoutingType,
+    closedHoursRoutingType,
+    closedHoursExternalNumber,
+    ringDuration,
+  };
 }
 
 export function RoutingSettings({
@@ -37,10 +60,13 @@ export function RoutingSettings({
   agents,
   onSave,
   onReorderAgents,
+  onUploadGreeting,
+  onRemoveGreeting,
   isLoading = false,
 }: RoutingSettingsProps) {
-  const [localSettings, setLocalSettings] =
-    useState<UpdateDepartmentSettings>(settings);
+  const [localSettings, setLocalSettings] = useState(() =>
+    editableSettings(settings),
+  );
   const [hasChanges, setHasChanges] = useState(false);
   const [orderDialogOpen, setOrderDialogOpen] = useState(false);
 
@@ -196,20 +222,12 @@ export function RoutingSettings({
         )}
       </div>
 
-      {/* Voicemail Greeting */}
-      <div className="space-y-2">
-        <Label>Voicemail Greeting URL</Label>
-        <Input
-          value={localSettings.voicemailGreetingUrl || ''}
-          onChange={(e) =>
-            updateSetting('voicemailGreetingUrl', e.target.value)
-          }
-          placeholder="https://example.com/greeting.mp3"
-        />
-        <p className="text-xs text-muted-foreground">
-          URL to the voicemail greeting audio file (optional)
-        </p>
-      </div>
+      <VoicemailGreetingField
+        greetingUrl={settings.voicemailGreetingUrl}
+        onUpload={onUploadGreeting}
+        onRemove={onRemoveGreeting}
+        isLoading={isLoading}
+      />
 
       <Button
         onClick={handleSave}

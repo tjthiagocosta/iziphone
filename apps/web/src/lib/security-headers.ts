@@ -83,10 +83,17 @@ export function contentSecurityPolicy({
     /*
      * The Twilio SDK plays its ringtones from its own CDN and hands the
      * remote audio track to an `<audio>` element as a blob. A voicemail is
-     * played as a blob too: it is downloaded from the API under `connect-src`,
-     * so the API needs no place here.
+     * played as a blob too: it is downloaded from the API under `connect-src`
+     * because the API only hands it to a session. A department's greeting is
+     * public by its unguessable URL (Twilio plays it from there), so the
+     * admin console points an `<audio>` element straight at the API.
      */
-    ['media-src', ["'self'", 'blob:', 'https://sdk.twilio.com']],
+    [
+      'media-src',
+      ["'self'", 'blob:', 'https://sdk.twilio.com', originOf(apiUrl)].filter(
+        isSource,
+      ),
+    ],
     [
       'connect-src',
       [

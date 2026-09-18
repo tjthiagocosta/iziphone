@@ -65,9 +65,15 @@ describe('contentSecurityPolicy', () => {
       'https://api.example.com',
     );
     expect(directive(policy, 'media-src')).toContain('blob:');
-    // The audio element never points at the API, so the API stays out of it.
+  });
+
+  test('lets a department greeting play straight from the API', () => {
+    const policy = contentSecurityPolicy(production);
+
+    expect(directive(policy, 'media-src')).toContain('https://api.example.com');
+    // Only the API serves audio; the call controller has no place there.
     expect(directive(policy, 'media-src')).not.toContain(
-      'https://api.example.com',
+      'https://calls.example.com',
     );
   });
 
