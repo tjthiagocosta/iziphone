@@ -497,3 +497,66 @@ describe('DepartmentGreetingService.open', () => {
     expect(await service.open('greeting-1')).toBeNull();
   });
 });
+
+describe('DepartmentGreetingService.describe', () => {
+  test("gives the file's type and length without opening its body", async () => {
+    const mediaStore = new InMemoryMediaStore();
+    await mediaStore.put({
+      key: 'greetings/dept-1/greeting-1.mp3',
+      contentType: 'audio/mpeg',
+      body: MP3,
+    });
+    const getSpy = vi.spyOn(mediaStore, 'get');
+    const { service } = buildService(
+      {
+        voicemailGreetingId: 'greeting-1',
+        voicemailGreetingKey: 'greetings/dept-1/greeting-1.mp3',
+      },
+      { mediaStore },
+    );
+
+    const greeting = await service.describe('greeting-1');
+
+    expect(greeting).toEqual({
+      contentType: 'audio/mpeg',
+      contentLength: MP3.byteLength,
+    });
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  test('resolves null for an id no department uses', async () => {
+    const { service } = buildService({
+      voicemailGreetingId: 'greeting-1',
+      voicemailGreetingKey: 'greetings/dept-1/greeting-1.mp3',
+    });
+
+    expect(await service.describe('greeting-2')).toBeNull();
+  });
+
+  test('resolves null when the row names a file the store no longer has', async () => {
+    const { service } = buildService({
+      voicemailGreetingId: 'greeting-1',
+      voicemailGreetingKey: 'greetings/dept-1/greeting-1.mp3',
+    });
+
+    expect(await service.describe('greeting-1')).toBeNull();
+  });
+
+  test('resolves null once the owning department is soft-deleted', async () => {
+    const mediaStore = new InMemoryMediaStore();
+    await mediaStore.put({
+      key: 'greetings/dept-1/greeting-1.mp3',
+      contentType: 'audio/mpeg',
+      body: MP3,
+    });
+    const { service } = buildService(
+      {
+        voicemailGreetingId: 'greeting-1',
+        voicemailGreetingKey: 'greetings/dept-1/greeting-1.mp3',
+      },
+      { mediaStore, departmentDeleted: true },
+    );
+
+    expect(await service.describe('greeting-1')).toBeNull();
+  });
+});

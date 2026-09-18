@@ -26,6 +26,30 @@ export const departmentGreetingRoutes: FastifyPluginAsync = async (fastify) => {
     log,
   });
 
+  // Fastify only auto-generates a HEAD route for a GET when none is
+  // registered yet, and registering one after the GET collides with that
+  // auto-generated route. Declaring HEAD first makes this the one Fastify
+  // keeps, so the call controller's readiness probe (2s timeout, expects an
+  // audio content-type) never opens a GetObject stream just to discard it.
+  fastify.head<{ Params: { greetingId: string } }>(
+    `${GREETING_MEDIA_PATH}/:greetingId`,
+    async (request, reply) => {
+      const greeting = await greetingService.describe(
+        request.params.greetingId,
+      );
+
+      if (!greeting) {
+        return reply.status(404).send();
+      }
+
+      reply.header('content-type', greeting.contentType);
+      reply.header('content-length', greeting.contentLength);
+      reply.header('x-content-type-options', 'nosniff');
+      reply.header('cache-control', 'public, max-age=31536000, immutable');
+      return reply.send();
+    },
+  );
+
   fastify.get<{ Params: { greetingId: string } }>(
     `${GREETING_MEDIA_PATH}/:greetingId`,
     async (request, reply) => {

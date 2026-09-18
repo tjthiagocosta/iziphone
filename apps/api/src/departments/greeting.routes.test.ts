@@ -389,6 +389,88 @@ describe('department greeting routes', () => {
 
     expect(response.statusCode).toBe(404);
   });
+
+  test('HEAD answers with the same headers as GET and no body, without opening the file', async () => {
+    const upload = await admin.inject({
+      method: 'PUT',
+      url: '/dept-1/greeting',
+      headers: { 'content-type': 'audio/mpeg' },
+      payload: MP3,
+    });
+    const url: string = upload.json().voicemailGreetingUrl;
+    const getSpy = vi.spyOn(apps.mediaStore, 'get');
+
+    const head = await served.inject({
+      method: 'HEAD',
+      url: new URL(url).pathname,
+    });
+
+    expect(getSpy).not.toHaveBeenCalled();
+
+    const get = await served.inject({
+      method: 'GET',
+      url: new URL(url).pathname,
+    });
+
+    expect(head.statusCode).toBe(200);
+    expect(head.headers['content-type']).toBe(get.headers['content-type']);
+    expect(head.headers['content-length']).toBe(get.headers['content-length']);
+    expect(head.headers['cache-control']).toBe(get.headers['cache-control']);
+    expect(head.headers['x-content-type-options']).toBe(
+      get.headers['x-content-type-options'],
+    );
+    expect(head.rawPayload).toEqual(Buffer.alloc(0));
+  });
+
+  test('HEAD answers 404 for an unknown greeting id', async () => {
+    const response = await served.inject({
+      method: 'HEAD',
+      url: '/media/greetings/no-such-greeting',
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.rawPayload).toEqual(Buffer.alloc(0));
+  });
+});
+
+describe('department greeting HEAD route for a soft-deleted department', () => {
+  test('answers 404, the same as GET, because the settings lookup joins on department.deletedAt', async () => {
+    // Mirrors what Postgres would do: `findFirst`'s `department: { deletedAt:
+    // null }` filter excludes the row once the department is soft-deleted,
+    // so the greeting id no longer resolves to a key.
+    const db = {
+      departmentSettings: { findFirst: vi.fn(async () => null) },
+    };
+    const mediaStore = new InMemoryMediaStore();
+    await mediaStore.put({
+      key: 'greetings/dept-1/greeting-1.mp3',
+      contentType: 'audio/mpeg',
+      body: MP3,
+    });
+    const getSpy = vi.spyOn(mediaStore, 'get');
+    const app = await createApiRouteApp(departmentGreetingRoutes, {
+      db: db as unknown as Partial<PrismaClient>,
+      mediaStore,
+      user: null,
+    });
+
+    try {
+      const head = await app.inject({
+        method: 'HEAD',
+        url: '/media/greetings/greeting-1',
+      });
+      const get = await app.inject({
+        method: 'GET',
+        url: '/media/greetings/greeting-1',
+      });
+
+      expect(head.statusCode).toBe(404);
+      expect(get.statusCode).toBe(404);
+      expect(getSpy).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 describe('department greeting routes for a missing department', () => {

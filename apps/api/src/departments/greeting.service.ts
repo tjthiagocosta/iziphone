@@ -3,7 +3,11 @@ import type { Prisma, PrismaClient } from '@repo/db';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AuditLogService } from '../admin/index.js';
 import { HttpError } from '../infra/index.js';
-import type { MediaStore, StoredObject } from '../media-store/index.js';
+import type {
+  MediaStore,
+  StoredObject,
+  StoredObjectInfo,
+} from '../media-store/index.js';
 import {
   departmentGreetingUrl,
   type RoutingCacheService,
@@ -213,6 +217,31 @@ export class DepartmentGreetingService {
    * names nothing, including a greeting whose department was since deleted.
    */
   async open(greetingId: string): Promise<StoredObject | null> {
+    const key = await this.findGreetingKey(greetingId);
+
+    if (!key) {
+      return null;
+    }
+
+    return this.mediaStore.get(key);
+  }
+
+  /**
+   * The greeting's type and size for a `HEAD` probe, without opening its
+   * body. Same rules as `open`: `null` for an unknown id or one whose
+   * department was since deleted.
+   */
+  async describe(greetingId: string): Promise<StoredObjectInfo | null> {
+    const key = await this.findGreetingKey(greetingId);
+
+    if (!key) {
+      return null;
+    }
+
+    return this.mediaStore.head(key);
+  }
+
+  private async findGreetingKey(greetingId: string): Promise<string | null> {
     const settings = await this.db.departmentSettings.findFirst({
       where: {
         voicemailGreetingId: greetingId,
@@ -221,11 +250,7 @@ export class DepartmentGreetingService {
       select: { voicemailGreetingKey: true },
     });
 
-    if (!settings?.voicemailGreetingKey) {
-      return null;
-    }
-
-    return this.mediaStore.get(settings.voicemailGreetingKey);
+    return settings?.voicemailGreetingKey ?? null;
   }
 
   private findSettings(departmentId: string): Promise<GreetingColumns | null> {
