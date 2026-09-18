@@ -6,9 +6,11 @@ import type { Redis } from 'ioredis';
 import twilio from 'twilio';
 import type { TwilioVoiceConfig } from '../config.js';
 import {
+  chooseVoicemailGreeting,
   maskPhoneNumber,
+  VOICEMAIL_REASONS,
+  type VoicemailGreeting,
   type VoicemailReason,
-  voicemailGreeting,
 } from '../routing/index.js';
 import { remoteLegOf } from './call-control.js';
 import {
@@ -40,6 +42,8 @@ const LEG_STATE_PREFIX = 'telephony:leg:';
 const STATE_TTL_SECONDS = 4 * 60 * 60;
 const DEFAULT_RING_SECONDS = 30;
 const INTERNAL_API_TIMEOUT_MS = 3000;
+/** Twilio refuses longer TwiML passed inline on a call update (error 32018). */
+const INLINE_TWIML_MAX_LENGTH = 4000;
 
 const CONFERENCE_STATUS_EVENTS = [
   'start',
@@ -569,12 +573,12 @@ export class TelephonyService {
   /** Replace what a leg is doing with the voicemail prompt. */
   async redirectLegToVoicemail(
     legUuid: string,
-    conversationUuid: string,
+    state: Pick<CallState, 'conversationUuid' | 'voicemailGreetingUrl'>,
     reason: VoicemailReason,
   ): Promise<void> {
     const { client } = this.requireVoice();
     await client.calls(legUuid).update({
-      twiml: this.buildVoicemailTwiml(conversationUuid, reason),
+      twiml: this.buildVoicemailTwiml(state, reason),
     });
   }
 
@@ -615,12 +619,74 @@ export class TelephonyService {
     return response.toString();
   }
 
+  /**
+   * Greet the caller and record their message. Takes the call state rather
+   * than its id so that no voicemail can be built without the greeting the
+   * called number asked for. A recording whose URL would not fit gives way to
+   * the built-in words.
+   */
   buildVoicemailTwiml(
-    conversationUuid: string,
+    state: Pick<CallState, 'conversationUuid' | 'voicemailGreetingUrl'>,
     reason: VoicemailReason,
   ): string {
+    const { conversationUuid } = state;
+    const greeting = chooseVoicemailGreeting(
+      reason,
+      state.voicemailGreetingUrl,
+    );
+
+    if (
+      greeting.kind === 'spoken' ||
+      this.fitsInlineForEveryReason(conversationUuid, greeting)
+    ) {
+      return this.renderVoicemailTwiml(conversationUuid, reason, greeting);
+    }
+
+    // The URL stays out of the log; the length is what the warning is about.
+    this.deps.log.warn(
+      { conversationUuid, greetingUrlLength: greeting.url.length },
+      'Voicemail greeting URL is too long for the TwiML; speaking the built-in greeting',
+    );
+
+    return this.renderVoicemailTwiml(
+      conversationUuid,
+      reason,
+      chooseVoicemailGreeting(reason, undefined),
+    );
+  }
+
+  /*
+   * A caller pulled out of the conference gets the voicemail as TwiML inside
+   * an API request. Twilio refuses one that is too long, and the caller would
+   * stay on hold. The size depends on the greeting URL as it is written into
+   * the XML and on the reason in the callbacks, so the real document is
+   * measured, for every reason: a number then plays its greeting to all of
+   * its callers or to none, however they reached voicemail.
+   */
+  private fitsInlineForEveryReason(
+    conversationUuid: string,
+    greeting: VoicemailGreeting,
+  ): boolean {
+    return VOICEMAIL_REASONS.every(
+      (reason) =>
+        this.renderVoicemailTwiml(conversationUuid, reason, greeting).length <=
+        INLINE_TWIML_MAX_LENGTH,
+    );
+  }
+
+  private renderVoicemailTwiml(
+    conversationUuid: string,
+    reason: VoicemailReason,
+    greeting: VoicemailGreeting,
+  ): string {
     const response = new twilio.twiml.VoiceResponse();
-    response.say({ voice: 'alice' }, voicemailGreeting(reason));
+
+    if (greeting.kind === 'recording') {
+      response.play(greeting.url);
+    } else {
+      response.say({ voice: 'alice' }, greeting.text);
+    }
+
     response.record({
       action: this.webhookUrl('/webhooks/twilio/voice/voicemail/completed', {
         conversationUuid,

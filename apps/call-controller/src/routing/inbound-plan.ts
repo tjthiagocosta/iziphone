@@ -39,6 +39,48 @@ export function voicemailGreeting(reason: VoicemailReason): string {
   return GREETINGS[reason];
 }
 
+/**
+ * Every reason there is. The voicemail TwiML carries the reason in its
+ * callbacks, so its size can only be bounded by looking at all of them.
+ */
+export const VOICEMAIL_REASONS: readonly VoicemailReason[] = Object.keys(
+  GREETINGS,
+) as VoicemailReason[];
+
+/** What a caller hears before the beep. */
+export type VoicemailGreeting =
+  | { kind: 'recording'; url: string }
+  | { kind: 'spoken'; text: string };
+
+/**
+ * The greeting URL of a routing entry, if it is one Twilio can be pointed at.
+ * The cache types it as any string, so anything but an absolute http(s) URL
+ * counts as no greeting rather than reaching the caller as broken audio. The
+ * normalized form is ASCII, which keeps odd characters out of the TwiML.
+ */
+export function usableGreetingUrl(
+  cached: string | null | undefined,
+): string | undefined {
+  const url = cached ? URL.parse(cached) : null;
+
+  return url?.protocol === 'http:' || url?.protocol === 'https:'
+    ? url.href
+    : undefined;
+}
+
+/**
+ * A department's own recording replaces the built-in greeting whatever sent
+ * the caller to voicemail; without one the reason picks the words.
+ */
+export function chooseVoicemailGreeting(
+  reason: VoicemailReason,
+  customGreetingUrl: string | undefined,
+): VoicemailGreeting {
+  return customGreetingUrl
+    ? { kind: 'recording', url: customGreetingUrl }
+    : { kind: 'spoken', text: voicemailGreeting(reason) };
+}
+
 export type InboundCallPlan =
   | { action: 'voicemail'; reason: 'closed-hours' }
   | { action: 'forward'; phoneNumber: string; ringDuration: number }

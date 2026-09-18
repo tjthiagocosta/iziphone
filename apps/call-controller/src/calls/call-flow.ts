@@ -13,6 +13,7 @@ import {
   maskPhoneNumber,
   planInboundCall,
   type RoutingLookupService,
+  usableGreetingUrl,
   type VoicemailReason,
 } from '../routing/index.js';
 import {
@@ -349,10 +350,26 @@ export class CallFlow {
         { conversationUuid: callSid, phoneNumberLast4: maskPhoneNumber(to) },
         'Inbound call to a number with no routing',
       );
-      return telephony.buildVoicemailTwiml(callSid, 'missing-routing');
+      return telephony.buildVoicemailTwiml(state, 'missing-routing');
     }
 
     const plan = planInboundCall(routed);
+    const configuredGreeting = routed.settings?.voicemailGreetingUrl;
+    const voicemailGreetingUrl = usableGreetingUrl(configuredGreeting);
+    if (configuredGreeting && !voicemailGreetingUrl) {
+      // Otherwise a greeting the admin can see configured would go unplayed
+      // with nothing to say why. The value is whatever the cache held, not
+      // necessarily a URL, so only its length is logged.
+      this.deps.log.warn(
+        {
+          conversationUuid: callSid,
+          departmentId: routed.departmentId,
+          greetingUrlLength: configuredGreeting.length,
+        },
+        'Ignoring a voicemail greeting that is not an http(s) URL',
+      );
+    }
+
     const state: CallState = {
       ...base,
       routingType: routed.type,
@@ -364,6 +381,7 @@ export class CallFlow {
       currentQueueIndex: 0,
       ringStrategy: plan.action === 'ring' ? plan.strategy : undefined,
       ringDuration: routed.settings?.ringDuration,
+      voicemailGreetingUrl,
     };
 
     await telephony.saveCallState(state);
@@ -1153,10 +1171,7 @@ export class CallFlow {
       userId: state.targetUserId,
     });
 
-    return this.deps.telephony.buildVoicemailTwiml(
-      state.conversationUuid,
-      reason,
-    );
+    return this.deps.telephony.buildVoicemailTwiml(state, reason);
   }
 
   /** The caller is already in the conference: pull them out into voicemail. */
@@ -1198,11 +1213,7 @@ export class CallFlow {
       });
     }
 
-    await telephony.redirectLegToVoicemail(
-      state.callerLegUuid,
-      state.conversationUuid,
-      reason,
-    );
+    await telephony.redirectLegToVoicemail(state.callerLegUuid, state, reason);
   }
 
   /** The call is over: tell the API and forget the state. */

@@ -149,12 +149,13 @@ export function createFakeTelephony() {
     throw new Error('test config must include Twilio');
   }
 
+  const telephonyLog = createFakeLogger();
   const telephony = new TelephonyService({
     redis,
     voice: { config, client: twilio.client },
     internalApi: testControllerConfig.internalApi,
-    log: createFakeLogger(),
+    log: telephonyLog,
   });
 
-  return { telephony, twilio, store, ttls };
+  return { telephony, twilio, store, ttls, telephonyLog };
 }

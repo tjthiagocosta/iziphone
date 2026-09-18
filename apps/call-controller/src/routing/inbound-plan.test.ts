@@ -1,6 +1,13 @@
 import type { CachedRouting, CachedRoutingSettings } from '@repo/events';
 import { describe, expect, test } from 'vitest';
-import { planInboundCall, voicemailGreeting } from './inbound-plan.js';
+import {
+  chooseVoicemailGreeting,
+  planInboundCall,
+  usableGreetingUrl,
+  VOICEMAIL_REASONS,
+  type VoicemailReason,
+  voicemailGreeting,
+} from './inbound-plan.js';
 
 const settings: CachedRoutingSettings = {
   timezone: 'UTC',
@@ -153,5 +160,81 @@ describe('voicemailGreeting', () => {
     expect(voicemailGreeting('closed-hours')).toMatch(/currently closed/);
     expect(voicemailGreeting('missing-routing')).toMatch(/not configured/);
     expect(voicemailGreeting('user-unavailable')).toMatch(/unavailable/);
+  });
+});
+
+describe('VOICEMAIL_REASONS', () => {
+  test('lists every reason once, each with its greeting', () => {
+    const every: VoicemailReason[] = [
+      'missing-routing',
+      'closed-hours',
+      'closed-hours-external',
+      'user-unavailable',
+      'fixed-order-unavailable',
+      'no-agents',
+      'routing-timeout',
+    ];
+
+    expect([...VOICEMAIL_REASONS].sort()).toEqual([...every].sort());
+    for (const reason of VOICEMAIL_REASONS) {
+      expect(voicemailGreeting(reason)).toMatch(/leave a message/);
+    }
+  });
+});
+
+describe('usableGreetingUrl', () => {
+  test('keeps an http or https URL', () => {
+    expect(usableGreetingUrl('https://example.com/greeting.mp3')).toBe(
+      'https://example.com/greeting.mp3',
+    );
+    expect(usableGreetingUrl('http://example.com/greeting.wav')).toBe(
+      'http://example.com/greeting.wav',
+    );
+  });
+
+  test('a routing entry without a greeting has none', () => {
+    expect(usableGreetingUrl(null)).toBeUndefined();
+    expect(usableGreetingUrl(undefined)).toBeUndefined();
+    expect(usableGreetingUrl('')).toBeUndefined();
+  });
+
+  test('ignores anything Twilio could not be pointed at', () => {
+    expect(usableGreetingUrl('greeting.mp3')).toBeUndefined();
+    expect(usableGreetingUrl('/media/greeting.mp3')).toBeUndefined();
+    expect(usableGreetingUrl('ftp://example.com/greeting.mp3')).toBeUndefined();
+    expect(usableGreetingUrl('file:///srv/greeting.mp3')).toBeUndefined();
+    expect(usableGreetingUrl('not a url')).toBeUndefined();
+  });
+
+  test('hands back a form that is safe to put in TwiML', () => {
+    expect(usableGreetingUrl('  https://example.com/our greeting.mp3\n')).toBe(
+      'https://example.com/our%20greeting.mp3',
+    );
+  });
+});
+
+describe('chooseVoicemailGreeting', () => {
+  test('a custom recording replaces the built-in greeting for every reason', () => {
+    const url = 'https://example.com/greeting.mp3';
+
+    expect(chooseVoicemailGreeting('closed-hours', url)).toEqual({
+      kind: 'recording',
+      url,
+    });
+    expect(chooseVoicemailGreeting('routing-timeout', url)).toEqual({
+      kind: 'recording',
+      url,
+    });
+  });
+
+  test('without one the reason picks the spoken greeting', () => {
+    expect(chooseVoicemailGreeting('closed-hours', undefined)).toEqual({
+      kind: 'spoken',
+      text: voicemailGreeting('closed-hours'),
+    });
+    expect(chooseVoicemailGreeting('missing-routing', undefined)).toEqual({
+      kind: 'spoken',
+      text: voicemailGreeting('missing-routing'),
+    });
   });
 });

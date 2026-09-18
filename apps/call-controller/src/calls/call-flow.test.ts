@@ -77,15 +77,16 @@ function buildFlow(
       options.routing === undefined ? department : options.routing,
     ),
   };
+  const log = createFakeLogger();
   const flow = new CallFlow({
     telephony: fake.telephony,
     routing,
     events,
     realtime,
-    log: createFakeLogger(),
+    log,
   });
 
-  return { flow, events, realtime, routing, online, ...fake };
+  return { flow, events, realtime, routing, online, log, ...fake };
 }
 
 /** Let background work started by a webhook handler settle. */
@@ -581,6 +582,233 @@ describe('CallFlow', () => {
       );
       await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
       await expect(telephony.getLegMetadata('CAcall1')).resolves.toBeNull();
+    });
+  });
+
+  describe('voicemail greeting', () => {
+    const greetingUrl = 'https://example.com/greetings/support.mp3';
+    const greeted: CachedRouting = {
+      ...department,
+      settings: { ...settings, voicemailGreetingUrl: greetingUrl },
+    };
+    const closedAndForwarding: CachedRoutingSettings = {
+      ...settings,
+      is24Hours: false,
+      closedHoursRoutingType: 'EXTERNAL_NUMBER',
+      closedHoursExternalNumber: '+15555550199',
+    };
+
+    function accept(flow: CallFlow) {
+      return flow.acceptInboundCall({
+        callSid: 'CAcall1',
+        from: caller,
+        to: businessNumber,
+      });
+    }
+
+    function expectCustomGreeting(twiml: unknown) {
+      expect(twiml).toContain(`<Play>${greetingUrl}</Play>`);
+      expect(twiml).not.toContain('<Say');
+      expect(twiml).toContain('<Record');
+    }
+
+    function expectSpokenGreeting(twiml: unknown, words: string) {
+      expect(twiml).toContain(words);
+      expect(twiml).not.toContain('<Play');
+      expect(twiml).toContain('<Record');
+    }
+
+    test('plays the department greeting when nobody is online to ring', async () => {
+      const { flow } = buildFlow({ routing: greeted, online: [] });
+
+      expectCustomGreeting(await accept(flow));
+    });
+
+    test('plays the department greeting when the department is closed', async () => {
+      const { flow } = buildFlow({
+        routing: {
+          ...greeted,
+          settings: {
+            ...settings,
+            is24Hours: false,
+            voicemailGreetingUrl: greetingUrl,
+          },
+        },
+      });
+
+      expectCustomGreeting(await accept(flow));
+    });
+
+    test('plays the department greeting when the ringing times out, a webhook later', async () => {
+      const { flow, twilio } = buildFlow({
+        routing: greeted,
+        online: ['user-1'],
+      });
+      await accept(flow);
+
+      await flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'no-answer',
+      });
+
+      expect(twilio.redirects()).toHaveLength(1);
+      expectCustomGreeting(twilio.redirects()[0]?.params.twiml);
+    });
+
+    test('plays the department greeting when the forward cannot be dialed', async () => {
+      const { flow, twilio } = buildFlow({
+        routing: {
+          ...greeted,
+          settings: {
+            ...closedAndForwarding,
+            voicemailGreetingUrl: greetingUrl,
+          },
+        },
+      });
+      twilio.failWith('+15555550199', new Error('Twilio rejected the dial'));
+
+      await accept(flow);
+      await settle();
+
+      expect(twilio.redirects()).toHaveLength(1);
+      expectCustomGreeting(twilio.redirects()[0]?.params.twiml);
+    });
+
+    test('plays the department greeting when the forward is not answered', async () => {
+      const { flow, twilio } = buildFlow({
+        routing: {
+          ...greeted,
+          settings: {
+            ...closedAndForwarding,
+            voicemailGreetingUrl: greetingUrl,
+          },
+        },
+      });
+      await accept(flow);
+      await settle();
+
+      await flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'no-answer',
+      });
+
+      expect(twilio.redirects()).toHaveLength(1);
+      expectCustomGreeting(twilio.redirects()[0]?.params.twiml);
+    });
+
+    test('speaks the built-in greeting on both paths when the department has none', async () => {
+      const direct = buildFlow({ online: [] });
+      expectSpokenGreeting(await accept(direct.flow), 'Nobody is available');
+
+      const ringing = buildFlow({ online: ['user-1'] });
+      await accept(ringing.flow);
+      await ringing.flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'no-answer',
+      });
+
+      expect(ringing.twilio.redirects()).toHaveLength(1);
+      expectSpokenGreeting(
+        ringing.twilio.redirects()[0]?.params.twiml,
+        'Nobody is available',
+      );
+    });
+
+    test("speaks the built-in greeting for a user's own number", async () => {
+      const { flow } = buildFlow({
+        routing: {
+          type: 'USER',
+          userIds: ['user-1'],
+          userId: 'user-1',
+          userName: 'Avery Example',
+          cachedAt: '2026-09-08T12:00:00.000Z',
+        },
+        online: [],
+      });
+
+      expectSpokenGreeting(
+        await accept(flow),
+        'The person you are calling is unavailable',
+      );
+    });
+
+    test('speaks the built-in greeting for a number with no routing', async () => {
+      const { flow } = buildFlow({ routing: null });
+
+      expectSpokenGreeting(await accept(flow), 'This number is not configured');
+    });
+
+    test('speaks the built-in greeting when the cached greeting is not a web URL, and says so in the log', async () => {
+      const { flow, telephony, log } = buildFlow({
+        routing: {
+          ...department,
+          settings: { ...settings, voicemailGreetingUrl: 'greeting.mp3' },
+        },
+        online: [],
+      });
+
+      expectSpokenGreeting(await accept(flow), 'Nobody is available');
+      await expect(
+        telephony.getCallState('CAcall1'),
+      ).resolves.not.toHaveProperty('voicemailGreetingUrl');
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        {
+          conversationUuid: 'CAcall1',
+          departmentId: 'dept-1',
+          greetingUrlLength: 'greeting.mp3'.length,
+        },
+        expect.stringContaining('voicemail greeting'),
+      );
+    });
+
+    test('a greeting URL that outgrows a redirect once written into the TwiML is spoken over on both paths alike', async () => {
+      // Short by itself, but every "&" takes five characters in the XML.
+      const tooLong = `https://example.com/greeting.mp3?${'a=1&'.repeat(450)}`;
+      expect(tooLong.length).toBeLessThan(2000);
+      const routing: CachedRouting = {
+        ...department,
+        settings: { ...settings, voicemailGreetingUrl: tooLong },
+      };
+
+      const direct = buildFlow({ routing, online: [] });
+      expectSpokenGreeting(await accept(direct.flow), 'Nobody is available');
+
+      const ringing = buildFlow({ routing, online: ['user-1'] });
+      await accept(ringing.flow);
+      await ringing.flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'no-answer',
+      });
+      const redirected = String(ringing.twilio.redirects()[0]?.params.twiml);
+      expectSpokenGreeting(redirected, 'Nobody is available');
+      expect(redirected.length).toBeLessThanOrEqual(4000);
+
+      // Each caller who missed the greeting leaves one trace. The URL may
+      // carry a signed token and must stay out of the log.
+      for (const { log, telephonyLog } of [direct, ringing]) {
+        expect(log.warn).not.toHaveBeenCalled();
+        expect(telephonyLog.warn).toHaveBeenCalledTimes(1);
+        expect(
+          JSON.stringify(vi.mocked(telephonyLog.warn).mock.calls),
+        ).not.toContain('example.com');
+      }
+    });
+
+    test('logs nothing about the greeting when it is usable or absent', async () => {
+      const greetedFlow = buildFlow({ routing: greeted, online: [] });
+      await accept(greetedFlow.flow);
+      expect(greetedFlow.log.warn).not.toHaveBeenCalled();
+      expect(greetedFlow.telephonyLog.warn).not.toHaveBeenCalled();
+
+      const plain = buildFlow({ online: [] });
+      await accept(plain.flow);
+      expect(plain.log.warn).not.toHaveBeenCalled();
+      expect(plain.telephonyLog.warn).not.toHaveBeenCalled();
     });
   });
 

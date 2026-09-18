@@ -1,5 +1,6 @@
 import { OUTBOUND_GRANT } from '@repo/events';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { VOICEMAIL_REASONS } from '../routing/index.js';
 import { e164 } from '../test/e164.js';
 import { createFakeLogger } from '../test/fake-logger.js';
 import {
@@ -30,6 +31,15 @@ function inboundState(overrides: Partial<CallState> = {}): CallState {
     createdAt: '2026-09-08T12:00:00.000Z',
     ...overrides,
   };
+}
+
+/** The `<Record>` verb of a TwiML document, attributes and all. */
+function recordElementOf(twiml: string): string {
+  const match = /<Record\b[^>]*>/.exec(twiml);
+  if (!match) {
+    throw new Error('The TwiML has no <Record>');
+  }
+  return match[0];
 }
 
 describe('TelephonyService', () => {
@@ -502,9 +512,10 @@ describe('TelephonyService', () => {
   test('voicemail TwiML greets, records and labels the recording with its reason', () => {
     const { telephony } = createFakeTelephony();
 
-    const twiml = telephony.buildVoicemailTwiml('CAcall1', 'closed-hours');
+    const twiml = telephony.buildVoicemailTwiml(inboundState(), 'closed-hours');
 
     expect(twiml).toContain('We are currently closed');
+    expect(twiml).not.toContain('<Play');
     expect(twiml).toContain(
       'action="https://calls.example.com/webhooks/twilio/voice/voicemail/completed?conversationUuid=CAcall1&amp;context=closed-hours"',
     );
@@ -514,17 +525,169 @@ describe('TelephonyService', () => {
     expect(twiml).toContain('transcribe="true"');
   });
 
+  test('voicemail TwiML plays the custom greeting instead of speaking, then records as usual', () => {
+    const { telephony } = createFakeTelephony();
+    const spoken = telephony.buildVoicemailTwiml(
+      inboundState(),
+      'closed-hours',
+    );
+
+    const twiml = telephony.buildVoicemailTwiml(
+      inboundState({
+        voicemailGreetingUrl: 'https://example.com/greeting.mp3?v=2&lang=en',
+      }),
+      'closed-hours',
+    );
+
+    expect(twiml).toContain(
+      '<Play>https://example.com/greeting.mp3?v=2&amp;lang=en</Play>',
+    );
+    expect(twiml).not.toContain('<Say');
+    expect(twiml).not.toContain('We are currently closed');
+    // The greeting comes first, and swapping it changes nothing else: the
+    // recording keeps its action, callbacks and reason.
+    expect(twiml.indexOf('<Play>')).toBeLessThan(twiml.indexOf('<Record'));
+    expect(recordElementOf(twiml)).toBe(recordElementOf(spoken));
+    expect(recordElementOf(twiml)).toContain('context=closed-hours');
+  });
+
   test('redirecting a leg to voicemail replaces its TwiML', async () => {
     const { telephony, twilio } = createFakeTelephony();
 
     await telephony.redirectLegToVoicemail(
       'CAcall1',
-      'CAcall1',
+      inboundState(),
       'routing-timeout',
     );
 
     expect(twilio.redirects()).toHaveLength(1);
     expect(twilio.redirects()[0]?.params.twiml).toContain('<Record');
+    expect(twilio.redirects()[0]?.params.twiml).toContain(
+      'Nobody is available',
+    );
+  });
+
+  test('redirecting a leg to voicemail plays the custom greeting', async () => {
+    const { telephony, twilio, telephonyLog } = createFakeTelephony();
+
+    await telephony.redirectLegToVoicemail(
+      'CAcall1',
+      inboundState({
+        voicemailGreetingUrl: 'https://example.com/greeting.mp3',
+      }),
+      'routing-timeout',
+    );
+
+    const twiml = String(twilio.redirects()[0]?.params.twiml);
+    expect(twiml).toContain('<Play>https://example.com/greeting.mp3</Play>');
+    expect(twiml).not.toContain('<Say');
+    expect(twiml).toContain('<Record');
+    expect(telephonyLog.warn).not.toHaveBeenCalled();
+  });
+
+  test('a greeting URL too long for an inline redirect costs the greeting, not the voicemail', async () => {
+    const { telephony, twilio, telephonyLog } = createFakeTelephony();
+    const voicemailGreetingUrl = `https://example.com/greeting.mp3?token=${'a'.repeat(4000)}`;
+
+    await telephony.redirectLegToVoicemail(
+      'CAcall1',
+      inboundState({ voicemailGreetingUrl }),
+      'routing-timeout',
+    );
+
+    const twiml = String(twilio.redirects()[0]?.params.twiml);
+    expect(twiml.length).toBeLessThanOrEqual(4000);
+    expect(twiml).not.toContain('<Play');
+    expect(twiml).toContain('Nobody is available');
+    expect(twiml).toContain('<Record');
+    // Whoever is asked why the greeting did not play needs a trace, but the
+    // URL may carry a signed token and must stay out of the log.
+    expect(telephonyLog.warn).toHaveBeenCalledTimes(1);
+    expect(telephonyLog.warn).toHaveBeenCalledWith(
+      {
+        conversationUuid: 'CAcall1',
+        greetingUrlLength: voicemailGreetingUrl.length,
+      },
+      expect.stringContaining('too long'),
+    );
+    expect(
+      JSON.stringify(vi.mocked(telephonyLog.warn).mock.calls),
+    ).not.toContain('example.com');
+  });
+
+  test('the greeting is measured as it is written into the TwiML, not as it is configured', async () => {
+    const { telephony, twilio } = createFakeTelephony();
+    // The same length, but every "&" takes five characters in the XML.
+    const plain = `https://example.com/greeting.mp3?${'a=1a'.repeat(450)}`;
+    const escaped = `https://example.com/greeting.mp3?${'a=1&'.repeat(450)}`;
+    expect(escaped).toHaveLength(plain.length);
+
+    expect(
+      telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl: plain }),
+        'closed-hours',
+      ),
+    ).toContain(`<Play>${plain}</Play>`);
+
+    // A caller answered with voicemail straight away and one pulled out of
+    // the conference hear the same thing.
+    const direct = telephony.buildVoicemailTwiml(
+      inboundState({ voicemailGreetingUrl: escaped }),
+      'closed-hours',
+    );
+    await telephony.redirectLegToVoicemail(
+      'CAcall1',
+      inboundState({ voicemailGreetingUrl: escaped }),
+      'routing-timeout',
+    );
+    const redirected = String(twilio.redirects()[0]?.params.twiml);
+
+    expect(direct).not.toContain('<Play');
+    expect(direct).toContain('We are currently closed');
+    expect(redirected).not.toContain('<Play');
+    expect(redirected).toContain('Nobody is available');
+    expect(redirected.length).toBeLessThanOrEqual(4000);
+  });
+
+  test('a greeting plays for every reason or for none, up to exactly what a redirect can carry', () => {
+    const { telephony } = createFakeTelephony();
+    const longestReason = VOICEMAIL_REASONS.reduce((longest, reason) =>
+      reason.length > longest.length ? reason : longest,
+    );
+    const probe = 'https://example.com/greeting.mp3?token=';
+    const room =
+      4000 -
+      telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl: probe }),
+        longestReason,
+      ).length;
+    const largestThatFits = probe + 'a'.repeat(room);
+
+    expect(
+      telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl: largestThatFits }),
+        longestReason,
+      ),
+    ).toHaveLength(4000);
+
+    for (const reason of VOICEMAIL_REASONS) {
+      const fits = telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl: largestThatFits }),
+        reason,
+      );
+      expect(fits).toContain(`<Play>${largestThatFits}</Play>`);
+      expect(fits.length).toBeLessThanOrEqual(4000);
+
+      // One character more fits the shorter reasons but not the longest, and
+      // the number must not greet some of its callers and not others.
+      const oneTooMany = telephony.buildVoicemailTwiml(
+        inboundState({ voicemailGreetingUrl: `${largestThatFits}a` }),
+        reason,
+      );
+      expect(oneTooMany).not.toContain('<Play');
+      expect(oneTooMany).toContain('<Say');
+      expect(recordElementOf(oneTooMany)).toBe(recordElementOf(fits));
+    }
   });
 
   test('parses the participant label it produced', () => {

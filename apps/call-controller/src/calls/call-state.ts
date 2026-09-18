@@ -55,6 +55,12 @@ export interface CallState {
   ringStrategy?: OpenHoursRoutingType;
   /** Seconds each agent leg rings before Twilio gives up on it. */
   ringDuration?: number;
+  /**
+   * The called number's own voicemail greeting, already checked to be an
+   * http(s) URL. Kept here because the webhook that sends a ringing caller
+   * to voicemail is not the one that looked the routing up.
+   */
+  voicemailGreetingUrl?: string;
   answered: boolean;
   /** The caller has been sent to voicemail; nobody will pick up. */
   voicemail: boolean;
