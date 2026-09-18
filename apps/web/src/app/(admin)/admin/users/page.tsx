@@ -1,13 +1,19 @@
 'use client';
 
-import type { CreateUser, Role, UserResponse } from '@repo/dto';
+import type {
+  AccessLinkResponse,
+  CreateUser,
+  Role,
+  UserResponse,
+} from '@repo/dto';
 import { Plus } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ConfirmDialog } from '@/components/admin/shared/ConfirmDialog';
 import { Pagination } from '@/components/admin/shared/Pagination';
 import { SearchInput } from '@/components/admin/shared/SearchInput';
-import { CreateUserDialog } from '@/components/admin/users/CreateUserDialog';
+import { AccessLinkDialog } from '@/components/admin/users/AccessLinkDialog';
+import { InviteUserDialog } from '@/components/admin/users/InviteUserDialog';
 import { UserTable } from '@/components/admin/users/UserTable';
 import { Button } from '@/components/ui/button';
 import {
@@ -19,6 +25,10 @@ import {
 } from '@/components/ui/select';
 import { useUserMutations, useUsers } from '@/hooks/use-admin-users';
 
+function messageFor(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 export default function UsersPage() {
   const searchParams = useSearchParams();
   const [isCreateOpen, setIsCreateOpen] = useState(
@@ -28,9 +38,21 @@ export default function UsersPage() {
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<Role | 'all'>('all');
 
+  const [issued, setIssued] = useState<{
+    link: AccessLinkResponse;
+    recipient: string;
+  } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
   const { users, page, totalPages, isLoading, setQuery, refetch } = useUsers();
 
-  const { create, remove, isLoading: isMutating } = useUserMutations();
+  const {
+    invite,
+    resendInvite,
+    sendPasswordReset,
+    remove,
+    isLoading: isMutating,
+  } = useUserMutations();
 
   useEffect(() => {
     setQuery({
@@ -40,9 +62,36 @@ export default function UsersPage() {
     });
   }, [search, roleFilter, setQuery]);
 
-  const handleCreate = async (data: CreateUser) => {
-    await create(data);
+  const handleInvite = async (data: CreateUser) => {
+    const invited = await invite(data);
+    setIssued({ link: invited.invite, recipient: invited.user.email });
     refetch();
+  };
+
+  /*
+   * These two are started from a menu rather than a form, so nothing else is
+   * there to catch a refusal: an admin who clicks and sees nothing would not
+   * know whether the link went out.
+   */
+  const handleResendInvite = async (user: UserResponse) => {
+    setActionError(null);
+    try {
+      const link = await resendInvite(user.id);
+      setIssued({ link, recipient: user.email });
+      refetch();
+    } catch (error) {
+      setActionError(messageFor(error, 'Could not send the invite.'));
+    }
+  };
+
+  const handleSendPasswordReset = async (user: UserResponse) => {
+    setActionError(null);
+    try {
+      const link = await sendPasswordReset(user.id);
+      setIssued({ link, recipient: user.email });
+    } catch (error) {
+      setActionError(messageFor(error, 'Could not send the reset link.'));
+    }
   };
 
   const handleDelete = async () => {
@@ -61,7 +110,7 @@ export default function UsersPage() {
         </div>
         <Button onClick={() => setIsCreateOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          Create User
+          Invite User
         </Button>
       </div>
 
@@ -89,10 +138,18 @@ export default function UsersPage() {
         </Select>
       </div>
 
+      {actionError && (
+        <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md dark:bg-red-900/20 dark:text-red-400">
+          {actionError}
+        </div>
+      )}
+
       <UserTable
         users={users}
         isLoading={isLoading}
         onDelete={setUserToDelete}
+        onResendInvite={handleResendInvite}
+        onSendPasswordReset={handleSendPasswordReset}
       />
 
       {totalPages > 1 && (
@@ -103,11 +160,17 @@ export default function UsersPage() {
         />
       )}
 
-      <CreateUserDialog
+      <InviteUserDialog
         open={isCreateOpen}
         onOpenChange={setIsCreateOpen}
-        onSubmit={handleCreate}
+        onSubmit={handleInvite}
         isLoading={isMutating}
+      />
+
+      <AccessLinkDialog
+        link={issued?.link ?? null}
+        recipient={issued?.recipient ?? null}
+        onClose={() => setIssued(null)}
       />
 
       <ConfirmDialog

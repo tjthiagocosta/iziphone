@@ -1,7 +1,14 @@
 'use client';
 
 import type { UserResponse } from '@repo/dto';
-import { MoreHorizontal, Pencil, RotateCcw, Trash2 } from 'lucide-react';
+import {
+  KeyRound,
+  Mail,
+  MoreHorizontal,
+  Pencil,
+  RotateCcw,
+  Trash2,
+} from 'lucide-react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,6 +27,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import {
+  inviteStatusLabel,
+  inviteStatusTone,
+  needsInvite,
+} from '@/lib/access-link';
 
 interface UserTableProps {
   users: UserResponse[];
@@ -27,6 +39,10 @@ interface UserTableProps {
   showDeleted?: boolean;
   onDelete?: (user: UserResponse) => void;
   onRestore?: (user: UserResponse) => void;
+  /** Sends a fresh invite to somebody who has not set a password yet. */
+  onResendInvite?: (user: UserResponse) => void;
+  /** Sends a reset link to somebody who is locked out. */
+  onSendPasswordReset?: (user: UserResponse) => void;
 }
 
 export function UserTable({
@@ -35,6 +51,8 @@ export function UserTable({
   showDeleted = false,
   onDelete,
   onRestore,
+  onResendInvite,
+  onSendPasswordReset,
 }: UserTableProps) {
   const getRoleBadgeVariant = (role: string) => {
     switch (role) {
@@ -56,6 +74,7 @@ export function UserTable({
               <TableHead>Name</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
+              <TableHead>Access</TableHead>
               <TableHead>Departments</TableHead>
               <TableHead>Phone Numbers</TableHead>
               <TableHead className="w-[70px]"></TableHead>
@@ -75,6 +94,9 @@ export function UserTable({
                 </TableCell>
                 <TableCell>
                   <div className="h-5 w-16 bg-muted animate-pulse rounded" />
+                </TableCell>
+                <TableCell>
+                  <div className="h-5 w-20 bg-muted animate-pulse rounded" />
                 </TableCell>
                 <TableCell>
                   <div className="h-4 w-24 bg-muted animate-pulse rounded" />
@@ -111,6 +133,7 @@ export function UserTable({
             <TableHead>Name</TableHead>
             <TableHead>Email</TableHead>
             <TableHead>Role</TableHead>
+            <TableHead>Access</TableHead>
             <TableHead>Departments</TableHead>
             <TableHead>Phone Numbers</TableHead>
             <TableHead className="w-[70px]"></TableHead>
@@ -132,6 +155,17 @@ export function UserTable({
                 <Badge variant={getRoleBadgeVariant(user.role)}>
                   {user.role}
                 </Badge>
+              </TableCell>
+              <TableCell>
+                {/* A deleted user has no access at all; the invite status of
+                    one is not a state an admin can act on. */}
+                {showDeleted ? (
+                  <span className="text-muted-foreground">-</span>
+                ) : (
+                  <Badge variant={inviteStatusTone(user.inviteStatus)}>
+                    {inviteStatusLabel(user.inviteStatus)}
+                  </Badge>
+                )}
               </TableCell>
               <TableCell>
                 {user.departments.length > 0 ? (
@@ -186,6 +220,21 @@ export function UserTable({
                             Edit
                           </Link>
                         </DropdownMenuItem>
+                        {needsInvite(user.inviteStatus) ? (
+                          <DropdownMenuItem
+                            onClick={() => onResendInvite?.(user)}
+                          >
+                            <Mail className="mr-2 h-4 w-4" />
+                            Resend invite
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem
+                            onClick={() => onSendPasswordReset?.(user)}
+                          >
+                            <KeyRound className="mr-2 h-4 w-4" />
+                            Send password reset link
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-destructive"

@@ -21,25 +21,26 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-interface CreateUserDialogProps {
+interface InviteUserDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (data: CreateUser) => Promise<void>;
   isLoading?: boolean;
 }
 
-export function CreateUserDialog({
+const EMPTY: CreateUser = { email: '', name: '', role: 'AGENT' };
+
+/**
+ * Adding somebody to the system is inviting them: they choose their own
+ * password through the link the invite carries, so there is no password here.
+ */
+export function InviteUserDialog({
   open,
   onOpenChange,
   onSubmit,
   isLoading = false,
-}: CreateUserDialogProps) {
-  const [formData, setFormData] = useState<CreateUser>({
-    email: '',
-    name: '',
-    password: '',
-    role: 'AGENT',
-  });
+}: InviteUserDialogProps) {
+  const [formData, setFormData] = useState<CreateUser>(EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const validate = () => {
@@ -55,12 +56,6 @@ export function CreateUserDialog({
       newErrors.name = 'Name is required';
     }
 
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (formData.password.length < 8) {
-      newErrors.password = 'Password must be at least 8 characters';
-    }
-
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -71,7 +66,7 @@ export function CreateUserDialog({
 
     try {
       await onSubmit(formData);
-      setFormData({ email: '', name: '', password: '', role: 'AGENT' });
+      setFormData(EMPTY);
       setErrors({});
       onOpenChange(false);
     } catch (_error) {
@@ -84,9 +79,10 @@ export function CreateUserDialog({
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Create User</DialogTitle>
+            <DialogTitle>Invite User</DialogTitle>
             <DialogDescription>
-              Add a new user to your workspace
+              They will get a link to choose their own password. You can copy
+              the link afterwards and pass it on yourself.
             </DialogDescription>
           </DialogHeader>
 
@@ -99,7 +95,7 @@ export function CreateUserDialog({
                 onChange={(e) =>
                   setFormData((prev) => ({ ...prev, name: e.target.value }))
                 }
-                placeholder="John Doe"
+                placeholder="Dana Operator"
               />
               {errors.name && (
                 <p className="text-sm text-destructive">{errors.name}</p>
@@ -115,26 +111,10 @@ export function CreateUserDialog({
                 onChange={(e) =>
                   setFormData((prev) => ({ ...prev, email: e.target.value }))
                 }
-                placeholder="john@example.com"
+                placeholder="dana@example.com"
               />
               {errors.email && (
                 <p className="text-sm text-destructive">{errors.email}</p>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={formData.password}
-                onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, password: e.target.value }))
-                }
-                placeholder="••••••••"
-              />
-              {errors.password && (
-                <p className="text-sm text-destructive">{errors.password}</p>
               )}
             </div>
 
@@ -168,7 +148,7 @@ export function CreateUserDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={isLoading}>
-              {isLoading ? 'Creating...' : 'Create User'}
+              {isLoading ? 'Sending invite...' : 'Send invite'}
             </Button>
           </DialogFooter>
         </form>

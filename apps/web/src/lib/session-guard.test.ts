@@ -16,14 +16,18 @@ describe('requiresSession', () => {
     // A conversation id is not a file name, however much it looks like one.
     '/app/conversations/a.b',
     '/app/conversations/cm4x1.abc',
+    // Sign-up is closed: nothing here is public just because it once was.
+    '/register',
   ])('guards %s', (pathname) => {
     expect(requiresSession(pathname)).toBe(true);
   });
 
   test.each([
     '/login',
-    '/register',
     '/forgot-password',
+    // The invite and the reset both land here, and neither has a session yet.
+    '/set-password',
+    '/set-password?token=a-fictional-token',
     '/api/auth/callback',
     '/_next/static/chunk.js',
     '/favicon.ico',

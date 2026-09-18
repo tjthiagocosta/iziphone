@@ -1,4 +1,6 @@
 import {
+  type AccessLinkResponse,
+  AccessLinkResponseSchema,
   type AddAgent,
   type AdminStatsResponse,
   AdminStatsResponseSchema,
@@ -19,6 +21,8 @@ import {
   DepartmentResponseSchema,
   type HolidayCreatedResponse,
   HolidayCreatedResponseSchema,
+  type InvitedUserResponse,
+  InvitedUserResponseSchema,
   type PhoneNumberListQuery,
   type PhoneNumberListResponse,
   PhoneNumberListResponseSchema,
@@ -88,11 +92,34 @@ export function getUser(userId: string): Promise<UserResponse> {
   });
 }
 
-export function createUser(data: CreateUser): Promise<UserResponse> {
+/**
+ * Creating a user invites them: there is no password to set here, and the
+ * answer carries the link so the admin can pass it on when mail is slow or is
+ * not configured at all.
+ */
+export function inviteUser(data: CreateUser): Promise<InvitedUserResponse> {
   return requestApi('/api/admin/users', {
     method: 'POST',
     body: data,
-    schema: UserResponseSchema,
+    schema: InvitedUserResponseSchema,
+  });
+}
+
+/** Sends a fresh invite, which retires whatever link they had. */
+export function resendUserInvite(userId: string): Promise<AccessLinkResponse> {
+  return requestApi(`/api/admin/users/${id(userId)}/invite`, {
+    method: 'POST',
+    schema: AccessLinkResponseSchema,
+  });
+}
+
+/** A reset link for a user who is locked out. No admin ever sets a password. */
+export function sendUserPasswordReset(
+  userId: string,
+): Promise<AccessLinkResponse> {
+  return requestApi(`/api/admin/users/${id(userId)}/password-reset`, {
+    method: 'POST',
+    schema: AccessLinkResponseSchema,
   });
 }
 
@@ -111,10 +138,11 @@ export function deleteUser(userId: string): Promise<void> {
   return requestApi(`/api/admin/users/${id(userId)}`, { method: 'DELETE' });
 }
 
-export function restoreUser(userId: string): Promise<UserResponse> {
+/** Restoring invites them again, so the answer carries a fresh link. */
+export function restoreUser(userId: string): Promise<InvitedUserResponse> {
   return requestApi(`/api/admin/users/${id(userId)}/restore`, {
     method: 'POST',
-    schema: UserResponseSchema,
+    schema: InvitedUserResponseSchema,
   });
 }
 

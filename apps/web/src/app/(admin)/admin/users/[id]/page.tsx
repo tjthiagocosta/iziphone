@@ -19,6 +19,11 @@ import {
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { useUser, useUserMutations } from '@/hooks/use-admin-users';
+import {
+  inviteStatusLabel,
+  inviteStatusTone,
+  needsInvite,
+} from '@/lib/access-link';
 
 export default function UserDetailPage() {
   const params = useParams();
@@ -28,7 +33,6 @@ export default function UserDetailPage() {
   const { update, isLoading: isMutating } = useUserMutations();
 
   const [formData, setFormData] = useState<UpdateUser>({});
-  const [newPassword, setNewPassword] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
 
   useEffect(() => {
@@ -47,13 +51,11 @@ export default function UserDetailPage() {
     if (formData.name !== user?.name) updates.name = formData.name;
     if (formData.email !== user?.email) updates.email = formData.email;
     if (formData.role !== user?.role) updates.role = formData.role;
-    if (newPassword) updates.password = newPassword;
 
     if (Object.keys(updates).length === 0) return;
 
     try {
       await update(userId, updates);
-      setNewPassword('');
       setHasChanges(false);
       refetch();
     } catch {
@@ -153,20 +155,21 @@ export default function UserDetailPage() {
 
             <Separator />
 
+            {/*
+              No password field: nobody sets somebody else's password here.
+              A user who cannot get in is sent a link from the Users list.
+            */}
             <div className="space-y-2">
-              <Label htmlFor="password">New Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={newPassword}
-                onChange={(e) => {
-                  setNewPassword(e.target.value);
-                  setHasChanges(true);
-                }}
-                placeholder="Leave empty to keep current"
-              />
+              <Label>Access</Label>
+              <div>
+                <Badge variant={inviteStatusTone(user.inviteStatus)}>
+                  {inviteStatusLabel(user.inviteStatus)}
+                </Badge>
+              </div>
               <p className="text-xs text-muted-foreground">
-                Minimum 8 characters
+                {needsInvite(user.inviteStatus)
+                  ? 'They have not chosen a password yet. Resend their invite from the Users list.'
+                  : 'They have a password. Send a reset link from the Users list if they are locked out.'}
               </p>
             </div>
 

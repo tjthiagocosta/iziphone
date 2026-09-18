@@ -2,7 +2,11 @@ import {
   type AuthenticatedUser,
   AuthMeResponseSchema,
   AuthTokenResponseSchema,
+  ForgotPasswordResultSchema,
   SessionListResponseSchema,
+  type SetPasswordLink,
+  SetPasswordLinkSchema,
+  SetPasswordResultSchema,
   type UserSession,
 } from '@repo/dto';
 import { ApiError, requestApi } from './client';
@@ -32,6 +36,40 @@ export async function fetchRealtimeToken(): Promise<string> {
     schema: AuthTokenResponseSchema,
   });
   return token;
+}
+
+/*
+ * The signed-out half of the access model. None of these needs a session: the
+ * link in the URL is the credential, and the last of them is what sets the
+ * session cookie.
+ */
+
+/** Asks for a reset link. Answers the same way whoever the address belongs to. */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await requestApi('/api/auth/forgot-password', {
+    method: 'POST',
+    body: { email },
+    schema: ForgotPasswordResultSchema,
+  });
+}
+
+/** Whether a link can still be used, and what it was issued for. */
+export function describeAccessLink(token: string): Promise<SetPasswordLink> {
+  return requestApi(`/api/auth/set-password/${encodeURIComponent(token)}`, {
+    schema: SetPasswordLinkSchema,
+  });
+}
+
+/** Spends the link. On success the response carries the session cookie. */
+export async function setPassword(
+  token: string,
+  password: string,
+): Promise<void> {
+  await requestApi('/api/auth/set-password', {
+    method: 'POST',
+    body: { token, password },
+    schema: SetPasswordResultSchema,
+  });
 }
 
 export async function listSessions(): Promise<UserSession[]> {

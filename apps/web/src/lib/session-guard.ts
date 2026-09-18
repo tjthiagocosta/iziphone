@@ -5,8 +5,12 @@
  * session.
  */
 
-/** Paths a signed-out visitor may open. */
-const PUBLIC_PATHS = ['/login', '/register', '/forgot-password'];
+/*
+ * Paths a signed-out visitor may open. There is no sign-up page: a person gets
+ * in through an invite link and back in through a reset link, and both of those
+ * land on `/set-password`, which has to work without a session.
+ */
+const PUBLIC_PATHS = ['/login', '/forgot-password', '/set-password'];
 
 /*
  * Suffixes of files the app serves from its own origin. Only a last segment

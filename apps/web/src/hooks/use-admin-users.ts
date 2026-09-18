@@ -11,13 +11,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   assignUserDepartment,
   assignUserPhoneNumber,
-  createUser,
   deleteUser,
   getUser,
   getUsers,
+  inviteUser,
   removeUserDepartment,
   removeUserPhoneNumber,
+  resendUserInvite,
   restoreUser,
+  sendUserPasswordReset,
   updateUser,
 } from '@/lib/api/admin';
 
@@ -103,14 +105,45 @@ export function useUserMutations() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  const create = useCallback(async (data: CreateUser) => {
+  /** Creating a user invites them; the result carries the link to pass on. */
+  const invite = useCallback(async (data: CreateUser) => {
     try {
       setIsLoading(true);
       setError(null);
-      return await createUser(data);
+      return await inviteUser(data);
     } catch (err) {
       const error =
-        err instanceof Error ? err : new Error('Failed to create user');
+        err instanceof Error ? err : new Error('Failed to invite user');
+      setError(error);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const resendInvite = useCallback(async (id: string) => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      return await resendUserInvite(id);
+    } catch (err) {
+      const error =
+        err instanceof Error ? err : new Error('Failed to send the invite');
+      setError(error);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const sendPasswordReset = useCallback(async (id: string) => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      return await sendUserPasswordReset(id);
+    } catch (err) {
+      const error =
+        err instanceof Error ? err : new Error('Failed to send the reset link');
       setError(error);
       throw error;
     } finally {
@@ -148,6 +181,7 @@ export function useUserMutations() {
     }
   }, []);
 
+  /** Restoring re-invites them; the result carries the link to pass on. */
   const restore = useCallback(async (id: string) => {
     try {
       setIsLoading(true);
@@ -242,7 +276,9 @@ export function useUserMutations() {
   return {
     isLoading,
     error,
-    create,
+    invite,
+    resendInvite,
+    sendPasswordReset,
     update,
     remove,
     restore,
