@@ -244,6 +244,16 @@ The API keeps MMS attachments and department voicemail greetings in one S3-compa
 
 Provider references: [R2 S3 API](https://developers.cloudflare.com/r2/api/s3/api/) and its [AWS SDK JS v3 example](https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/), [B2 S3-compatible API endpoints](https://www.backblaze.com/docs/cloud-storage-call-the-s3-compatible-api) and its [AWS SDK JS v3 guide](https://www.backblaze.com/docs/cloud-storage-use-the-aws-sdk-for-javascript-v3-with-backblaze-b2), [IDrive e2 endpoint URLs](https://www.idrive.com/s3-storage-e2/e2-endpoint-urls) and its [developer guide](https://www.idrive.com/s3-storage-e2/guides/create_objects), [MinIO `MINIO_DOMAIN`](https://docs.min.io/enterprise/aistor-object-store/reference/aistor-server/settings/core/).
 
+## Recording retention
+
+Call recordings and voicemails are copied into the bucket and deleted at Twilio, so how long they are kept is this deployment's decision, not the provider's. **Admin → Settings → Recording retention** sets two policies, one for voicemails and one for the recordings of calls themselves: *keep until deleted* (the default) or 30, 60, 90, 180 days, 1, 2, 3, 5 or 7 years. There is no free-form number of days, and there are no per-department overrides; changing a policy writes an audit entry with what it was and what it became.
+
+A sweep inside the API runs a minute after boot and then hourly, under a Redis lock so only one instance sweeps at a time. It deletes the audio of every recording older than the policy covering it, and picks up the work earlier attempts left owed: copies that never completed and deletions Twilio refused, each bounded per run so a backlog drains over several hours. The row survives its audio: the call's history keeps saying there was a recording and that the retention policy deleted it, and playing it answers `410` with that reason. An admin can delete one recording from its player on the call, with the same result; the reply says what is stored, so a manual delete that raced the sweep reports the policy's deletion rather than its own.
+
+Who is told what: a voicemail belongs to whoever works the line, so it appears for anyone who may see the call. The recording of the conversation itself is for the roles that hold `recordings:listen` (supervisors and admins) — an agent's call history does not mention it at all, and its audio is refused.
+
+Each run that changed something writes one audit entry (`recording.retention_swept`) with the counts and the policies in force, never one entry per recording; a run with nothing to do writes none and logs one line. Nothing about a recording's provider URL is logged or stored in the entry. Shortening a policy deletes everything already older than it on the next sweep.
+
 ## Environment variables
 
 All services and the Prisma CLI read the root `.env`. `.env.example` documents every variable with local defaults.
