@@ -1,5 +1,6 @@
 import { resolveRoutingCacheTtl } from '@repo/events';
 import { z } from 'zod';
+import type { MediaStoreConfig } from './media-store/index.js';
 
 /*
  * Every environment variable the API reads is declared here and validated
@@ -36,7 +37,15 @@ const EnvSchema = z.object({
   WEBHOOK_BASE_URL: z.url().optional(),
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
-  MESSAGING_MEDIA_STORAGE_DIR: z.string().default('.data/messaging-media'),
+  STORAGE_ENDPOINT: z.url().optional(),
+  STORAGE_REGION: z.string().min(1),
+  STORAGE_BUCKET: z.string().min(1),
+  STORAGE_ACCESS_KEY_ID: z.string().min(1),
+  STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
+  STORAGE_FORCE_PATH_STYLE: z
+    .stringbool({ truthy: ['true'], falsy: ['false'] })
+    .optional(),
+  STORAGE_KEY_PREFIX: z.string().optional(),
 });
 
 export type NodeEnv = z.infer<typeof EnvSchema>['NODE_ENV'];
@@ -67,7 +76,8 @@ export interface ApiConfig {
   twilio: TwilioCredentials | null;
   /** Public base URL of the call controller; Twilio voice webhooks point at it. */
   callControllerPublicUrl: string | null;
-  messagingMediaStorageDir: string;
+  /** The S3-compatible bucket that holds media; only the API talks to it. */
+  storage: MediaStoreConfig;
 }
 
 export class ApiConfigError extends Error {
@@ -112,7 +122,18 @@ export function loadApiConfig(env: NodeJS.ProcessEnv): ApiConfig {
     callControllerPublicUrl: values.WEBHOOK_BASE_URL
       ? stripTrailingSlash(values.WEBHOOK_BASE_URL)
       : null,
-    messagingMediaStorageDir: values.MESSAGING_MEDIA_STORAGE_DIR,
+    storage: {
+      endpoint: values.STORAGE_ENDPOINT ?? null,
+      region: values.STORAGE_REGION,
+      bucket: values.STORAGE_BUCKET,
+      accessKeyId: values.STORAGE_ACCESS_KEY_ID,
+      secretAccessKey: values.STORAGE_SECRET_ACCESS_KEY,
+      // MinIO and several providers only answer path-style requests on a custom endpoint.
+      forcePathStyle:
+        values.STORAGE_FORCE_PATH_STYLE ??
+        values.STORAGE_ENDPOINT !== undefined,
+      keyPrefix: values.STORAGE_KEY_PREFIX ?? null,
+    },
   };
 }
 

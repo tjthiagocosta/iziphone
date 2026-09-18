@@ -97,7 +97,8 @@ interface OutboundChannel {
   sender: AllowedSender;
   body: string | null;
   dispatch(message: PendingOutbound): Promise<MessagingTransportSendSuccess>;
-  attach?(tx: Prisma.TransactionClient, messageId: string): Promise<void>;
+  /** Runs after the provider accepted the message; owns its own writes. */
+  attach?(messageId: string): Promise<void>;
 }
 
 type Preparation =
@@ -194,9 +195,8 @@ export class MessageSendService {
           mediaUrl: preparedMedia.publicUrl,
           mediaType: preparedMedia.mimeType,
         }),
-      attach: async (tx, messageId) => {
+      attach: async (messageId) => {
         await this.mediaService.promotePreparedMediaToMessage({
-          tx,
           messageId,
           preparedMediaId: preparedMedia.id,
         });
@@ -340,8 +340,7 @@ export class MessageSendService {
     });
 
     if (outbound.attach) {
-      const attach = outbound.attach;
-      await this.db.$transaction((tx) => attach(tx, acceptedMessage.id));
+      await outbound.attach(acceptedMessage.id);
       acceptedMessage = await this.db.message.findUniqueOrThrow({
         where: { id: acceptedMessage.id },
         include: messageRecordInclude,

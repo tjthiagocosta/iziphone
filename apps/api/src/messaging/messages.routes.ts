@@ -58,10 +58,10 @@ export const messageRoutes: FastifyPluginAsync = async (fastify) => {
     }
   }
 
-  const { config, db, log } = fastify;
+  const { config, db, log, mediaStore } = fastify;
   const mediaService = new MessagingMediaService({
     db,
-    storageDir: config.messagingMediaStorageDir,
+    mediaStore,
     publicUrl: config.publicUrl,
     credentials: config.twilio,
     log,

@@ -7,6 +7,7 @@ import type { Redis } from 'ioredis';
 import type { Auth, AuthUser, Role } from '../auth/index.js';
 import { type ApiConfig, loadApiConfig } from '../config.js';
 import { apiErrorHandler } from '../infra/index.js';
+import { InMemoryMediaStore, type MediaStore } from '../media-store/index.js';
 
 export const defaultAuthUser: AuthUser = {
   id: 'user-1',
@@ -27,12 +28,19 @@ export const testApiConfig: ApiConfig = loadApiConfig({
   WEBHOOK_BASE_URL: 'https://calls.example.com',
   TWILIO_ACCOUNT_SID: 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   TWILIO_AUTH_TOKEN: 'not-a-real-twilio-token',
+  STORAGE_ENDPOINT: 'https://storage.example.com',
+  STORAGE_REGION: 'auto',
+  STORAGE_BUCKET: 'iziphone-media',
+  STORAGE_ACCESS_KEY_ID: 'not-a-real-access-key',
+  STORAGE_SECRET_ACCESS_KEY: 'not-a-real-secret-key',
 });
 
 interface CreateApiRouteAppOptions {
   config?: Partial<ApiConfig>;
   db?: Partial<PrismaClient>;
   redis?: Partial<Redis>;
+  /** Defaults to an in-memory store, so routes that keep media run unchanged. */
+  mediaStore?: Partial<MediaStore>;
   auth?: Partial<Auth>;
   registerOptions?: Record<string, unknown>;
   user?: AuthUser | null;
@@ -49,6 +57,10 @@ export async function createApiRouteApp(
   app.decorate('config', { ...testApiConfig, ...options.config });
   app.decorate('db', (options.db ?? {}) as PrismaClient);
   app.decorate('redis', (options.redis ?? {}) as Redis);
+  app.decorate(
+    'mediaStore',
+    (options.mediaStore ?? new InMemoryMediaStore()) as MediaStore,
+  );
   app.decorate('auth', (options.auth ?? {}) as Auth);
   app.decorate('requireAuth', async (request, reply) => {
     if (!user) {

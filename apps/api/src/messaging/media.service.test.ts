@@ -1,8 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { text } from 'node:stream/consumers';
 import type { PrismaClient } from '@repo/db';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { InMemoryMediaStore } from '../media-store/index.js';
 import {
   type MessagingMediaError,
   MessagingMediaService,
@@ -19,27 +18,23 @@ describe('MessagingMediaService', () => {
   const messageMediaStore = new Map<string, Record<string, unknown>>();
   const log = { warn: vi.fn() };
 
-  let storageDir: string;
+  let mediaStore: InMemoryMediaStore;
   let service: MessagingMediaService;
 
   beforeEach(() => {
     fetchMock.mockImplementation(async () => new Response('bytes'));
     preparedMediaStore.clear();
     messageMediaStore.clear();
-    storageDir = mkdtempSync(join(tmpdir(), 'messaging-media-'));
+    mediaStore = new InMemoryMediaStore();
 
     service = new MessagingMediaService({
       db: buildDbMock(preparedMediaStore, messageMediaStore),
-      storageDir,
+      mediaStore,
       publicUrl: 'https://api.example.com',
       credentials: CREDENTIALS,
       log,
       fetch: fetchMock,
     });
-  });
-
-  afterEach(() => {
-    rmSync(storageDir, { recursive: true, force: true });
   });
 
   test('should create, upload, complete, and serve a prepared media slot', async () => {
@@ -71,10 +66,14 @@ describe('MessagingMediaService', () => {
 
     expect(completed.id).toBe(slot.preparedMedia.id);
     expect(completed.sizeBytes).toBe(9);
+    expect(mediaStore.keys()).toEqual([
+      `messaging/prepared/${slot.preparedMedia.id}`,
+    ]);
 
     const served = await service.openPreparedMedia(slot.preparedMedia.id);
     expect(served.mimeType).toBe('image/png');
-    expect(served.content.toString()).toBe('png-bytes');
+    expect(served.sizeBytes).toBe(9);
+    expect(await text(served.content)).toBe('png-bytes');
   });
 
   test('should reject uploads with the wrong token or content type', async () => {
@@ -159,7 +158,6 @@ describe('MessagingMediaService', () => {
     await service.completeUpload('user-1', slot.preparedMedia.id);
 
     const media = await service.promotePreparedMediaToMessage({
-      tx: buildTxMock(preparedMediaStore, messageMediaStore),
       messageId: 'message-1',
       preparedMediaId: slot.preparedMedia.id,
     });
@@ -167,14 +165,76 @@ describe('MessagingMediaService', () => {
     expect(media.storageUrl).toBe(
       `https://api.example.com/media/messaging/messages/${media.id}`,
     );
+    expect(mediaStore.keys()).toContain(`messaging/messages/${media.id}`);
 
     const served = await service.openMessageMedia(media.id);
-    expect(served.content.toString()).toBe('png-bytes');
+    expect(await text(served.content)).toBe('png-bytes');
     await expect(
       service.getPreparedMediaForSend('user-1', slot.preparedMedia.id),
     ).rejects.toMatchObject({
       code: 'not_found',
     } satisfies Partial<MessagingMediaError>);
+  });
+
+  test('should write nothing to the database when the attachment copy fails', async () => {
+    const slot = await service.requestUploadSlot('user-1', {
+      fileName: 'image.png',
+      mimeType: 'image/png',
+      sizeBytes: 128000,
+    });
+    const uploadToken = new URL(slot.uploadUrl).searchParams.get('token');
+
+    await service.uploadPreparedMedia({
+      preparedMediaId: slot.preparedMedia.id,
+      token: uploadToken ?? '',
+      body: Buffer.from('png-bytes'),
+      contentType: 'image/png',
+    });
+    await service.completeUpload('user-1', slot.preparedMedia.id);
+    vi.spyOn(mediaStore, 'put').mockRejectedValueOnce(
+      new Error('bucket unavailable'),
+    );
+
+    await expect(
+      service.promotePreparedMediaToMessage({
+        messageId: 'message-1',
+        preparedMediaId: slot.preparedMedia.id,
+      }),
+    ).rejects.toThrow('bucket unavailable');
+
+    expect(messageMediaStore.size).toBe(0);
+    expect(
+      preparedMediaStore.get(slot.preparedMedia.id)?.consumedAt,
+    ).toBeNull();
+  });
+
+  test('should store inbound media under the attachment id', async () => {
+    fetchMock.mockImplementationOnce(
+      async () =>
+        new Response('jpeg-bytes', {
+          headers: { 'content-type': 'image/jpeg' },
+        }),
+    );
+
+    await service.ingestInboundMedia('message-1', [
+      {
+        url: 'https://provider.example.com/media/1',
+        mimeType: 'image/jpeg',
+        fileName: 'photo.jpg',
+      },
+    ]);
+
+    const mediaRecord = [...messageMediaStore.values()][0];
+    expect(mediaRecord).toEqual(
+      expect.objectContaining({ mimeType: 'image/jpeg', sizeBytes: 10 }),
+    );
+    expect(mediaStore.keys()).toEqual([
+      `messaging/messages/${mediaRecord?.id}`,
+    ]);
+
+    const served = await service.openMessageMedia(mediaRecord?.id as string);
+    expect(served.mimeType).toBe('image/jpeg');
+    expect(await text(served.content)).toBe('jpeg-bytes');
   });
 
   test('should persist inbound media metadata even when download fails', async () => {
@@ -200,6 +260,7 @@ describe('MessagingMediaService', () => {
       }),
     );
     expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(mediaStore.keys()).toEqual([]);
   });
 
   test('should send account credentials only to the Twilio API host', async () => {
@@ -245,7 +306,7 @@ describe('MessagingMediaService', () => {
   test('should download inbound media without credentials when none are configured', async () => {
     const unconfigured = new MessagingMediaService({
       db: buildDbMock(preparedMediaStore, messageMediaStore),
-      storageDir,
+      mediaStore,
       publicUrl: 'https://api.example.com',
       credentials: null,
       log,
@@ -269,7 +330,10 @@ function buildDbMock(
   preparedMediaStore: Map<string, Record<string, unknown>>,
   messageMediaStore: Map<string, Record<string, unknown>>,
 ) {
-  return {
+  const db = {
+    $transaction: vi.fn(async (run: (tx: unknown) => Promise<unknown>) =>
+      run(db),
+    ),
     messagePreparedMedia: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const record = {
@@ -327,15 +391,7 @@ function buildDbMock(
         return messageMediaStore.get(where.id) ?? null;
       }),
     },
-  } as unknown as PrismaClient;
-}
-
-function buildTxMock(
-  preparedMediaStore: Map<string, Record<string, unknown>>,
-  messageMediaStore: Map<string, Record<string, unknown>>,
-) {
-  return buildDbMock(preparedMediaStore, messageMediaStore) as unknown as {
-    messagePreparedMedia: PrismaClient['messagePreparedMedia'];
-    messageMedia: PrismaClient['messageMedia'];
   };
+
+  return db as unknown as PrismaClient;
 }

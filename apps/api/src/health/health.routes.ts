@@ -37,6 +37,16 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
     }
   };
 
+  const checkStorage = async (): Promise<ServiceState> => {
+    try {
+      await fastify.mediaStore.assertReady();
+      return 'connected';
+    } catch (error) {
+      fastify.log.warn({ error }, 'Storage health check failed');
+      return 'disconnected';
+    }
+  };
+
   fastify.get('/health', async () => ({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -63,6 +73,16 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
     };
   });
 
+  fastify.get('/health/storage', adminOnly, async (_request, reply) => {
+    const storage = await checkStorage();
+    if (storage !== 'connected') reply.code(503);
+    return {
+      status: storage === 'connected' ? 'ok' : 'error',
+      storage,
+      timestamp: new Date().toISOString(),
+    };
+  });
+
   fastify.get('/health/twilio', adminOnly, async (_request, reply) => {
     const readiness = await twilio.getReadinessReport();
     if (readiness.status !== 'ok') reply.code(503);
@@ -70,9 +90,10 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.get('/health/all', adminOnly, async (_request, reply) => {
-    const [database, redis] = await Promise.all([
+    const [database, redis, storage] = await Promise.all([
       checkDatabase(),
       checkRedis(),
+      checkStorage(),
     ]);
     let twilioState: ServiceState = 'unknown';
 
@@ -81,7 +102,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
       twilioState = readiness.status === 'ok' ? 'connected' : 'disconnected';
     }
 
-    const services = { database, redis, twilio: twilioState };
+    const services = { database, redis, storage, twilio: twilioState };
     const degraded = Object.values(services).includes('disconnected');
 
     if (degraded) reply.code(503);

@@ -10,6 +10,7 @@ import {
   rateLimitPlugin,
   redisPlugin,
 } from './infra/index.js';
+import { mediaStorePlugin } from './media-store/index.js';
 import { registerRoutes } from './routes.js';
 import { RoutingCacheService } from './routing/index.js';
 
@@ -49,6 +50,7 @@ export async function buildApp(config: ApiConfig) {
 
   await fastify.register(prismaPlugin);
   await fastify.register(redisPlugin);
+  await fastify.register(mediaStorePlugin);
   await fastify.register(authPlugin);
   await fastify.register(rateLimitPlugin);
 

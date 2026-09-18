@@ -40,10 +40,12 @@ describe('healthRoutes', () => {
 
   const queryRaw = vi.fn(async () => 1);
   const ping = vi.fn(async () => 'PONG');
+  const assertReady = vi.fn(async () => undefined);
 
   beforeEach(async () => {
     queryRaw.mockImplementation(async () => 1);
     ping.mockImplementation(async () => 'PONG');
+    assertReady.mockImplementation(async () => undefined);
     vi.spyOn(
       TwilioNumberManagementService.prototype,
       'hasAnyConfiguration',
@@ -56,6 +58,7 @@ describe('healthRoutes', () => {
     app = await createApiRouteApp(healthRoutes, {
       db: { $queryRaw: queryRaw },
       redis: { ping },
+      mediaStore: { assertReady },
     });
   });
 
@@ -91,6 +94,64 @@ describe('healthRoutes', () => {
     expect(response.body).not.toContain('db.example.com');
   });
 
+  test('reports storage readiness without leaking the endpoint or credentials', async () => {
+    const ready = await app.inject({ method: 'GET', url: '/health/storage' });
+
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toEqual({
+      status: 'ok',
+      storage: 'connected',
+      timestamp: expect.any(String),
+    });
+
+    assertReady.mockImplementation(async () => {
+      throw new Error(
+        'AccessDenied at https://storage.example.com with key not-a-real-access-key',
+      );
+    });
+
+    const unreachable = await app.inject({
+      method: 'GET',
+      url: '/health/storage',
+    });
+
+    expect(unreachable.statusCode).toBe(503);
+    expect(unreachable.json()).toEqual({
+      status: 'error',
+      storage: 'disconnected',
+      timestamp: expect.any(String),
+    });
+    expect(unreachable.body).not.toContain('storage.example.com');
+    expect(unreachable.body).not.toContain('not-a-real');
+  });
+
+  test('keeps storage out of the public liveness check', async () => {
+    assertReady.mockImplementation(async () => {
+      throw new Error('bucket unreachable');
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/health' });
+
+    expect(response.statusCode).toBe(200);
+    expect(assertReady).not.toHaveBeenCalled();
+  });
+
+  test('reports degraded when storage is unavailable on the aggregated check', async () => {
+    assertReady.mockImplementation(async () => {
+      throw new Error('bucket unreachable');
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/health/all' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().services).toEqual({
+      database: 'connected',
+      redis: 'connected',
+      storage: 'disconnected',
+      twilio: 'unknown',
+    });
+  });
+
   test('reports degraded when redis is unavailable on the aggregated check', async () => {
     ping.mockImplementation(async () => {
       throw new Error('redis unavailable');
@@ -106,6 +167,7 @@ describe('healthRoutes', () => {
       services: {
         database: 'connected',
         redis: 'disconnected',
+        storage: 'connected',
         twilio: 'unknown',
       },
     });
@@ -151,6 +213,7 @@ describe('healthRoutes', () => {
       services: {
         database: 'connected',
         redis: 'connected',
+        storage: 'connected',
         twilio: 'disconnected',
       },
     });
@@ -160,6 +223,7 @@ describe('healthRoutes', () => {
     const anonymous = await createApiRouteApp(healthRoutes, {
       db: { $queryRaw: queryRaw },
       redis: { ping },
+      mediaStore: { assertReady },
       user: null,
     });
 
@@ -168,6 +232,7 @@ describe('healthRoutes', () => {
     for (const url of [
       '/health/db',
       '/health/redis',
+      '/health/storage',
       '/health/twilio',
       '/health/all',
     ]) {

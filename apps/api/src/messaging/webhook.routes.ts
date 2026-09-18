@@ -9,7 +9,7 @@ import { MessageWebhookService } from './webhook.service.js';
 export const twilioMessagesWebhookRoutes: FastifyPluginAsync = async (
   fastify,
 ) => {
-  const { config, db, log } = fastify;
+  const { config, db, log, mediaStore } = fastify;
   const validateTwilioSignature = createTwilioSignatureValidator({
     authToken: config.twilio?.authToken ?? null,
     publicUrl: config.publicUrl,
@@ -24,7 +24,7 @@ export const twilioMessagesWebhookRoutes: FastifyPluginAsync = async (
     conversationService: new MessageConversationService(db),
     mediaService: new MessagingMediaService({
       db,
-      storageDir: config.messagingMediaStorageDir,
+      mediaStore,
       publicUrl: config.publicUrl,
       credentials: config.twilio,
       log,

@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createApiRouteApp } from '../test/route-test-helpers.js';
@@ -12,16 +13,18 @@ describe('messageMediaRoutes', () => {
   beforeEach(async () => {
     openPreparedMediaSpy = vi
       .spyOn(MessagingMediaService.prototype, 'openPreparedMedia')
-      .mockResolvedValue({
+      .mockImplementation(async () => ({
         mimeType: 'image/png',
-        content: Buffer.from('png-bytes'),
-      });
+        sizeBytes: 9,
+        content: Readable.from(Buffer.from('png-bytes')),
+      }));
     openMessageMediaSpy = vi
       .spyOn(MessagingMediaService.prototype, 'openMessageMedia')
-      .mockResolvedValue({
+      .mockImplementation(async () => ({
         mimeType: 'application/pdf',
-        content: Buffer.from('pdf-bytes'),
-      });
+        sizeBytes: 9,
+        content: Readable.from(Buffer.from('pdf-bytes')),
+      }));
 
     app = await createApiRouteApp(messageMediaRoutes, { db: {}, user: null });
   });
@@ -38,6 +41,7 @@ describe('messageMediaRoutes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toBe('image/png');
+    expect(response.headers['content-length']).toBe('9');
     expect(response.body).toBe('png-bytes');
     expect(openPreparedMediaSpy).toHaveBeenCalledWith('prepared-1');
   });

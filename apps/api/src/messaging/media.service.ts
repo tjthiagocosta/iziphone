@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
-import type { Prisma, PrismaClient } from '@repo/db';
+import { basename } from 'node:path';
+import type { Readable } from 'node:stream';
+import { buffer } from 'node:stream/consumers';
+import type { PrismaClient } from '@repo/db';
 import type {
   MessageMediaUploadSlotResponse,
   MessagePreparedMedia,
@@ -12,14 +13,15 @@ import {
   MESSAGE_UPLOAD_MAX_SIZE_BYTES,
 } from '@repo/dto';
 import type { TwilioCredentials } from '../config.js';
+import type { MediaStore } from '../media-store/index.js';
 import type { MessagingLogger } from './logger.js';
 
 const PREPARED_MEDIA_TTL_MS = 60 * 60 * 1000;
 
 export interface MessagingMediaServiceOptions {
   db: PrismaClient;
-  /** Directory holding `prepared/` uploads and `messages/` attachments. */
-  storageDir: string;
+  /** Holds upload slots under `messaging/prepared/` and attachments under `messaging/messages/`. */
+  mediaStore: MediaStore;
   /** Public base URL of this API, used to build media and upload links. */
   publicUrl: string;
   /** Presented when downloading inbound media hosted by Twilio. */
@@ -56,7 +58,6 @@ interface UploadPreparedMediaInput {
 }
 
 interface PromotePreparedMediaInput {
-  tx: Prisma.TransactionClient;
   messageId: string;
   preparedMediaId: string;
 }
@@ -69,12 +70,13 @@ interface InboundMediaAttachment {
 
 export interface StoredMediaFile {
   mimeType: string;
-  content: Buffer;
+  sizeBytes: number;
+  content: Readable;
 }
 
 export class MessagingMediaService {
   private readonly db: PrismaClient;
-  private readonly storageRoot: string;
+  private readonly mediaStore: MediaStore;
   private readonly publicUrl: string;
   private readonly credentials: TwilioCredentials | null;
   private readonly log: Pick<MessagingLogger, 'warn'>;
@@ -82,7 +84,7 @@ export class MessagingMediaService {
 
   constructor(options: MessagingMediaServiceOptions) {
     this.db = options.db;
-    this.storageRoot = resolve(options.storageDir);
+    this.mediaStore = options.mediaStore;
     this.publicUrl = options.publicUrl;
     this.credentials = options.credentials;
     this.log = options.log;
@@ -98,7 +100,7 @@ export class MessagingMediaService {
     const record = await this.db.messagePreparedMedia.create({
       data: {
         id: preparedMediaId,
-        storageUrl: `file://${this.preparedMediaPath(preparedMediaId)}`,
+        storageUrl: preparedMediaKey(preparedMediaId),
         publicUrl: `${this.publicUrl}/media/messaging/prepared/${preparedMediaId}`,
         mimeType: input.mimeType,
         fileName: input.fileName,
@@ -158,8 +160,11 @@ export class MessagingMediaService {
       );
     }
 
-    await mkdir(join(this.storageRoot, 'prepared'), { recursive: true });
-    await writeFile(this.preparedMediaPath(preparedMedia.id), input.body);
+    await this.mediaStore.put({
+      key: preparedMediaKey(preparedMedia.id),
+      body: input.body,
+      contentType: preparedMedia.mimeType,
+    });
   }
 
   async completeUpload(
@@ -187,8 +192,8 @@ export class MessagingMediaService {
       );
     }
 
-    const fileStats = await this.statPreparedMedia(preparedMedia.id);
-    if (fileStats.size <= 0) {
+    const { sizeBytes } = await this.statPreparedMedia(preparedMedia.id);
+    if (sizeBytes <= 0) {
       throw new MessagingMediaError('empty', 'Prepared media upload is empty');
     }
 
@@ -196,7 +201,7 @@ export class MessagingMediaService {
       where: { id: preparedMedia.id },
       data: {
         uploadedAt: new Date(),
-        sizeBytes: fileStats.size,
+        sizeBytes,
       },
     });
 
@@ -217,10 +222,10 @@ export class MessagingMediaService {
       throw new MessagingMediaError('expired', 'Prepared media has expired');
     }
 
-    return {
-      mimeType: preparedMedia.mimeType,
-      content: await readStoredFile(this.preparedMediaPath(preparedMedia.id)),
-    };
+    return this.openStoredFile(
+      preparedMediaKey(preparedMedia.id),
+      preparedMedia.mimeType,
+    );
   }
 
   async openMessageMedia(messageMediaId: string): Promise<StoredMediaFile> {
@@ -232,10 +237,7 @@ export class MessagingMediaService {
       throw new MessagingMediaError('not_found', 'Message media not found');
     }
 
-    return {
-      mimeType: media.mimeType,
-      content: await readStoredFile(this.messageMediaPath(media.id)),
-    };
+    return this.openStoredFile(messageMediaKey(media.id), media.mimeType);
   }
 
   async getPreparedMediaForSend(userId: string, preparedMediaId: string) {
@@ -267,12 +269,16 @@ export class MessagingMediaService {
     return preparedMedia;
   }
 
+  /**
+   * Copies the uploaded object under the attachment's own key, then records
+   * the attachment and consumes the slot in one transaction. The copy runs
+   * first and on its own so no database connection waits on object storage.
+   */
   async promotePreparedMediaToMessage({
-    tx,
     messageId,
     preparedMediaId,
   }: PromotePreparedMediaInput) {
-    const preparedMedia = await tx.messagePreparedMedia.findUnique({
+    const preparedMedia = await this.db.messagePreparedMedia.findUnique({
       where: { id: preparedMediaId },
     });
 
@@ -280,33 +286,47 @@ export class MessagingMediaService {
       throw new MessagingMediaError('not_found', 'Prepared media not found');
     }
 
-    const mediaId = randomUUID();
-    await mkdir(join(this.storageRoot, 'messages'), { recursive: true });
-    await copyFile(
-      this.preparedMediaPath(preparedMedia.id),
-      this.messageMediaPath(mediaId),
+    const stored = await this.mediaStore.get(
+      preparedMediaKey(preparedMedia.id),
     );
 
-    const messageMedia = await tx.messageMedia.create({
-      data: {
-        id: mediaId,
-        messageId,
-        storageUrl: this.messageMediaPublicUrl(mediaId),
-        originalUrl: null,
-        mimeType: preparedMedia.mimeType,
-        fileName: preparedMedia.fileName,
-        sizeBytes: preparedMedia.sizeBytes,
-      },
+    if (!stored) {
+      throw new MessagingMediaError(
+        'not_uploaded',
+        'Prepared media upload has not been received',
+      );
+    }
+
+    const mediaId = randomUUID();
+    await this.mediaStore.put({
+      key: messageMediaKey(mediaId),
+      // Buffered so the store can retry the write; MMS attachments are small.
+      body: await buffer(stored.body),
+      contentType: stored.contentType,
     });
 
-    await tx.messagePreparedMedia.update({
-      where: { id: preparedMedia.id },
-      data: {
-        consumedAt: new Date(),
-      },
-    });
+    return this.db.$transaction(async (tx) => {
+      const messageMedia = await tx.messageMedia.create({
+        data: {
+          id: mediaId,
+          messageId,
+          storageUrl: this.messageMediaPublicUrl(mediaId),
+          originalUrl: null,
+          mimeType: preparedMedia.mimeType,
+          fileName: preparedMedia.fileName,
+          sizeBytes: preparedMedia.sizeBytes,
+        },
+      });
 
-    return messageMedia;
+      await tx.messagePreparedMedia.update({
+        where: { id: preparedMedia.id },
+        data: {
+          consumedAt: new Date(),
+        },
+      });
+
+      return messageMedia;
+    });
   }
 
   /**
@@ -318,10 +338,9 @@ export class MessagingMediaService {
     messageId: string,
     attachments: InboundMediaAttachment[],
   ) {
-    await mkdir(join(this.storageRoot, 'messages'), { recursive: true });
-
     for (const attachment of attachments) {
       const mediaId = randomUUID();
+      const mimeType = attachment.mimeType ?? 'application/octet-stream';
       let sizeBytes: number | null = null;
 
       try {
@@ -333,9 +352,13 @@ export class MessagingMediaService {
           throw new Error(`Inbound media download returned ${response.status}`);
         }
 
-        const buffer = Buffer.from(await response.arrayBuffer());
-        sizeBytes = buffer.byteLength;
-        await writeFile(this.messageMediaPath(mediaId), buffer);
+        const body = Buffer.from(await response.arrayBuffer());
+        await this.mediaStore.put({
+          key: messageMediaKey(mediaId),
+          body,
+          contentType: mimeType,
+        });
+        sizeBytes = body.byteLength;
       } catch (error) {
         this.log.warn(
           {
@@ -353,7 +376,7 @@ export class MessagingMediaService {
           messageId,
           storageUrl: this.messageMediaPublicUrl(mediaId),
           originalUrl: attachment.url,
-          mimeType: attachment.mimeType ?? 'application/octet-stream',
+          mimeType,
           fileName:
             attachment.fileName ?? basename(new URL(attachment.url).pathname),
           sizeBytes,
@@ -374,53 +397,51 @@ export class MessagingMediaService {
     };
   }
 
-  private async statPreparedMedia(preparedMediaId: string) {
-    try {
-      return await stat(this.preparedMediaPath(preparedMediaId));
-    } catch (error) {
-      if (isMissingFile(error)) {
-        throw new MessagingMediaError(
-          'not_uploaded',
-          'Prepared media upload has not been received',
-        );
-      }
+  private async openStoredFile(
+    key: string,
+    mimeType: string,
+  ): Promise<StoredMediaFile> {
+    const stored = await this.mediaStore.get(key);
 
-      throw error;
+    if (!stored) {
+      throw new MessagingMediaError('not_found', 'Media file not found');
     }
+
+    return {
+      mimeType,
+      sizeBytes: stored.contentLength,
+      content: stored.body,
+    };
+  }
+
+  private async statPreparedMedia(
+    preparedMediaId: string,
+  ): Promise<{ sizeBytes: number }> {
+    const stored = await this.mediaStore.head(
+      preparedMediaKey(preparedMediaId),
+    );
+
+    if (!stored) {
+      throw new MessagingMediaError(
+        'not_uploaded',
+        'Prepared media upload has not been received',
+      );
+    }
+
+    return { sizeBytes: stored.contentLength };
   }
 
   private messageMediaPublicUrl(messageMediaId: string) {
     return `${this.publicUrl}/media/messaging/messages/${messageMediaId}`;
   }
-
-  private preparedMediaPath(preparedMediaId: string) {
-    return join(this.storageRoot, 'prepared', preparedMediaId);
-  }
-
-  private messageMediaPath(messageMediaId: string) {
-    return join(this.storageRoot, 'messages', messageMediaId);
-  }
 }
 
-async function readStoredFile(path: string): Promise<Buffer> {
-  try {
-    return await readFile(path);
-  } catch (error) {
-    if (isMissingFile(error)) {
-      throw new MessagingMediaError('not_found', 'Media file not found');
-    }
-
-    throw error;
-  }
+function preparedMediaKey(preparedMediaId: string) {
+  return `messaging/prepared/${preparedMediaId}`;
 }
 
-function isMissingFile(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === 'ENOENT'
-  );
+function messageMediaKey(messageMediaId: string) {
+  return `messaging/messages/${messageMediaId}`;
 }
 
 function isTwilioApiUrl(url: string): boolean {

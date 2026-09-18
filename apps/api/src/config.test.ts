@@ -7,6 +7,10 @@ const requiredEnv = {
   BETTER_AUTH_SECRET: 'a-fictional-secret-that-is-long-enough',
   BETTER_AUTH_URL: 'https://api.example.com/',
   INTERNAL_API_TOKEN: 'a-fictional-internal-token-value',
+  STORAGE_REGION: 'us-east-1',
+  STORAGE_BUCKET: 'iziphone-media',
+  STORAGE_ACCESS_KEY_ID: 'not-a-real-access-key',
+  STORAGE_SECRET_ACCESS_KEY: 'not-a-real-secret-key',
 };
 
 describe('loadApiConfig', () => {
@@ -26,7 +30,15 @@ describe('loadApiConfig', () => {
       routingCacheTtlSeconds: 86400,
       twilio: null,
       callControllerPublicUrl: null,
-      messagingMediaStorageDir: '.data/messaging-media',
+      storage: {
+        endpoint: null,
+        region: 'us-east-1',
+        bucket: 'iziphone-media',
+        accessKeyId: 'not-a-real-access-key',
+        secretAccessKey: 'not-a-real-secret-key',
+        forcePathStyle: false,
+        keyPrefix: null,
+      },
     });
   });
 
@@ -43,7 +55,9 @@ describe('loadApiConfig', () => {
       WEBHOOK_BASE_URL: 'https://calls.example.com/',
       TWILIO_ACCOUNT_SID: 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       TWILIO_AUTH_TOKEN: 'not-a-real-token',
-      MESSAGING_MEDIA_STORAGE_DIR: '/var/lib/iziphone/media',
+      STORAGE_ENDPOINT: 'https://storage.example.com',
+      STORAGE_FORCE_PATH_STYLE: 'false',
+      STORAGE_KEY_PREFIX: 'iziphone',
     });
 
     expect(config.nodeEnv).toBe('development');
@@ -60,7 +74,71 @@ describe('loadApiConfig', () => {
       accountSid: 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       authToken: 'not-a-real-token',
     });
-    expect(config.messagingMediaStorageDir).toBe('/var/lib/iziphone/media');
+    expect(config.storage).toEqual({
+      endpoint: 'https://storage.example.com',
+      region: 'us-east-1',
+      bucket: 'iziphone-media',
+      accessKeyId: 'not-a-real-access-key',
+      secretAccessKey: 'not-a-real-secret-key',
+      forcePathStyle: false,
+      keyPrefix: 'iziphone',
+    });
+  });
+
+  test('defaults to path-style addressing when a storage endpoint is set', () => {
+    const config = loadApiConfig({
+      ...requiredEnv,
+      STORAGE_ENDPOINT: 'http://localhost:9000',
+    });
+
+    expect(config.storage.forcePathStyle).toBe(true);
+  });
+
+  test('reads the path-style flag as a boolean', () => {
+    const withEndpoint = {
+      ...requiredEnv,
+      STORAGE_ENDPOINT: 'http://localhost:9000',
+    };
+
+    expect(
+      loadApiConfig({ ...withEndpoint, STORAGE_FORCE_PATH_STYLE: 'false' })
+        .storage.forcePathStyle,
+    ).toBe(false);
+    expect(
+      loadApiConfig({ ...requiredEnv, STORAGE_FORCE_PATH_STYLE: 'TRUE' })
+        .storage.forcePathStyle,
+    ).toBe(true);
+    expect(() =>
+      loadApiConfig({ ...requiredEnv, STORAGE_FORCE_PATH_STYLE: 'yes' }),
+    ).toThrowError(/STORAGE_FORCE_PATH_STYLE: Invalid option/);
+  });
+
+  test('rejects a storage endpoint that is not a url', () => {
+    expect(() =>
+      loadApiConfig({
+        ...requiredEnv,
+        STORAGE_ENDPOINT: 'storage.example.com',
+      }),
+    ).toThrowError(/STORAGE_ENDPOINT: Invalid URL/);
+  });
+
+  test('lists every missing storage variable at once', () => {
+    expect(() =>
+      loadApiConfig({
+        ...requiredEnv,
+        STORAGE_REGION: '',
+        STORAGE_BUCKET: undefined,
+        STORAGE_ACCESS_KEY_ID: '',
+        STORAGE_SECRET_ACCESS_KEY: '',
+      }),
+    ).toThrowError(
+      new ApiConfigError([
+        'STORAGE_REGION: Invalid input: expected string, received undefined',
+        'STORAGE_BUCKET: Invalid input: expected string, received undefined',
+        'STORAGE_ACCESS_KEY_ID: Invalid input: expected string, received undefined',
+        'STORAGE_SECRET_ACCESS_KEY: Invalid input: expected string, received undefined',
+      ]),
+    );
   });
 
   test('treats blank values as unset', () => {
@@ -86,6 +164,10 @@ describe('loadApiConfig', () => {
         'BETTER_AUTH_SECRET: Invalid input: expected string, received undefined',
         'BETTER_AUTH_URL: Invalid URL',
         'INTERNAL_API_TOKEN: Invalid input: expected string, received undefined',
+        'STORAGE_REGION: Invalid input: expected string, received undefined',
+        'STORAGE_BUCKET: Invalid input: expected string, received undefined',
+        'STORAGE_ACCESS_KEY_ID: Invalid input: expected string, received undefined',
+        'STORAGE_SECRET_ACCESS_KEY: Invalid input: expected string, received undefined',
       ]),
     );
   });

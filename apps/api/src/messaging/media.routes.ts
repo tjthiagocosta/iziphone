@@ -11,10 +11,10 @@ import {
  * Ids are random UUIDs, which is the only access control these have.
  */
 export const messageMediaRoutes: FastifyPluginAsync = async (fastify) => {
-  const { config, db, log } = fastify;
+  const { config, db, log, mediaStore } = fastify;
   const mediaService = new MessagingMediaService({
     db,
-    storageDir: config.messagingMediaStorageDir,
+    mediaStore,
     publicUrl: config.publicUrl,
     credentials: config.twilio,
     log,
@@ -44,6 +44,7 @@ async function sendMedia(
   try {
     const file = await open();
     reply.header('content-type', file.mimeType);
+    reply.header('content-length', file.sizeBytes);
     return reply.send(file.content);
   } catch (error) {
     if (error instanceof MessagingMediaError) {
