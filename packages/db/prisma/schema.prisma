@@ -364,6 +364,8 @@ model Call {
   to               String
   status           String
   duration         Int?
+  /// No longer written: recordings live in `CallRecording`. Kept until there
+  /// are migrations to drop it with.
   recordingUrl     String?           @map("recording_url")
   transcript       String?
   direction        String
@@ -373,10 +375,41 @@ model Call {
   departmentId     String?           @map("department_id")
   department       Department?       @relation(fields: [departmentId], references: [id])
   events           CallEvent[]
+  recordings       CallRecording[]
   createdAt        DateTime          @default(now()) @map("created_at")
   updatedAt        DateTime          @updatedAt @map("updated_at")
 
   @@map("calls")
+}
+
+// ============================================
+// Call Recordings
+// ============================================
+
+enum CallRecordingContext {
+  VOICEMAIL
+  CONFERENCE
+}
+
+/// A recording Twilio made of a call. Announced with the provider's URL, then
+/// copied into the media store and deleted at the provider; until the copy
+/// exists, `objectKey` is null and playback fetches from the provider.
+model CallRecording {
+  id                String               @id @default(cuid())
+  callId            String               @map("call_id")
+  call              Call                 @relation(fields: [callId], references: [id], onDelete: Cascade)
+  context           CallRecordingContext
+  recordingSid      String               @unique @map("recording_sid")
+  providerUrl       String               @map("provider_url")
+  duration          Int?
+  objectKey         String?              @map("object_key")
+  storedAt          DateTime?            @map("stored_at")
+  providerDeletedAt DateTime?            @map("provider_deleted_at")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
+
+  @@index([callId, createdAt])
+  @@map("call_recordings")
 }
 
 // ============================================
@@ -397,6 +430,7 @@ enum CallEventType {
   CALL_RESUMED
   VOICEMAIL_STARTED
   VOICEMAIL_COMPLETED
+  RECORDING_COMPLETED
   DIAL_INITIATED
   DIAL_ANSWERED
   DIAL_NO_ANSWER
