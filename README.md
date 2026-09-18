@@ -30,6 +30,7 @@ Own your phone system. iziphone runs on your own server and your own Twilio acco
 | Authentication | [Better Auth](https://www.better-auth.com) 1.7 (cookie sessions, HS256 JWT for the call controller) |
 | Database | PostgreSQL 18 via [Prisma](https://www.prisma.io) 7 |
 | Cache, pub/sub, routing state | Redis 8 via ioredis 6 |
+| Media storage | Any S3-compatible bucket via `@aws-sdk/client-s3` 3 (MinIO in development) |
 | Realtime | [Socket.IO](https://socket.io) 4 with the Redis adapter |
 | Telephony backend | [Twilio](https://www.twilio.com) Programmable Voice and Messaging (Node SDK 6) |
 | Validation | [Zod](https://zod.dev) 4 |
@@ -53,7 +54,7 @@ iziphone/
 │   └── events/           Redis channel names, event schemas, cache types,
 │                         JWT verification, roles and permissions
 ├── biome.json
-├── docker-compose.dev.yml  Postgres + Redis for local development
+├── docker-compose.dev.yml  Postgres + Redis + MinIO for local development
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json    Shared compiler options (strict, NodeNext)
 ├── turbo.json
@@ -85,6 +86,8 @@ iziphone/
 ```
 
 **Three services, one database.** The web app talks to the API over HTTP with a session cookie. The API owns the database and all business logic. The call controller handles everything time-sensitive on a live call and never touches the database.
+
+**Media lives in an S3-compatible bucket.** MMS attachments are written to and read from object storage by the API alone (`apps/api/src/media-store`), and served to browsers and to Twilio through the API's own `/media` routes, so the bucket stays private. Any provider that speaks the S3 API works; see [Object storage](#object-storage).
 
 **The call controller reads routing from Redis.** When an admin changes a department, a phone number, or a user, the API writes a routing snapshot to Redis (keys under `routing:phone:*`). Inbound webhooks resolve the destination from that cache. If a key is missing, the controller falls back to an HTTP call to the API's internal routes.
 
@@ -141,16 +144,17 @@ Planned or incomplete:
 - Node.js 24 LTS or newer (`.nvmrc` pins 24)
 - pnpm 12 or newer (`corepack enable` installs the pinned version automatically)
 - PostgreSQL 18 and Redis 8, running locally or reachable from your machine
+- An S3-compatible bucket for MMS attachments (MinIO locally; see [Object storage](#object-storage))
 - A Twilio account with a phone number, an API key and secret, and a TwiML application
 - A public HTTPS URL for Twilio webhooks during development. A [Nouva.sh](https://nouva.sh/docs/tunnels) tunnel needs nothing installed: it runs over `ssh`, and the first connection prints a link to authorise in the browser
 
-If you have Docker, the quickest way to get the databases is the dev compose file:
+If you have Docker, the quickest way to get the databases and the bucket is the dev compose file:
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-These match the defaults in `.env.example`. Change the password for anything beyond local development.
+It starts Postgres, Redis and MinIO, and a one-shot `minio-init` container creates the `iziphone-media` bucket. These match the defaults in `.env.example`; the MinIO console is at http://localhost:9001 with the same credentials. Change the passwords for anything beyond local development.
 
 ## Installation
 
@@ -224,6 +228,22 @@ Every line must be a voice-capable number on this Twilio account, because Twilio
 
 Twilio signs every webhook. Signature validation is enforced when `NODE_ENV` is anything other than `development`, and skipped in development so local tunnels are easy to work with. Never run with `NODE_ENV=development` on a public host.
 
+## Object storage
+
+The API keeps MMS attachments in one S3-compatible bucket and is the only service that talks to it. Six `STORAGE_*` variables select the provider; nothing else changes between them. The bucket does not need to be public: media is served through the API's `/media` routes, and Twilio fetches outbound attachments from there.
+
+| Provider | `STORAGE_ENDPOINT` | `STORAGE_REGION` | `STORAGE_FORCE_PATH_STYLE` |
+|---|---|---|---|
+| MinIO (dev compose) | `http://localhost:9000` | `us-east-1` (any value) | `true` (the default with an endpoint; MinIO only answers path-style unless `MINIO_DOMAIN` is set) |
+| AWS S3 | leave unset | the bucket's region, e.g. `us-east-1` | `false` (the default without an endpoint) |
+| Cloudflare R2 | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` | `auto` | either; the default `true` works |
+| Backblaze B2 | the bucket's endpoint, `https://s3.<region>.backblazeb2.com` | the `<region>` part of the endpoint, e.g. `us-west-004` | either; the default `true` works |
+| IDrive e2 | the endpoint shown for the bucket's region, `https://s3.<region>.idrivee2.com` | the `<region>` part of the endpoint, e.g. `us-west-1` | `true` |
+
+`STORAGE_BUCKET` names the bucket, `STORAGE_ACCESS_KEY_ID` and `STORAGE_SECRET_ACCESS_KEY` are the key pair, and the optional `STORAGE_KEY_PREFIX` puts every object under a prefix so a bucket can be shared. The key needs `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on the bucket's objects and `s3:ListBucket` on the bucket itself: the health check asks the bucket with a `HeadBucket`, which AWS S3 and MinIO gate on that bucket-level permission, so a key with object rights alone stores media fine but reports storage as down. On another provider, confirm with `GET /health/storage` after the first deploy that the key's scope covers the bucket call too. The API validates these at boot and refuses to start without them. `GET /health/storage` and `GET /health/all` (admin only) report whether the bucket answers; the public `/health` does not depend on it.
+
+Provider references: [R2 S3 API](https://developers.cloudflare.com/r2/api/s3/api/) and its [AWS SDK JS v3 example](https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/), [B2 S3-compatible API endpoints](https://www.backblaze.com/docs/cloud-storage-call-the-s3-compatible-api) and its [AWS SDK JS v3 guide](https://www.backblaze.com/docs/cloud-storage-use-the-aws-sdk-for-javascript-v3-with-backblaze-b2), [IDrive e2 endpoint URLs](https://www.idrive.com/s3-storage-e2/e2-endpoint-urls) and its [developer guide](https://www.idrive.com/s3-storage-e2/guides/create_objects), [MinIO `MINIO_DOMAIN`](https://docs.min.io/enterprise/aistor-object-store/reference/aistor-server/settings/core/).
+
 ## Environment variables
 
 All services and the Prisma CLI read the root `.env`. `.env.example` documents every variable with local defaults.
@@ -245,7 +265,11 @@ All services and the Prisma CLI read the root `.env`. `.env.example` documents e
 | `WEBHOOK_BASE_URL` | api, call-controller | Public HTTPS base URL of the call controller that Twilio can reach |
 | `INTERNAL_API_URL` | call-controller | Where the call controller reaches the API's internal routes (default `http://localhost:3001`) |
 | `DEPARTMENT_CACHE_TTL_SECONDS` | api | Routing cache TTL in Redis (default 24 hours) |
-| `MESSAGING_MEDIA_STORAGE_DIR` | api | Directory for MMS attachments (default `.data/messaging-media`) |
+| `STORAGE_ENDPOINT` | api | S3-compatible endpoint URL. Leave unset only for AWS S3 itself |
+| `STORAGE_REGION`, `STORAGE_BUCKET` | api | Region value the provider expects (`auto` for R2) and the bucket name |
+| `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | api | Key pair with read, write and delete rights on the bucket |
+| `STORAGE_FORCE_PATH_STYLE` | api | `true` or `false`. Defaults to `true` when `STORAGE_ENDPOINT` is set, `false` otherwise |
+| `STORAGE_KEY_PREFIX` | api | Optional prefix in front of every object key |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | api, call-controller | Account credentials and webhook signature validation. Set both or neither |
 | `TWILIO_API_KEY`, `TWILIO_API_SECRET` | call-controller | Voice token minting |
 | `TWILIO_TWIML_APP_SID` | call-controller | TwiML app for outbound browser calls |
@@ -264,7 +288,7 @@ pnpm check               # all three
 
 Turbo caches every task, so a second run with no changes finishes in milliseconds. To run one workspace's tests in watch mode, use `pnpm --filter @repo/api exec vitest`.
 
-Tests mock Twilio, Redis and Postgres. Nothing in the test suite talks to a live service. Every test file runs in its own process, and all mocks, spies and stubbed environment variables are reset before each test (see `vitest.shared.ts`).
+Tests mock Twilio, Redis, Postgres and object storage. Nothing in the test suite talks to a live service. Every test file runs in its own process, and all mocks, spies and stubbed environment variables are reset before each test (see `vitest.shared.ts`).
 
 ## Building for production
 
@@ -275,7 +299,7 @@ pnpm build
 - `apps/api` and `apps/call-controller` compile to `dist/` and start with `node dist/index.js`. Both have a multi-stage `Dockerfile`.
 - `apps/web` builds a standalone Next.js server (`output: 'standalone'`).
 
-Run the API and the call controller behind an HTTPS reverse proxy, set `NODE_ENV=production`, and make sure the call controller's public URL matches `WEBHOOK_BASE_URL`. The API's `/internal/*` routes are meant for the call controller only and must not be exposed to the internet. Managed Postgres and Redis are strongly recommended over self-run instances.
+Run the API and the call controller behind an HTTPS reverse proxy, set `NODE_ENV=production`, and make sure the call controller's public URL matches `WEBHOOK_BASE_URL`. The API's `/internal/*` routes are meant for the call controller only and must not be exposed to the internet. Managed Postgres, Redis and object storage are strongly recommended over self-run instances; the API container keeps no media on its own disk.
 
 ## Costs
 

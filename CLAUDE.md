@@ -22,8 +22,10 @@ packages/events       Redis channels, event schemas, cache types, JWT verify
 `apps/api/src` is organized by feature, not by layer: `auth/`, `calls/`,
 `departments/`, `users/`, `phone-numbers/`, `messaging/`, `routing/` (the
 cache the call controller reads and the `/internal` routing lookups), `admin/`
-(audit log, service errors, dashboard stats), `health/`, and `infra/` (Prisma,
-Redis, rate limiting, the error handler). Each module has an `index.ts` that
+(audit log, service errors, dashboard stats), `health/`, `media-store/` (the
+S3-compatible bucket behind the `MediaStore` interface; features own their
+keys, the store owns every S3 detail), and `infra/` (Prisma, Redis, rate
+limiting, the error handler). Each module has an `index.ts` that
 is its only public surface; import another module through it, never from its
 files. Route files end in `.routes.ts`, and `routes.ts` at the root composes
 them into the `/api/user`, `/api/admin` and `/internal` groups.
@@ -55,12 +57,12 @@ visitors; `AdminGuard` keeps non-admins out of `(admin)`. Permissions come
 from `@repo/events`; response shapes from `@repo/dto`. Every view reads the
 real API.
 
-Design rule that must hold: **the call controller never touches Postgres.** It reads routing from the Redis cache the API writes, with an HTTP fallback to the API's `/internal` routes.
+Design rule that must hold: **the call controller never touches Postgres.** It reads routing from the Redis cache the API writes, with an HTTP fallback to the API's `/internal` routes. Likewise **only the API talks to object storage**; the call controller has no bucket credentials.
 
 ## Commands
 
-Requires Node 24 LTS and pnpm 12 (`corepack enable`). Postgres and Redis come
-from `docker compose -f docker-compose.dev.yml up -d`.
+Requires Node 24 LTS and pnpm 12 (`corepack enable`). Postgres, Redis and
+MinIO come from `docker compose -f docker-compose.dev.yml up -d`.
 
 - Install: `pnpm install`
 - Typecheck: `pnpm typecheck`

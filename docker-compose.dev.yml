@@ -1,6 +1,6 @@
-# Local development infrastructure only (Postgres + Redis).
+# Local development infrastructure only (Postgres + Redis + MinIO).
 # Usage: docker compose -f docker-compose.dev.yml up -d
-# Host ports can be overridden with POSTGRES_PORT / REDIS_PORT if 5432/6379 are taken.
+# Host ports can be overridden with POSTGRES_PORT / REDIS_PORT / MINIO_PORT / MINIO_CONSOLE_PORT if taken.
 services:
   postgres:
     image: postgres:18-alpine
@@ -30,6 +30,43 @@ services:
       timeout: 3s
       retries: 10
 
+  # S3-compatible object storage for MMS attachments. The API reads STORAGE_* from .env;
+  # the root credentials here double as its access key. Pulled from quay.io because
+  # MinIO no longer publishes community images to Docker Hub.
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY_ID:-iziphone}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_ACCESS_KEY:-iziphone123}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Creates the bucket once MinIO is up, then exits. Safe to run again.
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-iziphone}
+      STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-iziphone123}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-iziphone-media}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 "$$STORAGE_ACCESS_KEY_ID" "$$STORAGE_SECRET_ACCESS_KEY" &&
+        mc mb --ignore-existing "local/$$STORAGE_BUCKET"
+
 volumes:
   postgres-data:
   redis-data:
+  minio-data:
