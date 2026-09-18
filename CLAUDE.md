@@ -6,7 +6,20 @@ Guidance for AI coding assistants working in this repository. Humans should read
 
 iziphone is a source-available business phone system for teams, built on Twilio. A browser softphone (Next.js + Twilio Voice SDK) talks to two Fastify services: a **call controller** that owns Twilio webhooks, TwiML, and call signaling, and a **business API** that owns users, departments, messaging, and call history. Redis connects them (pub/sub, routing cache, Socket.IO adapter). Postgres is used only by the API.
 
-See `README.md` for the architecture and `LICENSE` for terms (PolyForm Shield 1.0.0, not OSI open source).
+See `docs/develop/architecture.md` for the architecture and `LICENSE` for terms (PolyForm Shield 1.0.0, not OSI open source).
+
+## Documentation
+
+The manual lives in `docs/`, organized by audience: `docs/operate/` for whoever
+runs a stack, `docs/admin/` for the customer's administrator, `docs/use/` for
+agents, `docs/develop/` for developers, and `docs/decisions/` for decision
+records. `docs/README.md` is the index; `README.md` is the front door and stays
+short.
+
+A change documents itself in the relevant `docs/<area>` page, not in the
+README. A decision that is not obvious from the code gets a numbered record in
+`docs/decisions/` (context, decision, consequences, alternatives); records are
+immutable, and a changed decision gets a new one that supersedes the old.
 
 ## Layout
 
@@ -101,7 +114,7 @@ rules below refine them.
 - Use only fictional data in tests, fixtures, and docs: phone numbers in the reserved 555-01xx range, emails at `example.com`, made-up people and businesses.
 - Never commit `.env` files, credentials, real phone numbers, customer or contact data, recordings, or transcripts.
 - Do not log message bodies, transcripts, or full phone numbers at info level.
-- Do not add default admin credentials, demo logins, seed scripts, or auth bypasses. Sign-up is closed: the first admin is created by `pnpm --filter @repo/api bootstrap-admin --email <address>`, which refuses once one exists, and everybody else is invited from the admin console (see README). Nobody, including an admin, sets another person's password: a single-use link does.
+- Do not add default admin credentials, demo logins, seed scripts, or auth bypasses. Sign-up is closed: the first admin is created by `pnpm --filter @repo/api bootstrap-admin --email <address>`, which refuses once one exists, and everybody else is invited from the admin console (see `docs/operate/first-admin.md`). Nobody, including an admin, sets another person's password: a single-use link does.
 
 ## Things that will bite you
 

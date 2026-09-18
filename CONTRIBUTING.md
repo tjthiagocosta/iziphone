@@ -9,14 +9,14 @@ Thanks for your interest in contributing. This project is in early/alpha develop
 
 ## Development setup
 
-Follow the "Installation" and "Local Development" sections of the [README](README.md) to get the app running locally with your own Postgres and Redis instances and your own Twilio test credentials.
+Follow [docs/operate/install.md](docs/operate/install.md) to get the app running locally with your own Postgres and Redis instances and your own Twilio test credentials.
 
 ## Making changes
 
 - Match the existing code style; run `pnpm lint` and `pnpm format` before committing.
 - Run `pnpm check` (lint, typecheck and tests) and make sure they pass.
 - Add or update tests for any behavior change. Tests use mocked Twilio/Redis/Postgres clients where practical — do not add tests or examples that call real third-party services.
-- Do not commit `.env` files, credentials, real phone numbers, real customer/contact data, call recordings, or any other private data. Use fictional data only: phone numbers in the reserved `555-01xx` range, emails at `example.com`, and made-up people and businesses, as in `apps/web/src/lib/mock-data`.
+- Do not commit `.env` files, credentials, real phone numbers, real customer/contact data, call recordings, or any other private data. Use fictional data only: phone numbers in the reserved `555-01xx` range, emails at `example.com`, and made-up people and businesses.
 - Do not add hardcoded default credentials or bypass authentication checks.
 
 ## Licensing of contributions
