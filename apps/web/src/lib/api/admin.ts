@@ -26,11 +26,14 @@ import {
   PhoneNumberResponseSchema,
   type PurchasePhoneNumber,
   type SearchAvailableNumbers,
+  type SystemSettingsResponse,
+  SystemSettingsResponseSchema,
   type UpdateAgentOrder,
   type UpdateDepartment,
   type UpdateDepartmentSettings,
   type UpdateHoliday,
   type UpdatePhoneNumber,
+  type UpdateRecordingRetention,
   type UpdateUser,
   type UserListQuery,
   type UserListResponse,
@@ -48,6 +51,25 @@ const id = encodeURIComponent;
 
 export function getAdminStats(): Promise<AdminStatsResponse> {
   return requestApi('/api/admin/stats', { schema: AdminStatsResponseSchema });
+}
+
+// Settings
+
+export function getSystemSettings(): Promise<SystemSettingsResponse> {
+  return requestApi('/api/admin/settings', {
+    schema: SystemSettingsResponseSchema,
+  });
+}
+
+/** Both retention policies are sent together, as one decision. */
+export function updateRecordingRetention(
+  data: UpdateRecordingRetention,
+): Promise<SystemSettingsResponse> {
+  return requestApi('/api/admin/settings/recording-retention', {
+    method: 'PUT',
+    body: data,
+    schema: SystemSettingsResponseSchema,
+  });
 }
 
 // Users

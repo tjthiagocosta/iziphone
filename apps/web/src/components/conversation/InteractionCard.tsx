@@ -17,8 +17,9 @@ import { isMissedCall } from '@/lib/inbox/inbox-item';
 import { initialsOf } from '@/lib/initials';
 import { lineName } from '@/lib/line';
 import { formatPhoneNumber } from '@/lib/phone-number';
+import { missingVoicemailNotice } from '@/lib/recording/playback';
 import { cn } from '@/lib/utils';
-import { VoicemailPlayer } from './VoicemailPlayer';
+import { RecordingPlayer } from './RecordingPlayer';
 
 interface InteractionCardProps {
   entry: TimelineEntry;
@@ -92,6 +93,10 @@ export function InteractionCard({ entry, conversation }: InteractionCardProps) {
   const { call } = entry;
   const missed = isMissedCall(call);
   const inbound = call.direction === 'inbound';
+  const voicemailNotice = missingVoicemailNotice(
+    call.hasVoicemail,
+    call.recordings,
+  );
   const CallIcon = call.hasVoicemail
     ? Voicemail
     : missed
@@ -148,8 +153,27 @@ export function InteractionCard({ entry, conversation }: InteractionCardProps) {
           </div>
         </div>
 
-        {call.hasVoicemail && (
-          <VoicemailPlayer conversationUuid={call.conversationUuid} />
+        {/*
+         * Every recording the call produced: the voicemail the caller left,
+         * and the recording of the call itself, which only supervisors and
+         * admins may hear.
+         */}
+        {call.recordings.map((recording) => (
+          <RecordingPlayer
+            key={recording.id}
+            conversationUuid={call.conversationUuid}
+            recording={recording}
+          />
+        ))}
+
+        {/*
+         * A voicemail the timeline knows about and no recording to play: the
+         * card says so rather than leaving the heading above nothing.
+         */}
+        {voicemailNotice && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {voicemailNotice}
+          </p>
         )}
 
         {call.transcript && (

@@ -2,6 +2,8 @@ import {
   type CallListQuery,
   type CallListResponse,
   CallListResponseSchema,
+  type RecordingDeletedResponse,
+  RecordingDeletedResponseSchema,
 } from '@repo/dto';
 import { requestApi, requestApiBlob, withQuery } from './client';
 
@@ -19,16 +21,35 @@ export function listCalls(
   });
 }
 
+function recordingPath(conversationUuid: string, recordingId: string): string {
+  return `/api/calls/${encodeURIComponent(conversationUuid)}/recordings/${encodeURIComponent(recordingId)}`;
+}
+
 /**
- * The audio of the voicemail a call left. The API fetches the recording from
- * the provider itself; the recording's own URL never reaches the browser.
+ * The audio of one of a call's recordings, a voicemail or the call itself. The
+ * API serves it from its own store, or fetches it from the provider while the
+ * copy is owed; the recording's provider URL never reaches the browser.
  */
-export function fetchVoicemail(
+export function fetchRecording(
   conversationUuid: string,
+  recordingId: string,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  return requestApiBlob(
-    `/api/calls/${encodeURIComponent(conversationUuid)}/voicemail`,
-    signal,
-  );
+  return requestApiBlob(recordingPath(conversationUuid, recordingId), signal);
+}
+
+/**
+ * Deletes a recording's audio now, before its retention policy would. Admins
+ * only; the call keeps saying there was a recording and that it was deleted.
+ * The reply carries the deletion as it is stored, which is the retention
+ * policy's when the sweep got there first.
+ */
+export function deleteRecording(
+  conversationUuid: string,
+  recordingId: string,
+): Promise<RecordingDeletedResponse> {
+  return requestApi(recordingPath(conversationUuid, recordingId), {
+    method: 'DELETE',
+    schema: RecordingDeletedResponseSchema,
+  });
 }

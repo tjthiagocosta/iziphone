@@ -1,41 +1,42 @@
 'use client';
 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { fetchVoicemail } from '@/lib/api/calls';
+import { fetchRecording } from '@/lib/api/calls';
 import { ApiError } from '@/lib/api/client';
 import {
-  canRequestVoicemail,
-  IDLE_VOICEMAIL,
-  type VoicemailPlayback,
-  voicemailPlaybackReducer,
-} from '@/lib/voicemail/playback';
+  canRequestRecording,
+  IDLE_RECORDING,
+  type RecordingPlayback,
+  recordingPlaybackReducer,
+} from '@/lib/recording/playback';
 
-export interface UseVoicemailPlaybackReturn {
-  playback: VoicemailPlayback;
+export interface UseRecordingPlaybackReturn {
+  playback: RecordingPlayback;
   /** What the audio element plays; null until there is audio to play. */
   src: string | null;
-  /** Downloads the voicemail. Does nothing while one is loading or loaded. */
+  /** Downloads the recording. Does nothing while one is loading or loaded. */
   play: () => void;
   /** The audio element could not play what was downloaded. */
   reportUnplayable: () => void;
 }
 
 /**
- * One call's voicemail, downloaded from the API when the user asks for it.
- * An instance belongs to one call for its whole life; `VoicemailPlayer` keys
- * itself on the call so that a changed id is a new instance.
+ * One recording of one call, downloaded from the API when the user asks for
+ * it. An instance belongs to one recording for its whole life; `RecordingPlayer`
+ * keys itself on the recording so that a changed id is a new instance.
  *
  * The audio is fetched rather than streamed by the element: the API only
- * serves it to a session, and a fetch can tell a voicemail that is gone from
- * one that failed to arrive, where an element only reports that it has no
- * sound.
+ * serves it to a session, and a fetch can tell a recording that is gone, and
+ * why, from one that failed to arrive, where an element only reports that it
+ * has no sound.
  */
-export function useVoicemailPlayback(
+export function useRecordingPlayback(
   conversationUuid: string,
-): UseVoicemailPlaybackReturn {
+  recordingId: string,
+): UseRecordingPlaybackReturn {
   const [playback, dispatch] = useReducer(
-    voicemailPlaybackReducer,
-    IDLE_VOICEMAIL,
+    recordingPlaybackReducer,
+    IDLE_RECORDING,
   );
   const [src, setSrc] = useState<string | null>(null);
   const downloadRef = useRef<AbortController | null>(null);
@@ -64,7 +65,7 @@ export function useVoicemailPlayback(
 
   const play = useCallback(() => {
     // The ref catches a second press before the first has been rendered.
-    if (downloadRef.current || !canRequestVoicemail(playback)) {
+    if (downloadRef.current || !canRequestRecording(playback)) {
       return;
     }
 
@@ -74,8 +75,9 @@ export function useVoicemailPlayback(
 
     void (async () => {
       try {
-        const downloaded = await fetchVoicemail(
+        const downloaded = await fetchRecording(
           conversationUuid,
+          recordingId,
           download.signal,
         );
         dispatch({ type: 'loaded', audio: downloaded });
@@ -83,12 +85,13 @@ export function useVoicemailPlayback(
         dispatch({
           type: 'failed',
           status: cause instanceof ApiError ? cause.status : null,
+          message: cause instanceof ApiError ? cause.message : undefined,
         });
       } finally {
         downloadRef.current = null;
       }
     })();
-  }, [conversationUuid, playback]);
+  }, [conversationUuid, recordingId, playback]);
 
   const reportUnplayable = useCallback(
     () => dispatch({ type: 'unplayable' }),

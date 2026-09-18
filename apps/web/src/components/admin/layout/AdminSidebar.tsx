@@ -6,6 +6,7 @@ import {
   ChevronDown,
   LayoutDashboard,
   Phone,
+  Settings,
   Users,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -48,6 +49,11 @@ const navItems: NavItem[] = [
     label: 'Phone Numbers',
     href: '/admin/phone-numbers',
     icon: Phone,
+  },
+  {
+    label: 'Settings',
+    href: '/admin/settings',
+    icon: Settings,
   },
 ];
 
