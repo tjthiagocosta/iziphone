@@ -1,8 +1,8 @@
 {
   "name": "iziphone",
   "version": "0.1.0",
-  "description": "A source-available business phone system for teams, powered by Twilio.",
-  "license": "SEE LICENSE IN LICENSE",
+  "description": "An open source business phone system for teams, powered by Twilio.",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {

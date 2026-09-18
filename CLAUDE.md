@@ -4,9 +4,9 @@ Guidance for AI coding assistants working in this repository. Humans should read
 
 ## What this is
 
-iziphone is a source-available business phone system for teams, built on Twilio. A browser softphone (Next.js + Twilio Voice SDK) talks to two Fastify services: a **call controller** that owns Twilio webhooks, TwiML, and call signaling, and a **business API** that owns users, departments, messaging, and call history. Redis connects them (pub/sub, routing cache, Socket.IO adapter). Postgres is used only by the API.
+iziphone is an open source business phone system for teams, built on Twilio. A browser softphone (Next.js + Twilio Voice SDK) talks to two Fastify services: a **call controller** that owns Twilio webhooks, TwiML, and call signaling, and a **business API** that owns users, departments, messaging, and call history. Redis connects them (pub/sub, routing cache, Socket.IO adapter). Postgres is used only by the API.
 
-See `docs/develop/architecture.md` for the architecture and `LICENSE` for terms (PolyForm Shield 1.0.0, not OSI open source).
+See `docs/develop/architecture.md` for the architecture and `LICENSE` for terms (MIT).
 
 ## Documentation
 

@@ -1,6 +1,6 @@
 # iziphone
 
-A source-available business phone system for teams, powered by Twilio.
+An open source business phone system for teams, powered by Twilio.
 
 Own your phone system. iziphone runs on your own server and your own Twilio account, so your numbers, call history, recordings and messages stay with you. You pay Twilio for the calls and texts you actually make, and nothing per seat.
 
@@ -108,4 +108,4 @@ Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
 
 ## License
 
-iziphone is source-available under the [PolyForm Shield License 1.0.0](LICENSE).
+iziphone is open source under the [MIT License](LICENSE).

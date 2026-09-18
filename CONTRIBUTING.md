@@ -21,10 +21,10 @@ Follow [docs/operate/install.md](docs/operate/install.md) to get the app running
 
 ## Licensing of contributions
 
-iziphone is distributed under the [PolyForm Shield License 1.0.0](LICENSE), and the copyright holder may also offer it under separate commercial terms. By submitting a contribution, you agree that:
+iziphone is distributed under the [MIT License](LICENSE). By submitting a contribution, you agree that:
 
 - You have the right to submit it (it is your own work, or you are permitted to contribute it).
-- You license it to the copyright holder under the same terms as the project's [LICENSE](LICENSE), and you grant the copyright holder permission to relicense it, including under commercial licenses.
+- You license it under the same [MIT License](LICENSE) as the rest of the project.
 
 If you cannot agree to this, please open an issue to discuss before submitting code.
 

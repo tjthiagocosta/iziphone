@@ -8,7 +8,7 @@ const inter = Inter({ subsets: ['latin'] });
 export const metadata: Metadata = {
   title: 'iziphone - Business Phone System',
   description:
-    'A source-available business phone system for teams, powered by Twilio.',
+    'An open source business phone system for teams, powered by Twilio.',
 };
 
 export default function RootLayout({
