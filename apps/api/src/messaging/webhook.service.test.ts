@@ -5,6 +5,23 @@ import { MessageWebhookService } from './webhook.service.js';
 const CONTACT_NUMBER = '+15555550123';
 const SENDER_NUMBER = '+15555550100';
 const MESSAGE_SID = 'SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const DEDUPE_KEY_CONSTRAINT = 'message_provider_events_dedupe_key_key';
+const CONTACT_CONSTRAINT = 'contacts_phone_number_key';
+
+/** A P2002 in the shape the pg driver adapter and Prisma 7 produce. */
+function uniqueViolation(constraint: string) {
+  return Object.assign(new Error('Unique constraint failed'), {
+    code: 'P2002',
+    meta: {
+      driverAdapterError: Object.assign(new Error('duplicate key value'), {
+        cause: {
+          kind: 'UniqueConstraintViolation',
+          constraint: { index: constraint },
+        },
+      }),
+    },
+  });
+}
 
 describe('MessageWebhookService', () => {
   let harness: ReturnType<typeof createHarness>;
@@ -69,7 +86,8 @@ describe('MessageWebhookService', () => {
   });
 
   test('should treat duplicate inbound webhooks as already processed', async () => {
-    harness.messageProviderEventCreate.mockRejectedValueOnce({ code: 'P2002' });
+    await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
+    harness.messageCreate.mockClear();
 
     const result = await harness.service.processInboundEvent({
       MessageSid: 'SMignored',
@@ -77,6 +95,49 @@ describe('MessageWebhookService', () => {
 
     expect(result).toEqual({ outcome: 'deduplicated' });
     expect(harness.messageCreate).not.toHaveBeenCalled();
+  });
+
+  test('should store the message after another delivery created the contact first', async () => {
+    // Two messages from a number nobody has texted before arrive together and
+    // both transactions try to create the contact. The loser rolled back and
+    // stored nothing, so it has to run again instead of reporting a duplicate.
+    harness.conversationService.findOrCreateFor.mockRejectedValueOnce(
+      uniqueViolation(CONTACT_CONSTRAINT),
+    );
+
+    const result = await harness.service.processInboundEvent({
+      MessageSid: 'SMignored',
+    });
+
+    expect(result).toEqual({ outcome: 'processed' });
+    expect(harness.conversationService.findOrCreateFor).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(harness.messageCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test('should fail loudly when the second attempt loses the race too', async () => {
+    harness.conversationService.findOrCreateFor.mockRejectedValue(
+      uniqueViolation(CONTACT_CONSTRAINT),
+    );
+
+    await expect(
+      harness.service.processInboundEvent({ MessageSid: 'SMignored' }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+  });
+
+  test('should not swallow an unrelated write failure', async () => {
+    harness.conversationService.findOrCreateFor.mockRejectedValueOnce(
+      new Error('connection terminated'),
+    );
+
+    await expect(
+      harness.service.processInboundEvent({ MessageSid: 'SMignored' }),
+    ).rejects.toThrow('connection terminated');
+    expect(harness.conversationService.findOrCreateFor).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   test('should create a suppression record when the provider flags a STOP keyword', async () => {
@@ -308,6 +369,16 @@ describe('MessageWebhookService', () => {
     expect(harness.messageUpdate).toHaveBeenCalledTimes(1);
   });
 
+  test('should not report a status write that lost another unique key as a duplicate', async () => {
+    harness.messageUpdate.mockRejectedValueOnce(
+      uniqueViolation('messages_provider_message_id_key'),
+    );
+
+    await expect(
+      harness.service.processStatusEvent({ MessageSid: 'SMignored' }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+  });
+
   test('should mark unknown status callbacks as orphaned', async () => {
     harness.messageFindUnique.mockResolvedValueOnce(null);
 
@@ -367,6 +438,8 @@ describe('MessageWebhookService', () => {
 
 function createHarness() {
   const seenDedupeKeys = new Set<string>();
+  /** Keys written by the transaction in flight, undone when it rolls back. */
+  let uncommittedDedupeKeys: string[] = [];
 
   const transport = {
     normalizeInboundEvent: vi.fn(() => buildInboundEvent()),
@@ -402,9 +475,10 @@ function createHarness() {
   const messageProviderEventCreate = vi.fn(
     async ({ data }: { data: { dedupeKey: string } }) => {
       if (seenDedupeKeys.has(data.dedupeKey)) {
-        throw { code: 'P2002' };
+        throw uniqueViolation(DEDUPE_KEY_CONSTRAINT);
       }
       seenDedupeKeys.add(data.dedupeKey);
+      uncommittedDedupeKeys.push(data.dedupeKey);
       return { id: 'event-1' };
     },
   );
@@ -449,8 +523,20 @@ function createHarness() {
 
   const service = new MessageWebhookService({
     db: {
-      $transaction: async (callback: (tx: typeof transaction) => unknown) =>
-        callback(transaction),
+      /* Rolls the dedupe keys back on failure, as the database would. */
+      $transaction: async (callback: (tx: typeof transaction) => unknown) => {
+        uncommittedDedupeKeys = [];
+
+        try {
+          return await callback(transaction);
+        } catch (error) {
+          for (const key of uncommittedDedupeKeys) {
+            seenDedupeKeys.delete(key);
+          }
+
+          throw error;
+        }
+      },
     } as unknown as PrismaClient,
     transport: transport as never,
     conversationService: conversationService as never,

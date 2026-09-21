@@ -7,6 +7,7 @@ import type {
   MessagingTransportInboundEvent,
   MessagingTransportStatusEvent,
 } from './transport.js';
+import { classifyWebhookWriteFailure } from './webhook-failure.js';
 
 /*
  * Carrier-mandated opt-out and opt-in words. A message consisting of exactly
@@ -42,6 +43,12 @@ type OptOutAction =
   | { action: 'release'; keyword: string }
   | null;
 
+/** One run of the inbound transaction. */
+type InboundAttempt =
+  | { kind: 'stored'; result: WebhookProcessResult }
+  | { kind: 'duplicate' }
+  | { kind: 'lost-race'; constraint: string | null; error: unknown };
+
 export class MessageWebhookService {
   private readonly db: PrismaClient;
   private readonly transport: MessageWebhookServiceOptions['transport'];
@@ -57,10 +64,64 @@ export class MessageWebhookService {
     this.log = options.log;
   }
 
+  /**
+   * Stores one inbound message. The provider hears "received" only for a
+   * message that is stored: a delivery it already sent is recognised by the
+   * dedupe key, and a transaction that lost a unique key to a delivery arriving
+   * at the same time is run again, because it rolled back and kept nothing.
+   */
   async processInboundEvent(payload: unknown): Promise<WebhookProcessResult> {
     const event = this.transport.normalizeInboundEvent(payload);
     const dedupeKey = `inbound:${event.providerMessageId}`;
 
+    const attempt = await this.attemptInbound(event, dedupeKey);
+
+    if (attempt.kind !== 'lost-race') {
+      return this.inboundOutcome(event, attempt);
+    }
+
+    this.log.warn(
+      {
+        providerMessageId: event.providerMessageId,
+        constraint: attempt.constraint,
+      },
+      'Retrying inbound message webhook after another delivery won a unique key',
+    );
+
+    /*
+     * The winner has committed by now, so this run finds the contact and the
+     * conversation it created. A second loss is reported as a failure rather
+     * than swallowed: the provider gets a 5xx and the error is logged.
+     */
+    const retry = await this.attemptInbound(event, dedupeKey);
+
+    if (retry.kind === 'lost-race') {
+      throw retry.error;
+    }
+
+    return this.inboundOutcome(event, retry);
+  }
+
+  private inboundOutcome(
+    event: MessagingTransportInboundEvent,
+    attempt: Exclude<InboundAttempt, { kind: 'lost-race' }>,
+  ): WebhookProcessResult {
+    if (attempt.kind === 'stored') {
+      return attempt.result;
+    }
+
+    this.log.info(
+      { providerMessageId: event.providerMessageId, channel: event.channel },
+      'Ignored an inbound message webhook the provider already delivered',
+    );
+
+    return { outcome: 'deduplicated' };
+  }
+
+  private async attemptInbound(
+    event: MessagingTransportInboundEvent,
+    dedupeKey: string,
+  ): Promise<InboundAttempt> {
     try {
       const result = await this.db.$transaction(
         async (tx: Prisma.TransactionClient) => {
@@ -202,10 +263,16 @@ export class MessageWebhookService {
         await this.ingestMedia(result.messageId, event);
       }
 
-      return { outcome: result.outcome };
+      return { kind: 'stored', result: { outcome: result.outcome } };
     } catch (error) {
-      if (isUniqueConstraintError(error)) {
-        return { outcome: 'deduplicated' };
+      const failure = classifyWebhookWriteFailure(error);
+
+      if (failure.kind === 'duplicate-delivery') {
+        return { kind: 'duplicate' };
+      }
+
+      if (failure.kind === 'lost-race') {
+        return { kind: 'lost-race', constraint: failure.constraint, error };
       }
 
       throw error;
@@ -322,7 +389,20 @@ export class MessageWebhookService {
         },
       );
     } catch (error) {
-      if (isUniqueConstraintError(error)) {
+      /*
+       * The dedupe key is the only unique key this transaction writes, so any
+       * other collision is a real failure and must not be answered as a
+       * callback the provider had already sent.
+       */
+      if (classifyWebhookWriteFailure(error).kind === 'duplicate-delivery') {
+        this.log.info(
+          {
+            providerMessageId: event.providerMessageId,
+            providerStatus: event.providerStatus,
+          },
+          'Ignored a status webhook the provider already delivered',
+        );
+
         return { outcome: 'deduplicated' };
       }
 
@@ -415,15 +495,6 @@ function shouldApplyStatusTransition(
   }
 
   return !(currentStatus === 'ACCEPTED' && nextStatus === 'ACCEPTED');
-}
-
-function isUniqueConstraintError(error: unknown) {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === 'P2002'
-  );
 }
 
 function toInputJsonValue(value: unknown) {
