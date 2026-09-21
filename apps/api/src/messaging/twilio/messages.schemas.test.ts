@@ -81,14 +81,40 @@ describe('twilio-messages.schemas', () => {
     });
   });
 
-  test('should reject inbound payloads without a message id or with an invalid number', () => {
+  test.each(['55501', 'EXAMPLECO'])(
+    'should keep the sender %j on an inbound payload as it was sent',
+    (from) => {
+      // Refusing these answers the webhook 400, and Twilio does not retry a
+      // 4xx, so the message would be gone for good.
+      const parsed = normalizeTwilioInboundEvent({
+        MessageSid: 'SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        From: from,
+        To: '+15555550100',
+        Body: 'Your code is 4321',
+      });
+
+      expect(parsed).toMatchObject({ from, to: '+15555550100' });
+    },
+  );
+
+  test('should reject inbound payloads without a message id or a destination number', () => {
     expect(() =>
       normalizeTwilioInboundEvent({ From: '+15555550123', To: '+15555550100' }),
     ).toThrow(ZodError);
     expect(() =>
       normalizeTwilioInboundEvent({
         MessageSid: 'SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        From: 'not-a-number',
+        From: '+15555550123',
+        To: 'not-a-number',
+      }),
+    ).toThrow(ZodError);
+  });
+
+  test('should reject an inbound sender too long to be an address', () => {
+    expect(() =>
+      normalizeTwilioInboundEvent({
+        MessageSid: 'SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        From: 'E'.repeat(65),
         To: '+15555550100',
       }),
     ).toThrow(ZodError);

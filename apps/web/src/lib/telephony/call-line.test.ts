@@ -6,6 +6,7 @@ import {
   callFromChosenLine,
   callFromConversationLine,
   callLinesOf,
+  callToContact,
   chosenLineIdFor,
   defaultCallLine,
   nextCallLinesAnswer,
@@ -253,6 +254,36 @@ describe('callBackFromLine', () => {
       canCall: false,
       reason:
         'You have no number to call from. Ask an administrator to assign you one.',
+    });
+  });
+});
+
+describe('callToContact', () => {
+  const fromOwnLine = callFromChosenLine(loaded([own]), null);
+
+  test('keeps the eligibility for a contact that is a phone number', () => {
+    expect(callToContact(fromOwnLine, '+15555550123')).toEqual({
+      canCall: true,
+      line: own,
+    });
+  });
+
+  test.each(['55501', 'EXAMPLECO'])(
+    'refuses a call to the contact %j, which no carrier can route',
+    (contactPhoneNumber) => {
+      expect(callToContact(fromOwnLine, contactPhoneNumber)).toEqual({
+        canCall: false,
+        reason: 'This contact has no number to call.',
+      });
+    },
+  );
+
+  test('blames the contact rather than the lines when neither can be called from or to', () => {
+    expect(
+      callToContact(callFromChosenLine(loaded([]), null), 'EXAMPLECO'),
+    ).toEqual({
+      canCall: false,
+      reason: 'This contact has no number to call.',
     });
   });
 });

@@ -1,11 +1,18 @@
-import type { MessageConversation, MessageSender } from '@repo/dto';
+import {
+  canReceiveMessages,
+  type MessageConversation,
+  type MessageSender,
+} from '@repo/dto';
 
 /** Whether a reply can leave this thread, and what to say when it cannot. */
 export type SendEligibility =
   | { canSend: true }
   | { canSend: false; reason: string };
 
-type Thread = Pick<MessageConversation, 'isSuppressed' | 'sourcePhoneNumber'>;
+type Thread = Pick<
+  MessageConversation,
+  'contact' | 'isSuppressed' | 'sourcePhoneNumber'
+>;
 
 /**
  * Decided before the composer is enabled rather than after the text is typed.
@@ -21,6 +28,15 @@ export function sendEligibility(
   senders: readonly MessageSender[],
 ): SendEligibility {
   const { sourcePhoneNumber } = conversation;
+
+  // Some senders are one way: a service texting from a name rather than a
+  // number leaves nothing to route an answer to, whoever is looking at it.
+  if (!canReceiveMessages(conversation.contact.phoneNumber)) {
+    return {
+      canSend: false,
+      reason: 'This sender cannot receive replies.',
+    };
+  }
 
   if (conversation.isSuppressed) {
     return {

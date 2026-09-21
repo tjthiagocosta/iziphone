@@ -21,7 +21,13 @@ const sender: MessageSender = {
   mmsEnabled: true,
 };
 
-const conversation = { isSuppressed: false, sourcePhoneNumber: line };
+const contact: MessageConversation['contact'] = {
+  id: 'contact-1',
+  name: null,
+  phoneNumber: '+15155550123',
+};
+
+const conversation = { contact, isSuppressed: false, sourcePhoneNumber: line };
 
 describe('sendEligibility', () => {
   test('allows a reply from a line the user sends on', () => {
@@ -41,6 +47,27 @@ describe('sendEligibility', () => {
     expect(
       sendEligibility({ ...conversation, isSuppressed: true }, [sender]),
     ).toMatchObject({ canSend: false });
+  });
+
+  test('refuses a reply to a service that texts from a name', () => {
+    // The provider has no address to route an answer to, so the composer has
+    // to say so rather than offer a send that is certain to fail.
+    const outcome = sendEligibility(
+      { ...conversation, contact: { ...contact, phoneNumber: 'EXAMPLECO' } },
+      [sender],
+    );
+
+    expect(outcome.canSend).toBe(false);
+    expect(outcome.canSend === false && outcome.reason).toMatch(/replies/);
+  });
+
+  test('allows a reply to a short code', () => {
+    expect(
+      sendEligibility(
+        { ...conversation, contact: { ...contact, phoneNumber: '55501' } },
+        [sender],
+      ),
+    ).toEqual({ canSend: true });
   });
 
   test('refuses a line that cannot text at all', () => {

@@ -12,7 +12,10 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useConversationThread } from '@/hooks/use-conversation-thread';
-import { callFromConversationLine } from '@/lib/telephony/call-line';
+import {
+  callFromConversationLine,
+  callToContact,
+} from '@/lib/telephony/call-line';
 import { ConversationHeader } from './ConversationHeader';
 import { InteractionCard } from './InteractionCard';
 import { MessageInput } from './MessageInput';
@@ -53,9 +56,12 @@ export function ConversationView({ conversationId }: ConversationViewProps) {
       <div className="h-full flex flex-col bg-background">
         <ConversationHeader
           conversation={conversation}
-          callEligibility={callFromConversationLine(
-            callLines,
-            conversation.sourcePhoneNumber.phoneNumber,
+          callEligibility={callToContact(
+            callFromConversationLine(
+              callLines,
+              conversation.sourcePhoneNumber.phoneNumber,
+            ),
+            conversation.contact.phoneNumber,
           )}
           onCall={(line) =>
             void makeCall(conversation.contact.phoneNumber, line.phoneNumber)

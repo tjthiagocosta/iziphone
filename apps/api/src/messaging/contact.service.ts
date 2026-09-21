@@ -69,7 +69,11 @@ export class MessagingContactService {
     };
   }
 
-  /** `phoneNumber` must already be E.164; callers normalise at their boundary. */
+  /**
+   * `phoneNumber` must already be canonical: E.164 for a number, and the short
+   * code or sender id exactly as the provider sent it for the senders that are
+   * not numbers. Callers normalise at their boundary.
+   */
   async findOrCreateByPhoneNumber(
     phoneNumber: string,
     name?: string | null,

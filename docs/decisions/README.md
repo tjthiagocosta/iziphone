@@ -20,6 +20,7 @@ would otherwise ask "why not the obvious way?".
 | [0005](0005-voicemail-greeting-is-a-hosted-file-with-a-spoken-fallback.md) | The voicemail greeting is a hosted file with a spoken fallback | 2026-09-18 |
 | [0006](0006-recordings-are-kept-until-deleted-by-default.md) | Recordings are kept until deleted by default | 2026-09-18 |
 | [0007](0007-closed-system-with-invite-links.md) | A closed system with invite links | 2026-09-18 |
+| [0008](0008-a-sender-is-not-always-a-phone-number.md) | A sender is not always a phone number | 2026-09-20 |
 
 ## Writing one
 

@@ -18,6 +18,7 @@ import { formatPhoneNumber } from '@/lib/phone-number';
 import {
   type CallEligibility,
   callFromChosenLine,
+  callToContact,
 } from '@/lib/telephony/call-line';
 import { cn } from '@/lib/utils';
 
@@ -150,7 +151,7 @@ function ContactItem({
         variant="ghost"
         size="icon"
         className="h-9 w-9 shrink-0"
-        eligibility={eligibility}
+        eligibility={callToContact(eligibility, contact.phoneNumber)}
         label={`Call ${name}`}
         onCall={(line) => void makeCall(contact.phoneNumber, line.phoneNumber)}
         aria-label={`Call ${name}`}

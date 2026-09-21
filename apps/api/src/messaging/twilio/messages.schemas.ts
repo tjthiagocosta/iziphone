@@ -1,4 +1,4 @@
-import { normalizePhoneNumber } from '@repo/dto';
+import { normalizePhoneNumber, toMessageAddress } from '@repo/dto';
 import { z } from 'zod';
 import type {
   MessagingTransportInboundEvent,
@@ -45,6 +45,23 @@ const E164FormValueSchema = FormValueSchema.transform((value, ctx) => {
   return normalized;
 });
 
+/**
+ * The other party on an inbound message. Twilio puts a phone number, a short
+ * code or a sender id in there; a number is normalised to E.164 and the rest is
+ * kept exactly as sent. Refusing the ones that are not numbers would answer the
+ * webhook 400, and Twilio does not retry a 4xx, so the message would be lost.
+ */
+const MessageAddressFormValueSchema = FormValueSchema.transform(
+  (value, ctx) => {
+    const address = toMessageAddress(value);
+    if (address === null) {
+      ctx.addIssue({ code: 'custom', message: 'Invalid message sender' });
+      return z.NEVER;
+    }
+    return address.value;
+  },
+);
+
 /** Phone fields on a status callback are informational; keep whatever was sent. */
 const LenientPhoneFormValueSchema = OptionalFormValueSchema.transform(
   (value) => (value ? (normalizePhoneNumber(value) ?? value) : ''),
@@ -53,7 +70,8 @@ const LenientPhoneFormValueSchema = OptionalFormValueSchema.transform(
 const TwilioInboundPayloadSchema = z.looseObject({
   MessageSid: OptionalFormValueSchema,
   SmsSid: OptionalFormValueSchema,
-  From: E164FormValueSchema,
+  From: MessageAddressFormValueSchema,
+  /** Our own number, so this one really has to be a number we recognise. */
   To: E164FormValueSchema,
   Body: OptionalFormValueSchema,
   DateCreated: OptionalFormValueSchema,

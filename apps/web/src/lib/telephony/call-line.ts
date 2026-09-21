@@ -1,4 +1,4 @@
-import type { OutboundCallLine } from '@repo/dto';
+import { type OutboundCallLine, toE164PhoneNumber } from '@repo/dto';
 
 /*
  * Which of the user's numbers an outbound call leaves from. The other party
@@ -169,6 +169,24 @@ export function callBackFromLine(
     ? onTheLine
     : callFromChosenLine(callLines, chosenLineId);
 }
+
+/**
+ * The same eligibility, narrowed to who would be called. A contact is whoever
+ * wrote to us, and a service writes from a short code or from its own name;
+ * neither is something a carrier can put a call through to. Having a line to
+ * call from does not help when there is nothing at the other end, so the
+ * contact is the reason the reader is given.
+ */
+export function callToContact(
+  eligibility: CallEligibility,
+  contactPhoneNumber: string,
+): CallEligibility {
+  return toE164PhoneNumber(contactPhoneNumber) === null
+    ? { canCall: false, reason: NOT_CALLABLE }
+    : eligibility;
+}
+
+const NOT_CALLABLE = 'This contact has no number to call.';
 
 const NO_LINES =
   'You have no number to call from. Ask an administrator to assign you one.';

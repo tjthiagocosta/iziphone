@@ -59,6 +59,16 @@ export function NewMessageView() {
     autoFetch: search.trim().length > 0,
   });
 
+  /*
+   * This screen addresses a number, so a thread with a short code or with a
+   * service's name is not offered here: the number chosen above decides which
+   * thread the message joins, and there is no number to start one with. Those
+   * threads are answered where they are, from the inbox.
+   */
+  const addressable = conversations.filter((conversation) =>
+    isDialablePhoneNumber(conversation.contact.phoneNumber),
+  );
+
   const typedNumber = isDialablePhoneNumber(search.trim())
     ? search.trim()
     : null;
@@ -201,7 +211,7 @@ export function NewMessageView() {
               />
             )}
 
-            {conversations.map((conversation) => (
+            {addressable.map((conversation) => (
               <ConversationRecipient
                 key={conversation.id}
                 conversation={conversation}
@@ -214,7 +224,7 @@ export function NewMessageView() {
               />
             ))}
 
-            {search.trim() && !typedNumber && conversations.length === 0 && (
+            {search.trim() && !typedNumber && addressable.length === 0 && (
               <p className="text-sm text-muted-foreground text-center py-8">
                 Nobody found. Type a full phone number to start a conversation.
               </p>

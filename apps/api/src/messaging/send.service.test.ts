@@ -311,6 +311,51 @@ describe('MessageSendService', () => {
     expect(harness.transport.sendSms).not.toHaveBeenCalled();
   });
 
+  test('should refuse a reply to a sender the provider cannot deliver to', async () => {
+    // A service that texts from its own name has no address an answer could go
+    // to, so the send is refused here instead of at the provider.
+    harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
+      buildConversation({
+        contact: { id: 'contact-3', name: null, phoneNumber: 'EXAMPLECO' },
+      }),
+    );
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      conversationId: 'conversation-1',
+      body: 'Hello there',
+      idempotencyKey: 'sms-undeliverable',
+    });
+
+    expect(result).toEqual({
+      outcome: 'refused',
+      reason: 'undeliverable_destination',
+      detail: 'This sender cannot receive replies',
+    });
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+    expect(harness.transport.sendSms).not.toHaveBeenCalled();
+  });
+
+  test('should allow a reply to a short code', async () => {
+    harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
+      buildConversation({
+        contact: { id: 'contact-4', name: null, phoneNumber: '55501' },
+      }),
+    );
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      conversationId: 'conversation-1',
+      body: 'STOP',
+      idempotencyKey: 'sms-short-code',
+    });
+
+    expect(result.outcome).toBe('sent');
+    expect(harness.transport.sendSms).toHaveBeenCalledWith(
+      expect.objectContaining({ to: '55501' }),
+    );
+  });
+
   test('should persist rejected provider responses', async () => {
     harness.transport.sendSms.mockRejectedValueOnce(
       new TwilioMessagesApiError(

@@ -30,6 +30,7 @@ const REFUSAL_STATUS: Record<SendRefusalReason, number> = {
   conversation_not_found: 404,
   sender_mismatch: 400,
   invalid_destination: 400,
+  undeliverable_destination: 400,
   attachment_unavailable: 400,
 };
 

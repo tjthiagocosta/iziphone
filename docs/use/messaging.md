@@ -13,6 +13,13 @@ Voicemails, Messages**. "Show older" pages further back.
 A message row opens the thread. A call row offers **Call back** instead, from
 the line the call was on.
 
+Not every sender is a person with a phone number. Delivery notices, one-time
+codes and alerts arrive from a short code such as 55501, or from a name such as
+EXAMPLECO. They land in the inbox as their own threads, named by whatever the
+carrier sent. A short code can be answered; a name cannot, and the thread says
+so instead of offering a composer. Neither can be called, so the call button on
+those threads and contacts says there is no number to call.
+
 Conversations are per line: the same person messaging two of your numbers is two
 threads, each labelled with its line. Text conversations on a number are shared
 with everyone who works that line, so a teammate can pick up where you left off.
@@ -34,6 +41,7 @@ attachment is not available in the app yet.
 
 The composer is disabled with the reason above it:
 
+- "This sender cannot receive replies." — the thread is with a service that texts from a name rather than a number, and the carrier has no address to send an answer to. The messages are kept; nothing can go back.
 - "This contact has opted out of messages from this number." — they replied STOP. Nothing more can be sent to them from this line.
 - "You cannot send from the number this conversation is on." — the line is not one of yours.
 - "This number cannot send text messages." — the line has no SMS capability.

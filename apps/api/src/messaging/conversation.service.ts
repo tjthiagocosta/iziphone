@@ -244,7 +244,11 @@ export class MessageConversationService {
     return conversation;
   }
 
-  /** `contactPhoneNumber` must already be E.164; callers normalise at their boundary. */
+  /**
+   * `contactPhoneNumber` must already be canonical: E.164 for a number, and a
+   * short code or sender id as the provider sent it. Callers normalise at their
+   * boundary.
+   */
   async findOrCreateFor(
     contactPhoneNumber: string,
     sourcePhoneNumberId: string,

@@ -45,6 +45,7 @@ export interface MessagingTransportInboundEvent {
   channel: MessagingTransportChannel;
   providerMessageId: string;
   providerTimestamp: string;
+  /** The sender: E.164 for a number, a short code or a sender id as sent. */
   from: string;
   to: string;
   body: string | null;

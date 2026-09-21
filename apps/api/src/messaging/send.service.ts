@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '@repo/db';
 import {
+  canReceiveMessages,
   type Message,
   normalizePhoneNumber,
   type SendMms,
@@ -58,6 +59,7 @@ export type SendRefusalReason =
   | 'conversation_not_found'
   | 'sender_mismatch'
   | 'invalid_destination'
+  | 'undeliverable_destination'
   | 'attachment_unavailable';
 
 export type MessageSendResult =
@@ -512,6 +514,18 @@ export class MessageSendService {
         return refusal(
           'sender_mismatch',
           'Conversation sender does not match fromPhoneNumberId',
+        );
+      }
+
+      /*
+       * A thread can exist with somebody who cannot be written to: a brand
+       * texting from a name has no address a reply could be routed to. Refuse
+       * it here instead of paying the provider to reject it.
+       */
+      if (!canReceiveMessages(conversation.contact.phoneNumber)) {
+        return refusal(
+          'undeliverable_destination',
+          'This sender cannot receive replies',
         );
       }
 
