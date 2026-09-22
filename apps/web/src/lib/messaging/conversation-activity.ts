@@ -47,7 +47,7 @@ export function openThreadIdOf(pathname: string): string | null {
   return id ? decodeURIComponent(id) : null;
 }
 
-export interface ArrivalAlertInput {
+export interface ActivityInput {
   kind: MessageActivityKind;
   /** The conversation the activity is about. */
   conversationId: string;
@@ -55,9 +55,36 @@ export interface ArrivalAlertInput {
   openThreadId: string | null;
   /** Whether the reader can see the page at all. */
   isPageVisible: boolean;
+}
+
+export interface ArrivalAlertInput extends ActivityInput {
   /** When the sound last played, on the same clock as `now`. */
   lastAlertAt: number | null;
   now: number;
+}
+
+/** Whether this activity is in the thread the reader is looking at right now. */
+function isReadingThread(input: ActivityInput): boolean {
+  return input.isPageVisible && input.openThreadId === input.conversationId;
+}
+
+/**
+ * Whether this activity should make the app count its unread conversations
+ * again.
+ *
+ * Everything does, except a message arriving in the thread the reader has in
+ * front of them: that thread reads it, marks itself read and counts after it,
+ * so counting here as well would put a number in the tab for the message they
+ * are looking at, for as long as those requests take.
+ *
+ * A delivery status on that same thread is not an exception. It merges in
+ * place, nothing is marked read and no count follows it, so the app has to
+ * count here — and because a burst of activity is one read timed from its last
+ * event, the alternative would be a message waiting elsewhere staying out of
+ * the tab until something unrelated woke it.
+ */
+export function shouldRefreshUnreadCount(input: ActivityInput): boolean {
+  return !(input.kind === 'received' && isReadingThread(input));
 }
 
 /**
@@ -73,7 +100,7 @@ export function shouldSoundArrival(input: ArrivalAlertInput): boolean {
     return false;
   }
 
-  if (input.isPageVisible && input.openThreadId === input.conversationId) {
+  if (isReadingThread(input)) {
     return false;
   }
 

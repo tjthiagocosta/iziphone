@@ -47,7 +47,11 @@ export function canAccessConversation(
  * and a conversation is never announced to somebody who could not open it.
  *
  * A deleted department contributes nobody, for the reason in
- * {@link loadDepartmentIds}. An unknown conversation has no audience.
+ * {@link loadDepartmentIds}. A deleted user contributes nobody either:
+ * deleting a user ends their sessions and releases their numbers but leaves
+ * their membership rows behind, and somebody who has been let go is not told
+ * that a line they used to work has changed. An unknown conversation has no
+ * audience.
  */
 export async function loadConversationAudience(
   db: Pick<PrismaClient, 'messageConversation'>,
@@ -57,10 +61,14 @@ export async function loadConversationAudience(
     where: { id: conversationId },
     select: {
       userId: true,
+      user: { select: { deletedAt: true } },
       department: {
         select: {
           deletedAt: true,
-          users: { select: { userId: true } },
+          users: {
+            where: { user: { deletedAt: null } },
+            select: { userId: true },
+          },
         },
       },
     },
@@ -74,14 +82,14 @@ export async function loadConversationAudience(
   const members = department?.deletedAt
     ? []
     : (department?.users.map((member) => member.userId) ?? []);
+  const owner =
+    conversation.userId && !conversation.user?.deletedAt
+      ? conversation.userId
+      : null;
 
   // A number belongs to a user or to a department, never both, but the owner
   // can also be a member; de-duplicated so nobody is sent the same thing twice.
-  return [
-    ...new Set(
-      conversation.userId ? [conversation.userId, ...members] : members,
-    ),
-  ];
+  return [...new Set(owner ? [owner, ...members] : members)];
 }
 
 /**

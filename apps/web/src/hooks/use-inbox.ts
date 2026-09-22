@@ -108,6 +108,13 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
   const refreshUnreadTotalRef = useRef(refreshUnreadTotal);
   refreshUnreadTotalRef.current = refreshUnreadTotal;
   /**
+   * Whether this inbox has asked for its first page of conversations. The
+   * provider reads the unread total when the app opens, so reading it again
+   * beside that first page would be the same number asked for twice on every
+   * visit to an inbox.
+   */
+  const hasAskedForFirstPage = useRef(false);
+  /**
    * The notice this inbox has already acted on. It starts at whatever the
    * socket last saw, because the notices before this inbox mounted are older
    * than the read that mounts it: the provider holding them outlives the page.
@@ -124,6 +131,16 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
       // failure: what is on screen stays, and the next read asks again.
       const partial = lists !== 'both';
       const request = partial ? requestRef.current : ++requestRef.current;
+      // Claimed when the read is made rather than when it lands: a first read
+      // that fails has already had the provider's read stand in for it, so
+      // whatever replaces it counts rather than skipping in its turn.
+      const readsUnreadTotal =
+        !partial && from === 'start' && Boolean(query.conversations);
+      const leavesUnreadTotal =
+        readsUnreadTotal && !hasAskedForFirstPage.current;
+      if (readsUnreadTotal) {
+        hasAskedForFirstPage.current = true;
+      }
 
       try {
         const [calls, conversations] = await Promise.all([
@@ -161,10 +178,15 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
 
         // The unread total counts conversations this page may not even hold, so
         // it is read alongside rather than derived from what came back — but
-        // only when the newest page is read. A page further back cannot change
-        // which conversations are unread, and a partial read was caused by a
-        // notice that reads the total anyway.
-        if (conversations && !partial && from === 'start') {
+        // only when the newest page is read, and not beside the first one. A
+        // page further back cannot change which conversations are unread, a
+        // partial read was caused by a notice that reads the total anyway, and
+        // the provider holds the total already: it read it when the app opened
+        // and on every notice since. What is left is the poll, which is what
+        // carries the one change nothing announces — a teammate on a shared
+        // line reading a conversation — and is now what catches that up, where
+        // opening an inbox used to.
+        if (conversations && readsUnreadTotal && !leavesUnreadTotal) {
           refreshUnreadTotalRef.current();
         }
       } catch (cause) {

@@ -15,6 +15,7 @@ import { getUnreadMessageSummary } from '@/lib/api/user';
 import {
   ACTIVITY_REFRESH_DELAY_MS,
   openThreadIdOf,
+  shouldRefreshUnreadCount,
 } from '@/lib/messaging/conversation-activity';
 import { useAuth } from './AuthProvider';
 
@@ -87,16 +88,16 @@ export function UnreadMessagesProvider({ children }: { children: ReactNode }) {
     }
 
     const timer = window.setTimeout(() => {
-      // The thread in front of the reader marks itself read and counts again
-      // after it. Counting here as well would put a number in the tab for the
-      // message they are looking at, for as long as those requests take.
       if (
-        document.visibilityState === 'visible' &&
-        openThreadIdRef.current === activity.conversationId
+        shouldRefreshUnreadCount({
+          kind: activity.kind,
+          conversationId: activity.conversationId,
+          openThreadId: openThreadIdRef.current,
+          isPageVisible: document.visibilityState === 'visible',
+        })
       ) {
-        return;
+        refresh();
       }
-      refresh();
     }, ACTIVITY_REFRESH_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [lastMessageActivity, refresh]);

@@ -1,7 +1,9 @@
+import type { PrismaClient } from '@repo/db';
 import { describe, expect, test, vi } from 'vitest';
 import {
   buildConversationScope,
   canAccessConversation,
+  loadConversationAudience,
   loadDepartmentIds,
 } from './conversation-scope.js';
 
@@ -54,6 +56,64 @@ describe('canAccessConversation', () => {
         [],
       ),
     ).toBe(false);
+  });
+});
+
+describe('loadConversationAudience', () => {
+  const audienceOf = async (conversation: unknown) => {
+    const findUnique = vi.fn(async () => conversation);
+    const audience = await loadConversationAudience(
+      {
+        messageConversation: { findUnique },
+      } as unknown as Pick<PrismaClient, 'messageConversation'>,
+      'conversation-1',
+    );
+
+    return { audience, findUnique };
+  };
+
+  test('asks the database only for members who are still here', async () => {
+    const { findUnique } = await audienceOf({ userId: null, department: null });
+
+    expect(findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          department: {
+            select: expect.objectContaining({
+              users: {
+                where: { user: { deletedAt: null } },
+                select: { userId: true },
+              },
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
+  test('leaves out an owner who has been deleted', async () => {
+    // Deleting a user ends their sessions and releases their numbers, but the
+    // conversation keeps pointing at them and their membership rows stay.
+    const { audience } = await audienceOf({
+      userId: 'user-1',
+      user: { deletedAt: new Date('2026-09-01T00:00:00.000Z') },
+      department: {
+        deletedAt: null,
+        users: [{ userId: 'user-2' }],
+      },
+    });
+
+    expect(audience).toEqual(['user-2']);
+  });
+
+  test('keeps an owner who is still here', async () => {
+    const { audience } = await audienceOf({
+      userId: 'user-1',
+      user: { deletedAt: null },
+      department: null,
+    });
+
+    expect(audience).toEqual(['user-1']);
   });
 });
 

@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import {
+  type ActivityInput,
   ALERT_MIN_GAP_MS,
   APP_TITLE,
   type ArrivalAlertInput,
   openThreadIdOf,
+  shouldRefreshUnreadCount,
   shouldSoundArrival,
   tabTitle,
 } from './conversation-activity';
@@ -44,6 +46,58 @@ describe('openThreadIdOf', () => {
     ]) {
       expect(openThreadIdOf(pathname)).toBeNull();
     }
+  });
+});
+
+describe('shouldRefreshUnreadCount', () => {
+  const activity: ActivityInput = {
+    kind: 'received',
+    conversationId: 'conversation-1',
+    openThreadId: null,
+    isPageVisible: true,
+  };
+
+  test('counts for activity anywhere the reader is not looking', () => {
+    expect(shouldRefreshUnreadCount(activity)).toBe(true);
+    expect(
+      shouldRefreshUnreadCount({ ...activity, openThreadId: 'conversation-2' }),
+    ).toBe(true);
+    expect(shouldRefreshUnreadCount({ ...activity, kind: 'status' })).toBe(
+      true,
+    );
+  });
+
+  test('leaves the count to the thread reading a message that arrived in it', () => {
+    expect(
+      shouldRefreshUnreadCount({ ...activity, openThreadId: 'conversation-1' }),
+    ).toBe(false);
+  });
+
+  test('counts a message that arrived in that same thread on a hidden tab', () => {
+    // Nothing is marked read on a tab nobody is looking at, so nothing else
+    // will count.
+    expect(
+      shouldRefreshUnreadCount({
+        ...activity,
+        openThreadId: 'conversation-1',
+        isPageVisible: false,
+      }),
+    ).toBe(true);
+  });
+
+  test('counts a delivery status on the thread the reader is reading', () => {
+    // The scenario this rule exists for: a message arrives elsewhere and a
+    // delivery report on the open thread lands within the same burst, so it is
+    // the report the one read at the end of the burst sees. The report merges
+    // in place and marks nothing read, so skipping the count here would leave
+    // the message waiting out of the tab until something unrelated woke it.
+    expect(
+      shouldRefreshUnreadCount({
+        ...activity,
+        kind: 'status',
+        openThreadId: 'conversation-1',
+      }),
+    ).toBe(true);
   });
 });
 

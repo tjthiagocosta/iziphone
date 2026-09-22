@@ -34,7 +34,8 @@ on another tab or in another window. The count is everything you can see,
 whichever tab or line the inbox is filtered to, and it goes back to the plain
 title once you have read them all. On a line several of you work, a teammate
 reading a conversation clears it for everybody, but your tab catches up only
-when the next message arrives or you open an inbox again.
+when the next message arrives or an open inbox next refreshes itself, which is
+within a couple of minutes.
 
 The thread you are reading makes no sound: the message appears in front of you
 instead. Nothing sounds for a message of your own being delivered, and a run of
