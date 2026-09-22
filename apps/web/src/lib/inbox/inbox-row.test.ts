@@ -168,7 +168,7 @@ describe('inboxRow for a conversation', () => {
 
     expect(row.title).toBe('(515) 555-0105');
     expect(row.line).toBe('(515) 555-0101');
-    // With no name the avatar shows the end of the number, as Dialpad does.
+    // With no name the avatar shows the end of the number.
     expect(row).toMatchObject({ name: null, fallback: '05' });
   });
 
