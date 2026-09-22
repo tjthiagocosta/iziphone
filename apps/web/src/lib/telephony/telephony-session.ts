@@ -367,6 +367,27 @@ export class TelephonySession {
     this.ended();
   }
 
+  /**
+   * Forgets an answer that is still waiting for the device to ring, for when
+   * the offer it was given for is gone: without this it would be applied to
+   * whichever call rings next inside its window, and pick up a call nobody
+   * asked to take.
+   *
+   * A rejection waiting the same way is kept. The invite for the call that was
+   * just declined can still arrive, and it has to be turned down rather than
+   * ring the phone of somebody who has already said no. That leaves the
+   * rejection with the fault this method cures for the answer: within its
+   * window it turns down whichever call rings, so a second call arriving right
+   * behind a declined one can be declined with it. Declining a call that would
+   * have been offered is the lesser wrong, and only its own leg ends; being put
+   * on a call nobody chose is not.
+   */
+  cancelPendingAnswer(): void {
+    if (this.pendingAnswer?.action === 'accept') {
+      this.pendingAnswer = null;
+    }
+  }
+
   toggleMute(): void {
     const call = this.activeCall;
     if (!call || this.state.callStatus !== 'connected') return;

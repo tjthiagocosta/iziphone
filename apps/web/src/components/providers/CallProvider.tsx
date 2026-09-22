@@ -203,6 +203,20 @@ export function CallProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timer);
   }, [answerPress]);
 
+  // An Answer pressed before the device rang belongs to the offer it was
+  // pressed on. Once that offer is gone — the caller hung up, a colleague took
+  // it, it was declined, or another offer replaced it — the answer goes with
+  // it; the session would otherwise apply it to whichever call rings next
+  // inside its window, and answer a call nobody chose.
+  const { cancelPendingAnswer } = telephony;
+  useEffect(() => {
+    if (!answerPress || answerPress.offer === offeredCall) {
+      return;
+    }
+    cancelPendingAnswer();
+    setAnswerPress(null);
+  }, [answerPress, offeredCall, cancelPendingAnswer]);
+
   const answerIncoming = useCallback(() => {
     telephony.answerIncoming();
     // Before the device rings the session can only remember the answer, so

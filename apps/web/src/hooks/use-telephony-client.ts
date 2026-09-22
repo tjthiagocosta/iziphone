@@ -39,6 +39,8 @@ export interface TelephonyClient extends TelephonyState {
   hangUp: () => Promise<void>;
   answerIncoming: () => void;
   rejectIncoming: () => void;
+  /** Forgets an Answer that is still waiting for the device to ring. */
+  cancelPendingAnswer: () => void;
   toggleMute: () => void;
   sendDigits: (digits: string) => void;
   toggleHold: () => Promise<void>;
@@ -126,6 +128,9 @@ export function useTelephonyClient({
   const rejectIncoming = useCallback(() => {
     sessionRef.current?.rejectIncoming();
   }, []);
+  const cancelPendingAnswer = useCallback(() => {
+    sessionRef.current?.cancelPendingAnswer();
+  }, []);
   const toggleMute = useCallback(() => {
     sessionRef.current?.toggleMute();
   }, []);
@@ -155,6 +160,7 @@ export function useTelephonyClient({
     hangUp,
     answerIncoming,
     rejectIncoming,
+    cancelPendingAnswer,
     toggleMute,
     sendDigits,
     toggleHold,

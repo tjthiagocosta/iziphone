@@ -294,6 +294,40 @@ describe('TelephonySession', () => {
       expect(call.reject).toHaveBeenCalledOnce();
     });
 
+    test('a cancelled early answer is not applied to the call that rings next', async () => {
+      const { device, session } = await startedSession();
+      session.answerIncoming();
+
+      session.cancelPendingAnswer();
+      const otherCall = new FakeCall({ CallSid: 'CA_other' });
+      device.emit('incoming', otherCall);
+
+      expect(otherCall.accept).not.toHaveBeenCalled();
+      expect(session.getState().callStatus).toBe('ringing');
+    });
+
+    test('cancelling an answer keeps an early rejection, which the invite still gets', async () => {
+      const { device, session } = await startedSession();
+      session.rejectIncoming();
+
+      session.cancelPendingAnswer();
+      const call = new FakeCall({ CallSid: 'CA_in' });
+      device.emit('incoming', call);
+
+      expect(call.reject).toHaveBeenCalledOnce();
+    });
+
+    test('cancelling leaves the next answer alone', async () => {
+      const { device, session } = await startedSession();
+
+      session.cancelPendingAnswer();
+      session.answerIncoming();
+      const call = new FakeCall({ CallSid: 'CA_in' });
+      device.emit('incoming', call);
+
+      expect(call.accept).toHaveBeenCalledOnce();
+    });
+
     test('forgets an early answer once it is stale', async () => {
       const { device, session } = await startedSession();
 
