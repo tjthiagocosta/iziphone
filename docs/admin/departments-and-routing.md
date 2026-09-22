@@ -41,6 +41,25 @@ The **Routing** tab decides what happens to a call:
 - **Closed hours**: send to voicemail, or forward to an external number.
 - **Voicemail greeting**: what a caller hears before the beep. See [Voicemail greeting](voicemail-greeting.md).
 
+### What a decline does
+
+Declining means "stop ringing me". It never hangs up on the caller:
+
+- **All members at once**: the person who declined stops ringing; everybody else
+  keeps ringing. The caller goes to voicemail only once every member who was
+  rung has declined or let it ring out.
+- **Fixed order**: the decline moves the call on to the next member straight
+  away, without waiting out the ring duration. After the last member the caller
+  goes to voicemail, exactly as an unanswered ring does.
+
+Declining changes nothing about the member's availability: they are still rung by
+the next call. A decline is only accepted from somebody the call is actually
+ringing.
+
+A call being handed over is different: if the teammate a
+[transfer](../use/softphone.md#transferring) is ringing declines it, the
+other party goes back to the agent who started the transfer.
+
 ## The routing cache
 
 Routing is answered from a Redis snapshot the API writes, so an inbound webhook

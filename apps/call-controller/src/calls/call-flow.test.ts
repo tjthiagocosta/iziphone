@@ -923,21 +923,136 @@ describe('CallFlow', () => {
   });
 
   describe('declining an offered call', () => {
-    test('ends a call nobody has answered yet, as a rejection always has', async () => {
-      const { flow, twilio, telephony } = buildFlow();
-      await flow.acceptInboundCall({
+    /** An inbound department call ringing whoever `options.online` says. */
+    async function offeredCall(options: Parameters<typeof buildFlow>[0] = {}) {
+      const context = buildFlow(options);
+      await context.flow.acceptInboundCall({
         callSid: 'CAcall1',
         from: caller,
         to: businessNumber,
       });
+      return context;
+    }
+
+    /** Twilio reporting the leg the decline hung up. */
+    function legEnded(flow: CallFlow, legUuid: string) {
+      return flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid,
+        status: 'completed',
+      });
+    }
+
+    test('ends the ring of the member who declined and leaves the others ringing', async () => {
+      const { flow, events, twilio, telephony } = await offeredCall();
+
+      await flow.declineOfferedCall('CAcall1', 'user-2');
+      await legEnded(flow, 'CAleg2');
+
+      expect(twilio.hangups()).toEqual(['CAleg2']);
+      expect(twilio.redirects()).toHaveLength(0);
+      expect(events.callMissed).not.toHaveBeenCalled();
+      const state = await telephony.getCallState('CAcall1');
+      expect(state).toMatchObject({
+        ending: false,
+        agentLegs: { CAleg1: 'user-1' },
+        pendingAgentLegUuids: ['CAleg1'],
+      });
+    });
+
+    test('sends the caller to voicemail once every offered member has declined', async () => {
+      const { flow, events, twilio, telephony } = await offeredCall();
+
+      await flow.declineOfferedCall('CAcall1', 'user-2');
+      await legEnded(flow, 'CAleg2');
+      await flow.declineOfferedCall('CAcall1', 'user-1');
+      await legEnded(flow, 'CAleg1');
+
+      expect(twilio.redirects()).toEqual([
+        expect.objectContaining({
+          legUuid: 'CAcall1',
+          params: { twiml: expect.stringContaining('<Record') },
+        }),
+      ]);
+      expect(events.callMissed).toHaveBeenCalledTimes(1);
+      expect(events.callEnded).not.toHaveBeenCalled();
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        voicemail: true,
+        ending: false,
+      });
+    });
+
+    test('a decline on a fixed-order ring moves on to the next member at once', async () => {
+      const { flow, twilio, telephony } = await offeredCall({
+        routing: {
+          ...department,
+          settings: { ...settings, openHoursRoutingType: 'FIXED_ORDER' },
+        },
+      });
+      expect(twilio.created).toHaveLength(1);
+
+      await flow.declineOfferedCall('CAcall1', 'user-1');
+      await legEnded(flow, 'CAleg1');
+
+      expect(twilio.hangups()).toEqual(['CAleg1']);
+      expect(twilio.created.map((leg) => leg.to)).toEqual([
+        expect.stringMatching(/^client:user-1\?/),
+        expect.stringMatching(/^client:user-2\?/),
+      ]);
+      expect(twilio.redirects()).toHaveLength(0);
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        currentQueueIndex: 1,
+      });
+    });
+
+    test('a decline by the last member of a fixed order goes to voicemail', async () => {
+      const { flow, events, twilio } = await offeredCall({
+        routing: {
+          ...department,
+          settings: { ...settings, openHoursRoutingType: 'FIXED_ORDER' },
+        },
+        online: ['user-2'],
+      });
+
+      await flow.declineOfferedCall('CAcall1', 'user-2');
+      await legEnded(flow, 'CAleg1');
+
+      expect(twilio.redirects()).toEqual([
+        expect.objectContaining({ legUuid: 'CAcall1' }),
+      ]);
+      expect(events.callMissed).toHaveBeenCalledTimes(1);
+    });
+
+    test('refuses a decline from a user the call is not ringing', async () => {
+      const { flow, twilio, telephony, log } = await offeredCall();
+
+      await flow.declineOfferedCall('CAcall1', 'user-3');
+
+      expect(twilio.hangups()).toEqual([]);
+      expect(twilio.redirects()).toHaveLength(0);
+      expect(log.warn).toHaveBeenCalledWith(
+        { conversationUuid: 'CAcall1', userId: 'user-3' },
+        'Refused a decline from a user this call never rang',
+      );
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        ending: false,
+        pendingAgentLegUuids: ['CAleg1', 'CAleg2'],
+      });
+    });
+
+    test('a second decline, after the ring has ended, changes nothing', async () => {
+      const { flow, twilio, log } = await offeredCall();
+      await flow.declineOfferedCall('CAcall1', 'user-2');
+      await legEnded(flow, 'CAleg2');
 
       await flow.declineOfferedCall('CAcall1', 'user-2');
 
-      expect(twilio.hangups().sort()).toEqual(['CAcall1', 'CAleg1', 'CAleg2']);
-      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
-        ending: true,
-        endingRequestedBy: 'user-2',
-      });
+      expect(twilio.hangups()).toEqual(['CAleg2']);
+      expect(log.warn).not.toHaveBeenCalled();
+      expect(log.info).toHaveBeenCalledWith(
+        { conversationUuid: 'CAcall1', userId: 'user-2' },
+        'Ignored a decline from a member with no ringing leg on this call',
+      );
     });
 
     test('does nothing to a call somebody else is already talking on', async () => {

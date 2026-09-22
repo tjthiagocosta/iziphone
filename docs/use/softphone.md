@@ -35,6 +35,17 @@ The call rings every tab and device you have signed in, and the offer clears
 everywhere once it is answered or the caller gives up. An unanswered offer
 disappears on its own.
 
+Decline means "not me", never "hang up on them". On a call to a department that
+rings everybody at once, your teammates keep ringing and the caller only reaches
+voicemail once the last of you has declined or let it ring out; on a department
+that rings in a fixed order, declining passes the call to the next person
+immediately instead of making the caller wait out your ring. Declining does not
+take you off the phone: the next call still rings you. See
+[Departments and routing](../admin/departments-and-routing.md#what-a-decline-does).
+
+Turning down a call a teammate is handing to you is different: it goes back to
+them, and they are told you declined.
+
 ## On a call
 
 The call bar sits at the bottom of the screen with a status line and these

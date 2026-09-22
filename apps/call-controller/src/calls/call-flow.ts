@@ -766,15 +766,19 @@ export class CallFlow {
   /**
    * A softphone turned down a call it was offered. Turning down a transfer
    * sends the other party back to the agent who is handing them over. Any
-   * other offer keeps what a rejection has always meant, the call ends, but
-   * only until someone answers: from then on the offer is stale, and must not
-   * end a call that other people are on.
+   * other offer means "stop ringing me" and nothing more: only the legs
+   * ringing this user end, and the ring goes on as the department's routing
+   * says, so one member cannot hang up on a caller everybody else is still
+   * being offered. Once somebody has answered, the offer is stale.
+   *
+   * Only a user this call is actually ringing may decline it: the conversation
+   * id alone is no claim to the call.
    */
   async declineOfferedCall(
     conversationUuid: string,
     userId: string,
   ): Promise<void> {
-    const { telephony } = this.deps;
+    const { telephony, log } = this.deps;
 
     const state = await telephony.getCallState(conversationUuid);
     if (!state) {
@@ -790,7 +794,57 @@ export class CallFlow {
       return;
     }
 
-    await telephony.requestConversationHangup(conversationUuid, userId);
+    const ringingLegUuids = state.pendingAgentLegUuids.filter(
+      (legUuid) => state.agentLegs[legUuid] === userId,
+    );
+    if (ringingLegUuids.length === 0) {
+      this.refuseDecline(state, userId);
+      return;
+    }
+
+    // Their legs, and nothing else. Each leg's own status callback then
+    // removes it and decides what follows, which is the same path a ring that
+    // timed out takes: the next member of a fixed order, or the caller to
+    // voicemail once nobody is left. Writing the state here as well would put
+    // a second writer against that callback, and `CallState` has no version
+    // to settle who wins.
+    await Promise.all(
+      ringingLegUuids.map((legUuid) => telephony.safeHangup(legUuid)),
+    );
+
+    log.info(
+      { conversationUuid, userId, legs: ringingLegUuids.length },
+      'Agent declined an offered call; their ring ends and the call goes on',
+    );
+  }
+
+  /**
+   * A decline with no ring of this user's to end: their leg is already gone,
+   * or has not been dialed yet, or they are nothing to do with the call.
+   * Nothing changes either way; what differs is whether it deserves attention,
+   * so somebody this call could have rung is not reported as an outsider. No
+   * phone number is logged: the numbers here are the caller's, and the sender
+   * may be a stranger to them.
+   */
+  private refuseDecline(state: CallState, userId: string): void {
+    const inTheRing =
+      state.targetUserId === userId ||
+      (state.routingQueue ?? []).includes(userId) ||
+      Object.values(state.agentLegs).includes(userId);
+    const context = { conversationUuid: state.conversationUuid, userId };
+
+    if (inTheRing) {
+      this.deps.log.info(
+        context,
+        'Ignored a decline from a member with no ringing leg on this call',
+      );
+      return;
+    }
+
+    this.deps.log.warn(
+      context,
+      'Refused a decline from a user this call never rang',
+    );
   }
 
   private async loadControlledCall(

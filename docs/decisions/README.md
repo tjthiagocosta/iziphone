@@ -21,6 +21,7 @@ would otherwise ask "why not the obvious way?".
 | [0006](0006-recordings-are-kept-until-deleted-by-default.md) | Recordings are kept until deleted by default | 2026-09-18 |
 | [0007](0007-closed-system-with-invite-links.md) | A closed system with invite links | 2026-09-18 |
 | [0008](0008-a-sender-is-not-always-a-phone-number.md) | A sender is not always a phone number | 2026-09-20 |
+| [0009](0009-declining-a-call-stops-your-ring-only.md) | Declining a call stops your ring only | 2026-09-21 |
 
 ## Writing one
 

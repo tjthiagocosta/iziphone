@@ -293,6 +293,18 @@ describe('registerSocketHandlers', () => {
     expect(deps.onCallRejected).toHaveBeenCalledWith('CAcall1', 'user-1');
   });
 
+  test('declines for the authenticated user, never the one in the payload', async () => {
+    const deps = buildDeps();
+    const { send } = connect(deps);
+
+    await send('call_reject', {
+      conversationUuid: 'CAcall1',
+      userId: 'someone-else',
+    });
+
+    expect(deps.onCallRejected).toHaveBeenCalledWith('CAcall1', 'user-1');
+  });
+
   test('rejects a malformed call_reject payload', async () => {
     const deps = buildDeps();
     const { socket, send } = connect(deps);
