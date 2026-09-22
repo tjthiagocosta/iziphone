@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from '@repo/db';
+import type { MessageActivityNotifier } from './activity-notifier.js';
 import type { MessageConversationService } from './conversation.service.js';
 import type { MessagingLogger } from './logger.js';
 import type { MessagingMediaService } from './media.service.js';
@@ -31,6 +32,7 @@ export interface MessageWebhookServiceOptions {
   >;
   conversationService: Pick<MessageConversationService, 'findOrCreateFor'>;
   mediaService: Pick<MessagingMediaService, 'ingestInboundMedia'>;
+  activity: Pick<MessageActivityNotifier, 'notify'>;
   log: Pick<MessagingLogger, 'info' | 'warn'>;
 }
 
@@ -54,6 +56,7 @@ export class MessageWebhookService {
   private readonly transport: MessageWebhookServiceOptions['transport'];
   private readonly conversationService: MessageWebhookServiceOptions['conversationService'];
   private readonly mediaService: MessageWebhookServiceOptions['mediaService'];
+  private readonly activity: MessageWebhookServiceOptions['activity'];
   private readonly log: MessageWebhookServiceOptions['log'];
 
   constructor(options: MessageWebhookServiceOptions) {
@@ -61,6 +64,7 @@ export class MessageWebhookService {
     this.transport = options.transport;
     this.conversationService = options.conversationService;
     this.mediaService = options.mediaService;
+    this.activity = options.activity;
     this.log = options.log;
   }
 
@@ -255,12 +259,23 @@ export class MessageWebhookService {
             'Processed inbound message webhook',
           );
 
-          return { outcome: 'processed', messageId: message.id } as const;
+          return {
+            outcome: 'processed',
+            messageId: message.id,
+            conversationId: conversation.id,
+          } as const;
         },
       );
 
-      if (result.outcome === 'processed' && event.media.length > 0) {
-        await this.ingestMedia(result.messageId, event);
+      if (result.outcome === 'processed') {
+        if (event.media.length > 0) {
+          await this.ingestMedia(result.messageId, event);
+        }
+
+        // After the media, not before: the browser fetches the thread on this
+        // and would otherwise show the message without its attachments until
+        // the next poll.
+        await this.activity.notify(result.conversationId, 'received');
       }
 
       return { kind: 'stored', result: { outcome: result.outcome } };
@@ -284,7 +299,7 @@ export class MessageWebhookService {
     const dedupeKey = statusDedupeKey(event);
 
     try {
-      return await this.db.$transaction(
+      const applied = await this.db.$transaction(
         async (tx: Prisma.TransactionClient) => {
           const providerEvent = await tx.messageProviderEvent.create({
             data: {
@@ -325,7 +340,7 @@ export class MessageWebhookService {
               'Received orphaned message status webhook',
             );
 
-            return { outcome: 'orphaned' } satisfies WebhookProcessResult;
+            return { outcome: 'orphaned' } as const;
           }
 
           const nextStatus = mapProviderStatusToMessageStatus(event);
@@ -385,9 +400,25 @@ export class MessageWebhookService {
             'Processed message status webhook',
           );
 
-          return { outcome: 'processed' } satisfies WebhookProcessResult;
+          return {
+            outcome: 'processed',
+            /*
+             * Only a transition that was applied is worth a notification: a
+             * callback the provider repeated, or one reporting a status the
+             * message has already moved past, changed nothing to fetch.
+             */
+            changedConversationId: applyTransition
+              ? message.conversationId
+              : null,
+          } as const;
         },
       );
+
+      if (applied.outcome === 'processed' && applied.changedConversationId) {
+        await this.activity.notify(applied.changedConversationId, 'status');
+      }
+
+      return { outcome: applied.outcome };
     } catch (error) {
       /*
        * The dedupe key is the only unique key this transaction writes, so any

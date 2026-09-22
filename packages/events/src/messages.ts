@@ -1,10 +1,17 @@
 import {
   CallDirectionSchema,
   CallEndStatusSchema,
+  EntityIdSchema,
   IsoDateTimeSchema,
+  MessageActivitySchema,
 } from '@repo/dto';
 import { z } from 'zod';
-import type { Channel, CommandChannel, EventChannel } from './channels.js';
+import type {
+  Channel,
+  CommandChannel,
+  EventChannel,
+  NotificationChannel,
+} from './channels.js';
 
 // ---------------------------------------------------------------------------
 // Events (call controller -> API)
@@ -146,6 +153,27 @@ export const CallHangupCommandSchema = z.object({
 export type CallHangupCommand = z.infer<typeof CallHangupCommandSchema>;
 
 // ---------------------------------------------------------------------------
+// Notifications (API -> call controller -> browsers)
+// ---------------------------------------------------------------------------
+
+/**
+ * The socket payload the browser gets, plus the only thing the call
+ * controller is told: whose sockets to send it to. It resolves them through
+ * presence and relays the rest untouched, so no message body, phone number or
+ * message id may be added here.
+ *
+ * `userIds` is never empty. An audience of nobody is a message nobody can
+ * read, which the API drops instead of publishing, and an empty list reaching
+ * Socket.IO's `to` would address every connected socket.
+ */
+export const MessageActivityNotificationSchema = MessageActivitySchema.extend({
+  userIds: z.array(EntityIdSchema).min(1),
+});
+export type MessageActivityNotification = z.infer<
+  typeof MessageActivityNotificationSchema
+>;
+
+// ---------------------------------------------------------------------------
 // Channel -> schema map. Adding a channel without a schema is a type error.
 // ---------------------------------------------------------------------------
 
@@ -167,9 +195,14 @@ export const COMMAND_SCHEMAS = {
   'call:hangup': CallHangupCommandSchema,
 } as const satisfies Record<CommandChannel, z.ZodType>;
 
+export const NOTIFICATION_SCHEMAS = {
+  'message:activity': MessageActivityNotificationSchema,
+} as const satisfies Record<NotificationChannel, z.ZodType>;
+
 export const CHANNEL_SCHEMAS = {
   ...EVENT_SCHEMAS,
   ...COMMAND_SCHEMAS,
+  ...NOTIFICATION_SCHEMAS,
 } as const satisfies Record<Channel, z.ZodType>;
 
 /** What a subscriber receives on a channel, after validation and defaults. */

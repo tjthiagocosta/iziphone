@@ -41,6 +41,50 @@ export function canAccessConversation(
 }
 
 /**
+ * Everyone {@link buildConversationScope} would return this conversation to:
+ * the user it belongs to, and the members of the department it belongs to.
+ * The inverse of the filter above and kept beside it, so the two cannot drift
+ * and a conversation is never announced to somebody who could not open it.
+ *
+ * A deleted department contributes nobody, for the reason in
+ * {@link loadDepartmentIds}. An unknown conversation has no audience.
+ */
+export async function loadConversationAudience(
+  db: Pick<PrismaClient, 'messageConversation'>,
+  conversationId: string,
+): Promise<string[]> {
+  const conversation = await db.messageConversation.findUnique({
+    where: { id: conversationId },
+    select: {
+      userId: true,
+      department: {
+        select: {
+          deletedAt: true,
+          users: { select: { userId: true } },
+        },
+      },
+    },
+  });
+
+  if (!conversation) {
+    return [];
+  }
+
+  const department = conversation.department;
+  const members = department?.deletedAt
+    ? []
+    : (department?.users.map((member) => member.userId) ?? []);
+
+  // A number belongs to a user or to a department, never both, but the owner
+  // can also be a member; de-duplicated so nobody is sent the same thing twice.
+  return [
+    ...new Set(
+      conversation.userId ? [conversation.userId, ...members] : members,
+    ),
+  ];
+}
+
+/**
  * The departments a user is in. A deleted department is left out: its
  * conversations stop being visible with it.
  */

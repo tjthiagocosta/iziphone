@@ -3,7 +3,10 @@
  *
  * Events flow from the call controller to the API and describe what happened
  * on the telephony side. Commands flow from the API to the call controller and
- * ask it to act on a live call. A channel is never used in both directions.
+ * ask it to act on a live call. Notifications flow from the API to the call
+ * controller as well, but ask for nothing: the controller relays them to the
+ * browsers it holds sockets for and never acts on what they say. A channel is
+ * never used in both directions.
  *
  * Hold and transfer are not commands: an agent asks the call controller for
  * them directly, because only it can check the request against the live call
@@ -36,6 +39,9 @@ export const CHANNELS = {
 
   /** Hang up a live call. */
   CALL_HANGUP: 'call:hangup',
+
+  /** A message conversation changed, for whoever is looking at it. */
+  MESSAGE_ACTIVITY: 'message:activity',
 } as const;
 
 export type Channel = (typeof CHANNELS)[keyof typeof CHANNELS];
@@ -61,3 +67,13 @@ export type EventChannel = (typeof EVENT_CHANNELS)[number];
 export const COMMAND_CHANNELS = [CHANNELS.CALL_HANGUP] as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[number];
+
+/**
+ * Published by the API, relayed to browsers by the call controller. A
+ * notification carries ids and nothing else: the controller decides who to
+ * send it to and the browser asks the API for the content, so the controller
+ * never learns anything about a message and authorization stays in the API.
+ */
+export const NOTIFICATION_CHANNELS = [CHANNELS.MESSAGE_ACTIVITY] as const;
+
+export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number];

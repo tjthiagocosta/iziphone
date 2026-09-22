@@ -6,6 +6,7 @@ import {
   CallIncomingEventSchema,
   CallRecordingReadyEventSchema,
   CHANNEL_SCHEMAS,
+  MessageActivityNotificationSchema,
 } from './messages.js';
 
 describe('CHANNEL_SCHEMAS', () => {
@@ -69,6 +70,45 @@ describe('CallRecordingReadyEventSchema', () => {
       timestamp: '2026-04-21T12:00:00.000Z',
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('MessageActivityNotificationSchema', () => {
+  const notification = {
+    kind: 'received' as const,
+    conversationId: 'conversation-1',
+    userIds: ['user-1', 'user-2'],
+  };
+
+  test('carries ids and an audience, and nothing else', () => {
+    expect(MessageActivityNotificationSchema.parse(notification)).toEqual(
+      notification,
+    );
+    expect(
+      MessageActivityNotificationSchema.parse({
+        ...notification,
+        body: 'Hello there',
+        from: '+15555550123',
+      }),
+    ).toEqual(notification);
+  });
+
+  test('refuses an audience of nobody, which would address every socket', () => {
+    expect(
+      MessageActivityNotificationSchema.safeParse({
+        ...notification,
+        userIds: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  test('refuses a kind the browser has no rule for', () => {
+    expect(
+      MessageActivityNotificationSchema.safeParse({
+        ...notification,
+        kind: 'deleted',
+      }).success,
+    ).toBe(false);
   });
 });
 

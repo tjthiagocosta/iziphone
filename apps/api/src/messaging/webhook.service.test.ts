@@ -417,6 +417,89 @@ describe('MessageWebhookService', () => {
     expect(harness.messageUpdate).not.toHaveBeenCalled();
   });
 
+  test('should tell the browsers about a stored inbound message', async () => {
+    await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
+
+    expect(harness.activity.notify).toHaveBeenCalledWith(
+      'conversation-1',
+      'received',
+    );
+  });
+
+  test('should tell the browsers only once the attachments are in', async () => {
+    const order: string[] = [];
+    harness.transport.normalizeInboundEvent.mockReturnValueOnce(
+      buildInboundEvent({
+        media: [
+          {
+            url: 'https://example.com/media/1',
+            mimeType: null,
+            fileName: null,
+          },
+        ],
+      }),
+    );
+    harness.mediaService.ingestInboundMedia.mockImplementationOnce(async () => {
+      order.push('media');
+    });
+    harness.activity.notify.mockImplementationOnce(async () => {
+      order.push('notify');
+    });
+
+    await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
+
+    expect(order).toEqual(['media', 'notify']);
+  });
+
+  test('should say nothing about a message for a number that is not ours', async () => {
+    harness.phoneNumberFindFirst.mockResolvedValueOnce(null);
+
+    await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
+
+    expect(harness.activity.notify).not.toHaveBeenCalled();
+  });
+
+  test('should say nothing the second time the same message is delivered', async () => {
+    await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
+    expect(harness.activity.notify).toHaveBeenCalledTimes(1);
+
+    await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
+
+    expect(harness.activity.notify).toHaveBeenCalledTimes(1);
+  });
+
+  test('should tell the browsers about a delivery status that was applied', async () => {
+    await harness.service.processStatusEvent({ MessageSid: 'SMignored' });
+
+    expect(harness.activity.notify).toHaveBeenCalledWith(
+      'conversation-1',
+      'status',
+    );
+  });
+
+  test('should say nothing about a status that changed nothing', async () => {
+    harness.transport.normalizeStatusEvent.mockReturnValueOnce(
+      buildStatusEvent({ providerStatus: 'submitted' }),
+    );
+    harness.messageFindUnique.mockResolvedValueOnce({
+      id: 'message-1',
+      conversationId: 'conversation-1',
+      status: 'DELIVERED',
+    });
+
+    await harness.service.processStatusEvent({ MessageSid: 'SMignored' });
+
+    expect(harness.activity.notify).not.toHaveBeenCalled();
+  });
+
+  test('should say nothing about an orphaned status callback', async () => {
+    harness.messageFindUnique.mockResolvedValueOnce(null);
+
+    await harness.service.processStatusEvent({ MessageSid: 'SMignored' });
+
+    expect(harness.activity.notify).not.toHaveBeenCalled();
+  });
+
   test('should never log phone numbers or message bodies', async () => {
     harness.phoneNumberFindFirst.mockResolvedValueOnce(null);
     await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
@@ -466,6 +549,9 @@ function createHarness() {
   };
   const mediaService = {
     ingestInboundMedia: vi.fn(async () => {}),
+  };
+  const activity = {
+    notify: vi.fn(async () => {}),
   };
   const log = {
     info: vi.fn(),
@@ -541,6 +627,7 @@ function createHarness() {
     transport: transport as never,
     conversationService: conversationService as never,
     mediaService: mediaService as never,
+    activity,
     log,
   });
 
@@ -549,6 +636,7 @@ function createHarness() {
     transport,
     conversationService,
     mediaService,
+    activity,
     log,
     messageProviderEventCreate,
     messageProviderEventUpdate,

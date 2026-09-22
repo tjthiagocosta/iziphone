@@ -62,6 +62,24 @@ export const CallTransferOutcomeSchema = z.object({
   reason: TransferFailureReasonSchema.optional(),
 });
 
+export const MessageActivityKindSchema = z.enum([
+  /** A message arrived from the contact. */
+  'received',
+  /** A message we sent moved on in delivery, or failed. */
+  'status',
+]);
+
+/**
+ * A conversation the reader may be showing changed. Ids only, deliberately:
+ * the browser fetches the conversation from the API, which is where the rule
+ * about who may read it lives, so nothing here has to be kept secret and the
+ * call controller relays it without understanding it.
+ */
+export const MessageActivitySchema = z.object({
+  kind: MessageActivityKindSchema,
+  conversationId: EntityIdSchema,
+});
+
 export const AuthRefreshedSchema = z.object({
   success: z.boolean(),
   error: z.string().optional(),
@@ -105,6 +123,8 @@ export type IncomingCall = z.infer<typeof IncomingCallSchema>;
 export type CallEnded = z.infer<typeof CallEndedSchema>;
 export type TransferFailureReason = z.infer<typeof TransferFailureReasonSchema>;
 export type CallTransferOutcome = z.infer<typeof CallTransferOutcomeSchema>;
+export type MessageActivityKind = z.infer<typeof MessageActivityKindSchema>;
+export type MessageActivity = z.infer<typeof MessageActivitySchema>;
 export type AuthRefreshed = z.infer<typeof AuthRefreshedSchema>;
 export type SocketError = z.infer<typeof SocketErrorSchema>;
 export type UserSocketRegistration = z.infer<

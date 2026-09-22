@@ -1,6 +1,11 @@
 'use client';
 
-import type { CallEnded, IncomingCall, Teammate } from '@repo/dto';
+import type {
+  CallEnded,
+  IncomingCall,
+  MessageActivity,
+  Teammate,
+} from '@repo/dto';
 import {
   createContext,
   type ReactNode,
@@ -71,6 +76,13 @@ export interface CallContextValue {
    * API writes that history from the same event, so it is the cue to refetch.
    */
   lastEndedCall: CallEnded | null;
+  /**
+   * The last message conversation of this user's that changed. It arrives on
+   * the same socket as the calls, which is why it is here: the views that show
+   * messages read the conversation from the API on it instead of waiting for
+   * their next poll.
+   */
+  lastMessageActivity: MessageActivity | null;
   isSocketConnected: boolean;
   /** The user's numbers a call may leave from; see `lib/telephony/call-line`. */
   callLines: CallLines;
@@ -101,6 +113,10 @@ const CallContext = createContext<CallContextValue | null>(null);
  * Owns the phone for the signed-in user: the Twilio device and the socket
  * over which the call controller offers calls. Calls arrive on both; the
  * socket shows the offer, and the device carries the audio.
+ *
+ * That socket is the only one the app opens, so what the controller pushes
+ * about message conversations comes through here too, as
+ * `lastMessageActivity`.
  */
 export function CallProvider({ children }: { children: ReactNode }) {
   const { user, getRealtimeToken, isLoading: isSessionLoading } = useAuth();
@@ -267,6 +283,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     teammatesError: directory.error,
     refreshTeammates: directory.refetch,
     lastEndedCall: socket.lastEndedCall,
+    lastMessageActivity: socket.lastMessageActivity,
     isSocketConnected: socket.isConnected,
     callLines,
     reloadCallLines,

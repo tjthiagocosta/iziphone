@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import twilio from 'twilio';
+import { MessageActivityNotifier } from './activity-notifier.js';
 import { MessageConversationService } from './conversation.service.js';
 import { MessagingMediaService } from './media.service.js';
 import { TwilioMessagesService } from './twilio/messages.service.js';
@@ -9,7 +10,7 @@ import { MessageWebhookService } from './webhook.service.js';
 export const twilioMessagesWebhookRoutes: FastifyPluginAsync = async (
   fastify,
 ) => {
-  const { config, db, log, mediaStore } = fastify;
+  const { config, db, log, mediaStore, redis } = fastify;
   const validateTwilioSignature = createTwilioSignatureValidator({
     authToken: config.twilio?.authToken ?? null,
     publicUrl: config.publicUrl,
@@ -29,6 +30,7 @@ export const twilioMessagesWebhookRoutes: FastifyPluginAsync = async (
       credentials: config.twilio,
       log,
     }),
+    activity: new MessageActivityNotifier({ db, redis, log }),
     log,
   });
 

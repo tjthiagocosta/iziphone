@@ -317,6 +317,51 @@ describe('MessageThreadSession', () => {
       await vi.advanceTimersByTimeAsync(REFRESH_MS);
       expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(2);
     });
+
+    test('a change it is told about while the load is out is read when the load lands', async () => {
+      const thread = harness();
+      const loading = Promise.withResolvers<MessageListResponse>();
+      thread.deps.fetchMessages.mockReturnValueOnce(loading.promise);
+      const session = thread.open();
+      session.start();
+
+      // The load was asked before the message was stored, so its answer can be
+      // the thread without it.
+      await session.refresh();
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(1);
+
+      thread.deps.fetchMessages.mockResolvedValue(
+        pageOf([message(1), message(2), message(3), message(4)]),
+      );
+      loading.resolve(pageOf([message(1), message(2), message(3)]));
+      await settle();
+
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(2);
+      expect(thread.ids()).toEqual(['m1', 'm2', 'm3', 'm4']);
+    });
+
+    test('and is still read when the agent looks away and back before the load lands', async () => {
+      const thread = harness();
+      const loading = Promise.withResolvers<MessageListResponse>();
+      thread.deps.fetchMessages.mockReturnValueOnce(loading.promise);
+      const session = thread.open();
+      session.start();
+
+      thread.hide();
+      await session.refresh();
+      thread.show();
+      await settle();
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(1);
+
+      thread.deps.fetchMessages.mockResolvedValue(
+        pageOf([message(1), message(2), message(3), message(4)]),
+      );
+      loading.resolve(pageOf([message(1), message(2), message(3)]));
+      await settle();
+
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(2);
+      expect(thread.ids()).toEqual(['m1', 'm2', 'm3', 'm4']);
+    });
   });
 
   describe('keeping a visible thread current', () => {
@@ -611,6 +656,45 @@ describe('MessageThreadSession', () => {
       await session.refresh();
 
       expect(thread.deps.fetchMessages).not.toHaveBeenCalled();
+    });
+
+    test('but reads a change it was told about while hidden as soon as it is shown', async () => {
+      const thread = harness();
+      const session = await thread.opened();
+      thread.deps.fetchMessages.mockClear();
+      thread.deps.fetchConversation.mockClear();
+
+      thread.hide();
+      await session.refresh();
+      await vi.advanceTimersByTimeAsync(1_000);
+      thread.deps.fetchMessages.mockResolvedValue(
+        pageOf([message(1), message(2), message(3), message(4)]),
+      );
+
+      thread.show();
+      await settle();
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(1);
+      expect(thread.ids()).toEqual(['m1', 'm2', 'm3', 'm4']);
+      // The header as well: what arrived can be the contact opting out.
+      expect(thread.deps.fetchConversation).toHaveBeenCalledTimes(1);
+    });
+
+    test('and reads it once, not on every later flip between tabs', async () => {
+      const thread = harness();
+      const session = await thread.opened();
+      thread.deps.fetchMessages.mockClear();
+
+      thread.hide();
+      await session.refresh();
+      thread.show();
+      await settle();
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(1);
+
+      thread.hide();
+      await vi.advanceTimersByTimeAsync(1_000);
+      thread.show();
+      await settle();
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(1);
     });
   });
 

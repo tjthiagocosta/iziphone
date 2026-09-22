@@ -1,9 +1,10 @@
 /*
  * The messages of one open thread: the first load, paging back, and keeping
- * what is on screen current. Nothing pushes a message to the browser, so a
- * thread the agent is looking at reads its newest page again every so often.
- * The hook that owns a session wires it to React and to the page, so
- * everything here runs and is tested without a browser.
+ * what is on screen current. The call controller pushes a notice when the
+ * conversation changes, which the hook turns into a `refresh`; the interval
+ * below is what catches a notice that never arrived. The hook that owns a
+ * session wires it to React and to the page, so everything here runs and is
+ * tested without a browser.
  */
 
 import type {
@@ -18,22 +19,31 @@ import {
 } from './message-pages';
 
 /**
- * How long a visible thread waits after one answer before it asks again. A
- * refresh on the interval is one request, so an open thread costs three a
+ * How long a visible thread waits after one answer before it asks again. It is
+ * the safety net under the notice the controller sends, not how a message
+ * arrives: a message from the contact is pushed and read within the second,
+ * and this catches the notice that was lost. It is also what shows a colleague
+ * sending on the same line, which is not pushed until the carrier reports on
+ * it.
+ *
+ * A refresh on the interval is one request, so an open thread costs one a
  * minute, however often the agent switches tabs. The API allows 100 a minute
  * per client IP and an office usually shares one: ten agents who each keep a
- * thread open spend 30 of them here, which leaves room for the inbox (4 a
- * minute where one is open) and for the requests people cause by working.
+ * thread open spend 10 of them here, which leaves room for the inbox (one a
+ * minute where one is open), for the reads the notices cause, and for the
+ * requests people make by working.
  */
-export const REFRESH_MS = 20_000;
+export const REFRESH_MS = 60_000;
 
 /**
  * How long a refresh may stay unanswered before the thread asks again. Long
  * enough that a slow answer is waited for rather than raced, short enough
  * that a request which never settles does not leave the thread stale for
- * good.
+ * good. It is its own number rather than a multiple of the interval, which
+ * relaxed when the push took over arrival: how long to wait on a request that
+ * may never answer did not change with it.
  */
-export const UNANSWERED_MS = 3 * REFRESH_MS;
+export const UNANSWERED_MS = 60_000;
 
 export interface MessageThreadState {
   /** The thread this is the state of, so a view never shows another one's. */
@@ -115,6 +125,14 @@ export class MessageThreadSession {
    * moment they are loaded: a page can be hidden when an answer lands.
    */
   private unread = false;
+  /**
+   * The thread was told it changed at a moment it could not read: the page was
+   * hidden, or the first load had not answered yet and its answer can be older
+   * than what the notice was about. It reads as soon as it can rather than
+   * waiting out the rest of the interval, which is a minute long precisely
+   * because a notice usually arrives first.
+   */
+  private missedChange = false;
 
   constructor(
     private readonly conversationId: string,
@@ -140,11 +158,20 @@ export class MessageThreadSession {
   }
 
   /**
-   * Reads the thread again because the agent acted on it. A send, stored or
-   * refused, changes the messages and can change whether the composer may
-   * send at all, so this reads the header too.
+   * Reads the thread again because it changed: the agent sent something, or
+   * the controller said somebody else did. A send, stored or refused, changes
+   * the messages and can change whether the composer may send at all, so this
+   * reads the header too.
+   *
+   * A hidden page reads nothing, and remembers instead: the notice is the only
+   * one there will be, so dropping it would leave the thread as stale as if it
+   * had never come.
    */
   async refresh(): Promise<void> {
+    if (!this.deps.isVisible() || !this.state.conversation) {
+      this.missedChange = true;
+      return;
+    }
     await this.readNewest({ header: true });
   }
 
@@ -208,6 +235,17 @@ export class MessageThreadSession {
       this.schedule();
 
       this.unread = conversation.unreadCount > 0;
+
+      // A notice that landed while this load was out is about something the
+      // load may have been too early to see, so it is read now — before the
+      // thread is marked read, which is allowed to fail and would otherwise
+      // take the read with it. A hidden page keeps the notice for when it is
+      // shown instead.
+      if (this.missedChange && this.deps.isVisible()) {
+        this.missedChange = false;
+        await this.readNewest({ header: true });
+      }
+
       await this.markReadIfSeen();
     } catch (cause) {
       this.update({
@@ -225,10 +263,22 @@ export class MessageThreadSession {
    * rest, so going back and forth between tabs asks no more often than a
    * thread that stayed visible. What landed while the page was hidden is
    * read now either way.
+   *
+   * A change the thread was told about while hidden is read now, whatever the
+   * interval has left — unless the thread has not loaded yet, in which case
+   * the load still out is what reads it, and the flag has to survive until
+   * then.
    */
   private resume(): void {
-    if (Date.now() >= this.dueAt) {
-      void this.readNewest();
+    if (!this.state.conversation) {
+      return;
+    }
+
+    const missed = this.missedChange;
+    this.missedChange = false;
+
+    if (missed || Date.now() >= this.dueAt) {
+      void this.readNewest({ header: missed });
       return;
     }
 

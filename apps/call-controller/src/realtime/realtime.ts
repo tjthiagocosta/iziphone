@@ -7,6 +7,10 @@ import {
   startCallEndedBroadcaster,
 } from './call-ended-broadcaster.js';
 import { notifyIncomingCall } from './incoming-call-notifier.js';
+import {
+  type MessageActivityRelay,
+  startMessageActivityRelay,
+} from './message-activity-relay.js';
 import { PresenceService } from './presence.service.js';
 import { createSocketAuthMiddleware } from './socket-auth.js';
 import { registerSocketHandlers } from './socket-handlers.js';
@@ -30,7 +34,10 @@ export interface Realtime {
     userIds: string[],
     outcome: CallTransferOutcome,
   ): Promise<void>;
-  /** Start listening for `call:ended`; call once the app is ready. */
+  /**
+   * Start listening for the channels whose only audience is the browsers:
+   * `call:ended` and `message:activity`. Call once the app is ready.
+   */
   start(): Promise<void>;
   close(): Promise<void>;
 }
@@ -52,6 +59,7 @@ export function createRealtime(deps: RealtimeDependencies): Realtime {
     deps.corsOrigins,
   );
   let broadcaster: CallEndedBroadcaster | null = null;
+  let messageActivity: MessageActivityRelay | null = null;
 
   server.io.use(createSocketAuthMiddleware(deps.authSecret, deps.log));
   registerSocketHandlers(server.io, {
@@ -85,11 +93,19 @@ export function createRealtime(deps: RealtimeDependencies): Realtime {
         presence,
         log: deps.log,
       });
+      messageActivity = await startMessageActivityRelay({
+        redis: deps.redis,
+        io: server.io,
+        presence,
+        log: deps.log,
+      });
     },
 
     async close() {
       await broadcaster?.close();
       broadcaster = null;
+      await messageActivity?.close();
+      messageActivity = null;
       await server.close();
     },
   };

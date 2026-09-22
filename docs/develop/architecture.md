@@ -72,6 +72,25 @@ lifecycle events and the API subscribes to persist them. Channel names live in
 | `call:transcription-ready` | call-controller | Transcript available |
 | `call:conversation-migrated` | call-controller | Call SID changed mid-call |
 | `call:hangup` | api | Command sent to the call controller |
+| `message:activity` | api | Notification relayed to the browsers |
+
+**A notification is neither an event nor a command.** `message:activity` is the
+third group of channels: the API publishes it, and the call controller relays it
+to browsers without acting on it. When an inbound message is stored, or a
+delivery status changes, the API resolves who may see that conversation — the
+user whose line it is, plus the members of the department whose line it is — and
+publishes the conversation id, what happened (`received` or `status`), and those
+user ids. The controller turns the ids into socket ids through presence and
+emits `message_activity` with the conversation id and the kind; the browser then
+fetches the conversation and its messages from the API as it always has.
+
+The payload carries ids and nothing else — no body, no phone number, no message
+id. That is what keeps the controller out of messaging: it cannot read anything
+about a message, it stores nothing, and the rule about who may open a
+conversation stays in the API, on the fetch the browser makes anyway. A publish
+that fails is logged and dropped, because the message is stored and the
+browser's poll still finds it. See
+[decision 0010](../decisions/0010-the-controller-relays-a-notification-it-does-not-understand.md).
 
 Hold and transfer are not commands. The softphone asks the call controller for
 them directly (`POST /api/voice/calls/:legUuid/hold`, `/transfer` and
@@ -99,7 +118,8 @@ participants instead of re-dialing.
 adapter, so it can scale horizontally. Users authenticate to the socket with a
 short-lived JWT issued by the API. Each user's sockets are tracked in Redis
 (`presence:sockets:*`) so an inbound call can ring every tab and device that
-user has open.
+user has open, and so a message arriving on a line reaches everybody who works
+it.
 
 **Browser softphone behavior.** The web app registers a Twilio Voice device on
 sign-in and refreshes its token before it expires. Microphone access is

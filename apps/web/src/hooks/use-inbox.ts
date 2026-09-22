@@ -1,5 +1,6 @@
 'use client';
 
+import type { MessageActivity } from '@repo/dto';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCall } from '@/components/providers/CallProvider';
 import { listCalls } from '@/lib/api/calls';
@@ -19,11 +20,19 @@ import {
   initialInboxState,
   type PageStart,
 } from '@/lib/inbox/inbox-paging';
+import { ACTIVITY_REFRESH_DELAY_MS } from '@/lib/messaging/conversation-activity';
 
 const PAGE_SIZE = 25;
 
-/** Nothing pushes an inbound message to the browser, so an open tab looks. */
-const POLL_MS = 30_000;
+/**
+ * The safety net under the socket. A message reaches the inbox when the
+ * controller pushes `message_activity`, so this is for the event that never
+ * arrives — the socket was down, or a reconnect fell in the gap — and can be
+ * slow. One poll every two minutes: a request a minute on a tab that lists
+ * both calls and conversations, half that on a tab that lists one, against the
+ * API's 100 a minute per client address that an office shares.
+ */
+const POLL_MS = 120_000;
 
 /**
  * The controller broadcasts `call_ended` and the API writes the history row
@@ -31,6 +40,13 @@ const POLL_MS = 30_000;
  * the write land before the refetch reads.
  */
 const CALL_HISTORY_DELAY_MS = 1000;
+
+/**
+ * Which of the two lists a read covers. A notification names a conversation,
+ * so it reads the conversations only: asking for the calls again would double
+ * what a busy line costs and could not tell the reader anything new.
+ */
+type ReadLists = 'both' | 'conversations';
 
 export interface UseInboxReturn {
   items: InboxItem[];
@@ -54,7 +70,7 @@ export interface UseInboxReturn {
  * can see; a department page is that same inbox on the department's number.
  */
 export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
-  const { lastEndedCall } = useCall();
+  const { lastEndedCall, lastMessageActivity } = useCall();
   const linePhone = scope?.linePhone;
   const sourcePhoneNumberId = scope?.sourcePhoneNumberId ?? null;
 
@@ -78,17 +94,33 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
   // re-created every time a page lands.
   const stateRef = useRef(state);
   stateRef.current = state;
+  // Read when a waiting read starts rather than when it was asked for, so a
+  // failure that lands in between is not what cancels it.
+  const errorRef = useRef(error);
+  errorRef.current = error;
   // Answers to a tab the user has already left are dropped.
   const requestRef = useRef(0);
+  /**
+   * The notice this inbox has already acted on. It starts at whatever the
+   * socket last saw, because the notices before this inbox mounted are older
+   * than the read that mounts it: the provider holding them outlives the page.
+   */
+  const handledActivity = useRef<MessageActivity | null>(lastMessageActivity);
 
   const load = useCallback(
-    async (from: PageStart) => {
+    async (from: PageStart, lists: ReadLists = 'both') => {
       const source = stateRef.current;
-      const request = ++requestRef.current;
+      // A read of one list stands behind the reads that cover both instead of
+      // taking their place: it lands beside an answer still on its way rather
+      // than discarding it, and a later read of everything drops it. It is
+      // also nobody's request, so it neither shows as loading nor reports a
+      // failure: what is on screen stays, and the next read asks again.
+      const partial = lists !== 'both';
+      const request = partial ? requestRef.current : ++requestRef.current;
 
       try {
         const [calls, conversations] = await Promise.all([
-          query.calls
+          lists === 'both' && query.calls
             ? listCalls({
                 ...query.calls,
                 limit: PAGE_SIZE,
@@ -116,9 +148,11 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
             ? applyConversationPage(current.conversations, conversations)
             : current.conversations,
         }));
-        setError(null);
+        if (!partial) {
+          setError(null);
+        }
       } catch (cause) {
-        if (request !== requestRef.current) {
+        if (partial || request !== requestRef.current) {
           return;
         }
         setError(
@@ -127,7 +161,7 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
             : new Error('The inbox failed to load'),
         );
       } finally {
-        if (request === requestRef.current) {
+        if (!partial && request === requestRef.current) {
           setIsLoading(false);
           setIsLoadingMore(false);
         }
@@ -174,6 +208,31 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, [load]);
+
+  // A conversation changed, so the inbox reads its conversations again. A burst
+  // is one read: each event replaces the wait left by the one before it.
+  //
+  // Each notice is acted on once, and only where it can show: a tab that lists
+  // no conversations has nothing to re-read, and a hidden tab is already read
+  // again when the agent comes back to it.
+  useEffect(() => {
+    const activity = lastMessageActivity;
+    if (!activity || activity === handledActivity.current) {
+      return;
+    }
+    handledActivity.current = activity;
+    if (!query.conversations || document.visibilityState !== 'visible') {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      // A failure is on screen instead of the rows, and only a read that
+      // covers both lists can take it away: a partial one would leave the
+      // inbox reporting a failure it has recovered from.
+      void load('start', errorRef.current ? 'both' : 'conversations');
+    }, ACTIVITY_REFRESH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [lastMessageActivity, query.conversations, load]);
 
   useEffect(() => {
     if (!lastEndedCall) {

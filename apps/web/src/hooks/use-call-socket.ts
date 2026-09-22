@@ -8,6 +8,8 @@ import {
   type ClientToServerEvents,
   type IncomingCall,
   IncomingCallSchema,
+  type MessageActivity,
+  MessageActivitySchema,
   type ServerToClientEvents,
 } from '@repo/dto';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -33,6 +35,12 @@ export interface CallSocketState {
    * same Redis event, so anything showing call history can refetch on it.
    */
   lastEndedCall: CallEnded | null;
+  /**
+   * The most recent change to a message conversation this user can see. It
+   * names the conversation and nothing else, so whatever shows messages reads
+   * them from the API on it, the way `lastEndedCall` works for call history.
+   */
+  lastMessageActivity: MessageActivity | null;
   rejectCall: (conversationUuid: string) => void;
   /** Forgets this offer, unless a newer one has already taken its place. */
   clearIncomingCall: (offer: IncomingCall) => void;
@@ -58,6 +66,8 @@ export function useCallSocket({
   const [isConnected, setIsConnected] = useState(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
   const [lastEndedCall, setLastEndedCall] = useState<CallEnded | null>(null);
+  const [lastMessageActivity, setLastMessageActivity] =
+    useState<MessageActivity | null>(null);
   const socketRef = useRef<CallSocket | null>(null);
   const getRealtimeTokenRef = useRef(getRealtimeToken);
 
@@ -158,6 +168,17 @@ export function useCallSocket({
       onTransferOutcomeRef.current?.(outcome);
     });
 
+    socket.on('message_activity', (data) => {
+      const parsed = MessageActivitySchema.safeParse(data);
+      if (!parsed.success) {
+        console.error('Ignored message activity with an unexpected payload');
+        return;
+      }
+      // A new object every time, even for a repeat of the same conversation
+      // and kind: the listeners react to the event, not to a changed value.
+      setLastMessageActivity(parsed.data);
+    });
+
     socket.on('error', (data) => {
       console.error(`Call controller reported an error: ${data.message}`);
     });
@@ -185,6 +206,7 @@ export function useCallSocket({
       setIsConnected(false);
       setIncomingCall(null);
       setLastEndedCall(null);
+      setLastMessageActivity(null);
     };
   }, [userId]);
 
@@ -205,6 +227,7 @@ export function useCallSocket({
     isConnected,
     incomingCall,
     lastEndedCall,
+    lastMessageActivity,
     rejectCall,
     clearIncomingCall,
   };

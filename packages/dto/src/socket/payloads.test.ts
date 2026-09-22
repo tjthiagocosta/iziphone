@@ -3,6 +3,7 @@ import {
   CallEndedSchema,
   CallTransferOutcomeSchema,
   IncomingCallSchema,
+  MessageActivitySchema,
   UserSocketRegistrationSchema,
 } from './payloads.js';
 
@@ -60,6 +61,32 @@ describe('IncomingCallSchema', () => {
     ).toEqual({ userId: 'user-1' });
     expect(
       IncomingCallSchema.safeParse({ ...offer, transferredBy: {} }).success,
+    ).toBe(false);
+  });
+});
+
+describe('MessageActivitySchema', () => {
+  test('names the conversation and what happened to it, nothing more', () => {
+    expect(
+      MessageActivitySchema.parse({
+        kind: 'received',
+        conversationId: 'conversation-1',
+        body: 'Hello there',
+        from: '+15555550123',
+      }),
+    ).toEqual({ kind: 'received', conversationId: 'conversation-1' });
+  });
+
+  test('rejects an empty conversation id and an unknown kind', () => {
+    expect(
+      MessageActivitySchema.safeParse({ kind: 'received', conversationId: '' })
+        .success,
+    ).toBe(false);
+    expect(
+      MessageActivitySchema.safeParse({
+        kind: 'read',
+        conversationId: 'conversation-1',
+      }).success,
     ).toBe(false);
   });
 });
