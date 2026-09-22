@@ -1,8 +1,9 @@
 'use client';
 
 import type { Message, MessageActivity, MessageConversation } from '@repo/dto';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCall } from '@/components/providers/CallProvider';
+import { useUnreadMessages } from '@/components/providers/UnreadMessagesProvider';
 import {
   getConversationMessages,
   getMessageConversation,
@@ -35,10 +36,9 @@ interface UseMessageThreadReturn {
  * an effect: a client component is prerendered on the server as well, where
  * there is no page to ask.
  */
-const browserDeps: MessageThreadDeps = {
+const browserDeps: Omit<MessageThreadDeps, 'markRead'> = {
   fetchConversation: getMessageConversation,
   fetchMessages: getConversationMessages,
-  markRead: markMessageConversationRead,
   isVisible: () => document.visibilityState === 'visible',
   onVisibilityChange: (listener) => {
     document.addEventListener('visibilitychange', listener);
@@ -53,6 +53,25 @@ export function useMessageThread(
   const [state, setState] = useState<MessageThreadState | null>(null);
   const sessionRef = useRef<MessageThreadSession | null>(null);
   const { lastMessageActivity } = useCall();
+  const { refresh: refreshUnreadTotal } = useUnreadMessages();
+
+  // Read inside deps that must outlive the render they were built in, so the
+  // session is not torn down and rebuilt when a callback's identity changes.
+  const refreshUnreadTotalRef = useRef(refreshUnreadTotal);
+  refreshUnreadTotalRef.current = refreshUnreadTotal;
+
+  const deps = useMemo<MessageThreadDeps>(
+    () => ({
+      ...browserDeps,
+      markRead: async (id) => {
+        await markMessageConversationRead(id);
+        // The thread just stopped being one of the unread ones.
+        refreshUnreadTotalRef.current();
+      },
+    }),
+    [],
+  );
+
   /**
    * The notice this thread has already acted on. It starts at whatever the
    * socket last saw, because the notices before this thread opened are older
@@ -77,11 +96,7 @@ export function useMessageThread(
       return;
     }
 
-    const session = new MessageThreadSession(
-      conversationId,
-      browserDeps,
-      setState,
-    );
+    const session = new MessageThreadSession(conversationId, deps, setState);
     sessionRef.current = session;
     session.start();
 
@@ -90,7 +105,7 @@ export function useMessageThread(
       sessionRef.current = null;
       cancelPendingRead();
     };
-  }, [conversationId, cancelPendingRead]);
+  }, [conversationId, deps, cancelPendingRead]);
 
   // The open thread changed, so it reads its newest page and its header again
   // instead of waiting for the interval. A burst about this thread is one read:

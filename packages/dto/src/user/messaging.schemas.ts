@@ -105,6 +105,16 @@ export const MessageConversationSchema = z.object({
 
 export const MessageConversationListItemSchema = MessageConversationSchema;
 
+/**
+ * How many conversations in everything the reader can see hold messages they
+ * have not read. Not per line or per tab: it is what the browser tab shows
+ * while the app is in the background, so it has to count the same whichever
+ * view is open.
+ */
+export const MessageUnreadSummarySchema = z.object({
+  unreadConversations: z.number().int().nonnegative(),
+});
+
 export const MessageConversationListResponseSchema =
   PaginationMetaSchema.extend({
     conversations: z.array(MessageConversationSchema),
@@ -260,6 +270,7 @@ export type MessageConversationListItem = MessageConversation;
 export type MessageConversationListResponse = z.infer<
   typeof MessageConversationListResponseSchema
 >;
+export type MessageUnreadSummary = z.infer<typeof MessageUnreadSummarySchema>;
 export type MessageMedia = z.infer<typeof MessageMediaSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageListQuery = z.infer<typeof MessageListQuerySchema>;

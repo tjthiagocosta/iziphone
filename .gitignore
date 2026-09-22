@@ -34,6 +34,8 @@ recordings/
 exports/
 *.wav
 *.mp3
+# The one audio file the app ships: the sound a new message makes.
+!apps/web/public/sounds/notification.mp3
 
 # Local overrides
 docker-compose.override.yml

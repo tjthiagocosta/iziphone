@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { ActiveCallBar, IncomingCallModal } from '@/components/call';
 import { DialerModal } from '@/components/dialer/DialerModal';
+import { ArrivalAlerts } from '@/components/messaging/ArrivalAlerts';
 import { useCall } from '@/components/providers/CallProvider';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Navbar } from './Navbar';
@@ -20,6 +21,8 @@ export function MainLayout({ children }: MainLayoutProps) {
 
   return (
     <TooltipProvider>
+      {/* The tab count and the sound for a message that arrived elsewhere */}
+      <ArrivalAlerts />
       <div className="h-screen flex flex-col bg-background">
         {/* Navbar */}
         <Navbar onOpenDialer={() => setIsDialerOpen(true)} />

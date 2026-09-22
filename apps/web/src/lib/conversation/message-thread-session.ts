@@ -52,7 +52,10 @@ export interface MessageThreadState {
   /** Oldest first, the order a thread is read in. */
   messages: readonly Message[];
   hasMore: boolean;
-  /** The first load is under way. A refresh never shows as loading. */
+  /**
+   * A load is under way: the first one, or one tried again after it failed. A
+   * refresh never shows as loading.
+   */
   isLoading: boolean;
   error: Error | null;
   /**
@@ -168,10 +171,25 @@ export class MessageThreadSession {
    * had never come.
    */
   async refresh(): Promise<void> {
-    if (!this.deps.isVisible() || !this.state.conversation) {
+    if (!this.deps.isVisible()) {
       this.missedChange = true;
       return;
     }
+
+    if (!this.state.conversation) {
+      if (this.state.isLoading) {
+        this.missedChange = true;
+        return;
+      }
+
+      // Nothing loaded and nothing on its way: the load failed and the thread
+      // is showing that instead of messages. The notice is the reason to try it
+      // again, and the only prompt there will be.
+      this.missedChange = false;
+      await this.load();
+      return;
+    }
+
     await this.readNewest({ header: true });
   }
 
@@ -216,6 +234,18 @@ export class MessageThreadSession {
   }
 
   private async load(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+
+    // Says a load is out, which the first one inherited from the initial state
+    // and a retry has to declare: it is what tells a second notice that this
+    // thread is already being loaded, so two answers cannot race to be the
+    // one on screen.
+    if (!this.state.isLoading) {
+      this.update({ isLoading: true });
+    }
+
     try {
       const [conversation, page] = await Promise.all([
         this.deps.fetchConversation(this.conversationId),
@@ -230,6 +260,8 @@ export class MessageThreadSession {
         conversation,
         messages: thread.messages,
         hasMore: thread.hasMore,
+        // A load that answers is the end of whatever a previous one reported.
+        error: null,
       });
       // The interval runs from this answer, whatever marking it read takes.
       this.schedule();
@@ -271,6 +303,13 @@ export class MessageThreadSession {
    */
   private resume(): void {
     if (!this.state.conversation) {
+      // Nothing loaded. A load still on its way reads what it was told about
+      // when its answer lands; one that failed is tried again here, because the
+      // notice waiting says there is something to see.
+      if (!this.state.isLoading && this.missedChange) {
+        this.missedChange = false;
+        void this.load();
+      }
       return;
     }
 

@@ -17,6 +17,7 @@ describe('messageConversationRoutes', () => {
   let getForUserSpy: ReturnType<typeof spyOn>;
   let markReadSpy: ReturnType<typeof spyOn>;
   let listMessagesSpy: ReturnType<typeof spyOn>;
+  let countUnreadSpy: ReturnType<typeof spyOn>;
 
   beforeEach(async () => {
     listForUserSpy = vi
@@ -40,6 +41,9 @@ describe('messageConversationRoutes', () => {
         messages: [],
         hasMore: false,
       });
+    countUnreadSpy = vi
+      .spyOn(MessageConversationService.prototype, 'countUnreadForUser')
+      .mockResolvedValue({ unreadConversations: 2 });
 
     app = await createApiRouteApp(routesUnderTest, { db: {} });
   });
@@ -77,6 +81,18 @@ describe('messageConversationRoutes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'Bad Request' });
     expect(listForUserSpy).not.toHaveBeenCalled();
+  });
+
+  test('should answer the unread total for the authenticated user', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/unread',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ unreadConversations: 2 });
+    expect(countUnreadSpy).toHaveBeenCalledWith('user-1');
+    expect(getForUserSpy).not.toHaveBeenCalled();
   });
 
   test('should return 404 when a conversation does not exist', async () => {

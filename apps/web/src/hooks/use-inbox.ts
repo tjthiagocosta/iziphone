@@ -3,6 +3,7 @@
 import type { MessageActivity } from '@repo/dto';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCall } from '@/components/providers/CallProvider';
+import { useUnreadMessages } from '@/components/providers/UnreadMessagesProvider';
 import { listCalls } from '@/lib/api/calls';
 import { listMessageConversations } from '@/lib/api/user';
 import {
@@ -28,9 +29,10 @@ const PAGE_SIZE = 25;
  * The safety net under the socket. A message reaches the inbox when the
  * controller pushes `message_activity`, so this is for the event that never
  * arrives — the socket was down, or a reconnect fell in the gap — and can be
- * slow. One poll every two minutes: a request a minute on a tab that lists
- * both calls and conversations, half that on a tab that lists one, against the
- * API's 100 a minute per client address that an office shares.
+ * slow. One poll every two minutes: on a tab that lists both calls and
+ * conversations that is a request and a half a minute, counting the unread
+ * total read beside the conversations, against the API's 100 a minute per
+ * client address that an office shares.
  */
 const POLL_MS = 120_000;
 
@@ -71,6 +73,7 @@ export interface UseInboxReturn {
  */
 export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
   const { lastEndedCall, lastMessageActivity } = useCall();
+  const { refresh: refreshUnreadTotal } = useUnreadMessages();
   const linePhone = scope?.linePhone;
   const sourcePhoneNumberId = scope?.sourcePhoneNumberId ?? null;
 
@@ -100,6 +103,10 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
   errorRef.current = error;
   // Answers to a tab the user has already left are dropped.
   const requestRef = useRef(0);
+  // Read inside a request that must not be re-created when the provider's
+  // callback is.
+  const refreshUnreadTotalRef = useRef(refreshUnreadTotal);
+  refreshUnreadTotalRef.current = refreshUnreadTotal;
   /**
    * The notice this inbox has already acted on. It starts at whatever the
    * socket last saw, because the notices before this inbox mounted are older
@@ -150,6 +157,15 @@ export function useInbox(tab: InboxTab, scope?: InboxScope): UseInboxReturn {
         }));
         if (!partial) {
           setError(null);
+        }
+
+        // The unread total counts conversations this page may not even hold, so
+        // it is read alongside rather than derived from what came back — but
+        // only when the newest page is read. A page further back cannot change
+        // which conversations are unread, and a partial read was caused by a
+        // notice that reads the total anyway.
+        if (conversations && !partial && from === 'start') {
+          refreshUnreadTotalRef.current();
         }
       } catch (cause) {
         if (partial || request !== requestRef.current) {

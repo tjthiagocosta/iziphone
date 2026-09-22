@@ -22,6 +22,16 @@ export const messageConversationRoutes: FastifyPluginAsync = async (
     return reply.send(result);
   });
 
+  // Ahead of `/:id` for a reader, not for the router: a static segment wins
+  // over a parameter, so "unread" can never be taken for a conversation id.
+  fastify.get('/unread', async (request, reply) => {
+    const summary = await conversationService.countUnreadForUser(
+      authenticatedUser(request).id,
+    );
+
+    return reply.send(summary);
+  });
+
   fastify.get<{ Params: { id: string } }>('/:id', async (request, reply) => {
     const conversation = await conversationService.getForUser(
       authenticatedUser(request).id,

@@ -12,6 +12,8 @@ import {
   MessageListResponseSchema,
   type MessageSendersResponse,
   MessageSendersResponseSchema,
+  type MessageUnreadSummary,
+  MessageUnreadSummarySchema,
   type OutboundCallLinesResponse,
   OutboundCallLinesResponseSchema,
   type SendSms,
@@ -67,6 +69,13 @@ export function listMessageConversations(
 ): Promise<MessageConversationListResponse> {
   return requestApi(withQuery('/api/user/message-conversations', query), {
     schema: MessageConversationListResponseSchema,
+  });
+}
+
+/** How many conversations the reader has unread, everywhere they can see. */
+export function getUnreadMessageSummary(): Promise<MessageUnreadSummary> {
+  return requestApi('/api/user/message-conversations/unread', {
+    schema: MessageUnreadSummarySchema,
   });
 }
 

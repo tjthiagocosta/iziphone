@@ -11,7 +11,11 @@ pnpm build
 ```
 
 - `apps/api` and `apps/call-controller` compile to `dist/` and start with `node dist/index.js`. Both have a multi-stage `Dockerfile`.
-- `apps/web` builds a standalone Next.js server (`output: 'standalone'`).
+- `apps/web` builds a standalone Next.js server (`output: 'standalone'`). The
+  standalone output leaves out `.next/static` and `public`, expecting a CDN to
+  serve them; the image copies both in beside the server instead. Anything
+  served from `public/`, such as the sound a new message makes, is missing from
+  a deployment that skips that step.
 
 ## Running
 

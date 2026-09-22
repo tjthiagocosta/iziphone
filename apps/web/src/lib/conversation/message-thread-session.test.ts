@@ -219,6 +219,62 @@ describe('MessageThreadSession', () => {
       expect(thread.deps.fetchMessages).not.toHaveBeenCalled();
     });
 
+    test('a thread that could not be loaded is loaded again when it is told it changed', async () => {
+      const thread = harness();
+      thread.deps.fetchConversation.mockRejectedValueOnce(
+        new Error('Conversation not found'),
+      );
+      const session = await thread.opened();
+      expect(thread.last().error).toEqual(new Error('Conversation not found'));
+
+      await session.refresh();
+
+      expect(thread.last()).toMatchObject({
+        conversation: conversation(),
+        error: null,
+      });
+      expect(thread.ids()).toEqual(['m1', 'm2', 'm3']);
+    });
+
+    test('and is loaded again once, however many notices arrive while it loads', async () => {
+      const thread = harness();
+      thread.deps.fetchConversation.mockRejectedValueOnce(
+        new Error('Conversation not found'),
+      );
+      const session = await thread.opened();
+      thread.deps.fetchMessages.mockClear();
+
+      const retrying = Promise.withResolvers<MessageConversation>();
+      thread.deps.fetchConversation.mockReturnValueOnce(retrying.promise);
+      void session.refresh();
+      await session.refresh();
+      expect(thread.deps.fetchMessages).toHaveBeenCalledTimes(1);
+
+      retrying.resolve(conversation());
+      await settle();
+      expect(thread.ids()).toEqual(['m1', 'm2', 'm3']);
+      expect(thread.deps.markRead).not.toHaveBeenCalled();
+    });
+
+    test('and is loaded again on the way back when it was told while hidden', async () => {
+      const thread = harness();
+      thread.deps.fetchConversation.mockRejectedValueOnce(
+        new Error('Conversation not found'),
+      );
+      const session = await thread.opened();
+
+      thread.hide();
+      await session.refresh();
+      expect(thread.last().conversation).toBeNull();
+
+      thread.show();
+      await settle();
+      expect(thread.last()).toMatchObject({
+        conversation: conversation(),
+        error: null,
+      });
+    });
+
     test('reports a thread that loaded but could not be marked read', async () => {
       const thread = harness();
       thread.deps.fetchConversation.mockResolvedValue(

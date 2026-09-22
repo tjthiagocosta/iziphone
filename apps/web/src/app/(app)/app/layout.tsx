@@ -1,5 +1,6 @@
 import { MainLayout } from '@/components/layout/MainLayout';
 import { CallProvider } from '@/components/providers/CallProvider';
+import { UnreadMessagesProvider } from '@/components/providers/UnreadMessagesProvider';
 
 export default function MainAppLayout({
   children,
@@ -8,7 +9,9 @@ export default function MainAppLayout({
 }) {
   return (
     <CallProvider>
-      <MainLayout>{children}</MainLayout>
+      <UnreadMessagesProvider>
+        <MainLayout>{children}</MainLayout>
+      </UnreadMessagesProvider>
     </CallProvider>
   );
 }

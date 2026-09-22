@@ -36,9 +36,12 @@ FROM base AS runner
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# `output: 'standalone'` emits the server with only the files it needs.
+# `output: 'standalone'` emits the server with only the files it needs. It
+# leaves out `.next/static` and `public`, which it expects a CDN to serve; we
+# serve them from the same origin, so they are copied in beside the server.
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder /app/apps/web/public ./apps/web/public
 
 USER node
 

@@ -10,6 +10,7 @@ describe('MessageConversationService', () => {
   const messageConversationFindUnique = vi.fn(async () => null);
   const messageConversationUpdate = vi.fn(async () => ({}));
   const messageConversationUpsert = vi.fn(async () => ({}));
+  const messageConversationCount = vi.fn(async () => 0);
   const messageFindMany = vi.fn(async () => []);
   const phoneNumberFindUnique = vi.fn(async () => null);
   const contactFindOrCreateByPhoneNumber = vi.fn(async () => ({
@@ -25,6 +26,7 @@ describe('MessageConversationService', () => {
     messageConversationFindUnique.mockImplementation(async () => null);
     messageConversationUpdate.mockImplementation(async () => ({}));
     messageConversationUpsert.mockImplementation(async () => ({}));
+    messageConversationCount.mockImplementation(async () => 0);
     messageFindMany.mockImplementation(async () => []);
     phoneNumberFindUnique.mockImplementation(async () => null);
     contactFindOrCreateByPhoneNumber.mockImplementation(async () => ({
@@ -42,6 +44,7 @@ describe('MessageConversationService', () => {
           findUnique: messageConversationFindUnique,
           update: messageConversationUpdate,
           upsert: messageConversationUpsert,
+          count: messageConversationCount,
         },
         message: {
           findMany: messageFindMany,
@@ -54,6 +57,38 @@ describe('MessageConversationService', () => {
         findOrCreateByPhoneNumber: contactFindOrCreateByPhoneNumber,
       } as never,
     );
+  });
+
+  test('should count unread conversations across the reader whole scope', async () => {
+    userDepartmentFindMany.mockResolvedValueOnce([
+      { departmentId: 'dept-1' },
+      { departmentId: 'dept-2' },
+    ]);
+    messageConversationCount.mockResolvedValueOnce(3);
+
+    const summary = await service.countUnreadForUser('user-1');
+
+    expect(summary).toEqual({ unreadConversations: 3 });
+    expect(messageConversationCount).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { userId: 'user-1' },
+          { departmentId: { in: ['dept-1', 'dept-2'] } },
+        ],
+        unreadCount: { gt: 0 },
+      },
+    });
+  });
+
+  test('should count only the reader own lines when they are in no department', async () => {
+    await service.countUnreadForUser('user-1');
+
+    expect(messageConversationCount).toHaveBeenCalledWith({
+      where: {
+        OR: [{ userId: 'user-1' }],
+        unreadCount: { gt: 0 },
+      },
+    });
   });
 
   test('should reset unread state when the user can access the conversation', async () => {

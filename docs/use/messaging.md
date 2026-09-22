@@ -1,7 +1,7 @@
 # Messaging
 
-For agents. Covers the inbox, sending a text, and what the composer tells you
-when it will not let you send.
+For agents. Covers the inbox, how a message reaches you, sending a text, and
+what the composer tells you when it will not let you send.
 
 ## The inbox
 
@@ -24,6 +24,25 @@ Conversations are per line: the same person messaging two of your numbers is two
 threads, each labelled with its line. Text conversations on a number are shared
 with everyone who works that line, so a teammate can pick up where you left off.
 A department page shows the same inbox scoped to that department's line.
+
+## When a message arrives
+
+A message shows up on its own; you do not have to reload. A sound plays, and the
+browser tab counts the conversations you have not read yet — `(3) iziphone -
+Business Phone System` — so you can see there is something waiting while you are
+on another tab or in another window. The count is everything you can see,
+whichever tab or line the inbox is filtered to, and it goes back to the plain
+title once you have read them all. On a line several of you work, a teammate
+reading a conversation clears it for everybody, but your tab catches up only
+when the next message arrives or you open an inbox again.
+
+The thread you are reading makes no sound: the message appears in front of you
+instead. Nothing sounds for a message of your own being delivered, and a run of
+messages arriving together is one sound rather than a string of them.
+
+Browsers refuse to play a sound on a page nobody has clicked yet, so a tab you
+opened and left alone stays silent until the first time you use it. The tab
+count still tells you.
 
 ## Sending
 

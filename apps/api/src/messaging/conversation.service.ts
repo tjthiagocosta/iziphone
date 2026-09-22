@@ -6,6 +6,7 @@ import type {
   MessageListQuery,
   MessageListResponse,
   MessageOwner,
+  MessageUnreadSummary,
 } from '@repo/dto';
 import { MessagingContactService } from './contact.service.js';
 import {
@@ -153,6 +154,19 @@ export class MessageConversationService {
       limit,
       totalPages: Math.ceil(total / limit),
     };
+  }
+
+  /** One count over everything the reader can see; see the dto schema. */
+  async countUnreadForUser(userId: string): Promise<MessageUnreadSummary> {
+    const departmentIds = await this.getDepartmentIds(userId);
+    const unreadConversations = await this.db.messageConversation.count({
+      where: {
+        ...buildConversationScope(userId, departmentIds),
+        unreadCount: { gt: 0 },
+      },
+    });
+
+    return { unreadConversations };
   }
 
   async getForUser(
