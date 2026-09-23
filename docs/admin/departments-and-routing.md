@@ -23,6 +23,34 @@ a department. A department's **Phone Numbers** tab lists what it owns. Releasing
 number removes it from Twilio and cannot be undone; deleting a department moves
 its numbers to the reserved pool.
 
+### When a number changes hands
+
+Text conversations stay with whoever held the number when they happened. Moving
+a number to somebody else — another user, another department, between a user
+and a department, or out to the reserved pool and later to a new owner — does
+not move its conversations with it:
+
+- The new owner starts with a clean line. They do not see the previous owner's
+  threads, and a contact who texts the number again, or whom they text, starts a
+  new thread that is theirs.
+- The previous owner keeps their threads and can read them as before, but can
+  no longer send from the number.
+- Somebody who can see both, such as a member of the old and the new
+  department, sees two threads with the same contact on that number and can
+  reply only in the new owner's.
+- Giving a number back to a previous owner carries on their own threads on it;
+  what was written while somebody else had it stays with that somebody.
+- A number in the reserved pool receives no texts: a message sent to it while it
+  is unassigned is not shown to anybody.
+- A contact who opted out of the number (replied STOP) stays opted out whoever
+  holds it.
+
+Call history works the same way: each call is kept against the user or
+department it reached at the time, and stays visible to them.
+
+The reasons are in
+[0011. A line's history stays with the owner it was written under](../decisions/0011-a-lines-history-stays-with-the-owner-it-was-written-under.md).
+
 Each number's Twilio webhooks have to point at this deployment — see
 [Twilio configuration](../operate/twilio.md).
 

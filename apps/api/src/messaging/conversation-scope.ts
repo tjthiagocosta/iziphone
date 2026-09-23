@@ -1,12 +1,63 @@
 import type { Prisma, PrismaClient } from '@repo/db';
 
 /**
+ * Whom a line works for: a user or a department. Every read below is decided
+ * by a conversation's copy of this, taken when the conversation was created.
+ */
+export type LineOwner =
+  | { kind: 'user'; userId: string }
+  | { kind: 'department'; departmentId: string };
+
+/**
+ * The owner of a line as it stands now, or null for a line nobody holds. An
+ * administrator cannot give a number to a user and a department at once; the
+ * user is read first, as everywhere else an owner is shown.
+ */
+export function lineOwnerOf(line: {
+  userId: string | null;
+  departmentId: string | null;
+}): LineOwner | null {
+  if (line.userId) {
+    return { kind: 'user', userId: line.userId };
+  }
+
+  if (line.departmentId) {
+    return { kind: 'department', departmentId: line.departmentId };
+  }
+
+  return null;
+}
+
+/**
+ * Whether a conversation is the current owner's thread on its line, and so the
+ * one new messages on that line with that contact go to. A conversation keeps
+ * the owner it was created under: once the line changes hands the old thread
+ * stays readable to whoever owned it then, and nobody writes to it any more.
+ */
+export function isLineOwnersThread(
+  conversation: { userId: string | null; departmentId: string | null },
+  line: { userId: string | null; departmentId: string | null },
+): boolean {
+  const owner = lineOwnerOf(line);
+
+  switch (owner?.kind) {
+    case 'user':
+      return conversation.userId === owner.userId;
+    case 'department':
+      return conversation.departmentId === owner.departmentId;
+    default:
+      return false;
+  }
+}
+
+/**
  * Which conversations a user may see: the ones on their own number, and the
  * ones on a number belonging to a department they are in.
  *
- * A conversation is a contact on one line, so this is also what decides which
- * halves of a contact's history they see: the same contact reached on a
- * department they do not belong to is a different conversation, and stays
+ * A conversation is a contact on one line under one owner, so this is also
+ * what decides which parts of a contact's history they see: the same contact
+ * reached on a department they do not belong to is a different conversation,
+ * and so is the thread the line's previous owner had with them. Both stay
  * invisible. Expressed as a Prisma filter so it can be applied to a list, to
  * a relation include, and to a lookup that should miss rather than forbid.
  */

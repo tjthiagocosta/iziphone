@@ -245,6 +245,60 @@ describe('MessageSendService', () => {
     expect(harness.transport.sendSms).not.toHaveBeenCalled();
   });
 
+  test('should refuse a reply in a thread started before the line changed hands', async () => {
+    // The line moved from one department to another and the sender is in
+    // both: they can still read the old thread and still send on the line,
+    // but a message now belongs to the new department's thread.
+    harness.senderService.getAllowedSmsSender.mockResolvedValueOnce({
+      ...buildSender({ mmsEnabled: true }),
+      userId: null,
+      departmentId: 'dept-support',
+    });
+    harness.phoneNumberFindUnique.mockResolvedValueOnce({
+      userId: null,
+      departmentId: 'dept-support',
+    });
+    harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
+      buildConversation({ userId: null, departmentId: 'dept-sales' }),
+    );
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      conversationId: 'conversation-1',
+      body: 'Hello there',
+      idempotencyKey: 'sms-reassigned',
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+    });
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+    expect(harness.transport.sendSms).not.toHaveBeenCalled();
+  });
+
+  test('should judge the thread by who holds the line when the message is filed', async () => {
+    // The sender was looked up while the line was still the user's own; it
+    // was reassigned before the send transaction ran.
+    harness.phoneNumberFindUnique.mockResolvedValueOnce({
+      userId: 'user-2',
+      departmentId: null,
+    });
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      conversationId: 'conversation-1',
+      body: 'Hello there',
+      idempotencyKey: 'sms-reassigned-meanwhile',
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+    });
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+  });
+
   test('should refuse sends when the conversation is not accessible', async () => {
     harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
       null,
@@ -678,8 +732,18 @@ function createHarness() {
   });
   const messageConversationUpdate = vi.fn(async () => ({}));
   const messageSuppressionFindFirst = vi.fn(async () => null);
+  // Who holds the line as the send transaction reads it.
+  const phoneNumberFindUnique = vi.fn(
+    async (): Promise<{
+      userId: string | null;
+      departmentId: string | null;
+    } | null> => ({ userId: 'user-1', departmentId: null }),
+  );
 
   const transaction = {
+    phoneNumber: {
+      findUnique: phoneNumberFindUnique,
+    },
     message: {
       findUnique: messageFindUnique,
       create: messageCreate,
@@ -722,6 +786,7 @@ function createHarness() {
     messageCreate,
     messageUpdate,
     messageSuppressionFindFirst,
+    phoneNumberFindUnique,
     storedMessage: () => storedMessage,
     setStoredMessage: (message: ReturnType<typeof buildStoredMessage>) => {
       storedMessage = message;

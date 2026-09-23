@@ -147,6 +147,9 @@ export class MessageWebhookService {
               ...(event.channel === 'MMS'
                 ? { mmsEnabled: true }
                 : { smsEnabled: true }),
+              // A thread belongs to the line's owner; a line nobody holds has
+              // nobody to file the message under, like a reserved one.
+              OR: [{ userId: { not: null } }, { departmentId: { not: null } }],
             },
             select: {
               id: true,

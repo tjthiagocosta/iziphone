@@ -11,7 +11,7 @@ export type SendEligibility =
 
 type Thread = Pick<
   MessageConversation,
-  'contact' | 'isSuppressed' | 'sourcePhoneNumber'
+  'contact' | 'isSuppressed' | 'owner' | 'sourcePhoneNumber'
 >;
 
 /**
@@ -51,6 +51,20 @@ export function sendEligibility(
     return {
       canSend: false,
       reason: 'You cannot send from the number this conversation is on.',
+    };
+  }
+
+  // A line that changed hands leaves its old threads with their old owner.
+  // Somebody who can read one and still sends on the line, a member of both
+  // departments, writes to the contact from the new owner's thread instead.
+  if (
+    conversation.owner?.type !== sender.ownerType ||
+    conversation.owner.id !== sender.ownerId
+  ) {
+    return {
+      canSend: false,
+      reason:
+        'This number has changed hands since this conversation. Start a new message to write from it.',
     };
   }
 

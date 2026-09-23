@@ -3,10 +3,12 @@ import { type LoadedRange, watermarkOf } from '../paging';
 import { dayKey, formatDayLabel } from '../relative-time';
 
 /**
- * One thing that happened on a thread. A thread is a (contact, line) pair, so
- * a call belongs to it when it was on the same line with the same contact —
- * a call with that contact on another department's number belongs to that
- * department's thread instead, and never appears here.
+ * One thing that happened on a thread. A thread is a (contact, line) pair under
+ * the line's owner at the time, so a call belongs to it when it was on the same
+ * line with the same contact — a call with that contact on another
+ * department's number belongs to that department's thread instead, and never
+ * appears here. Calls are matched on the numbers only, so a reader who can see
+ * two owners' threads on one line sees both owners' calls in each.
  */
 export type TimelineEntry =
   | { kind: 'message'; key: string; at: number; message: Message }

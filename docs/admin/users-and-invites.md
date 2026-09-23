@@ -39,6 +39,11 @@ Deleting a user ends their sessions, removes the password they could return
 with and discards any outstanding link. Restoring them issues a fresh invite,
 since there is no password left to come back to.
 
+Their numbers go back to the reserved pool. The text conversations on those
+numbers stay attached to the deleted user and do not pass to whoever is given
+the numbers next; see
+[When a number changes hands](departments-and-routing.md#when-a-number-changes-hands).
+
 ## The first admin
 
 The first administrator is not invited by anyone; it is created by a command on

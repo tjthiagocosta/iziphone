@@ -7,6 +7,7 @@ import {
   type SendSms,
 } from '@repo/dto';
 import type { MessageConversationService } from './conversation.service.js';
+import { isLineOwnersThread } from './conversation-scope.js';
 import type { MessagingLogger } from './logger.js';
 import {
   MessagingMediaError,
@@ -58,6 +59,7 @@ export type SendRefusalReason =
   | 'sender_not_found'
   | 'conversation_not_found'
   | 'sender_mismatch'
+  | 'line_reassigned'
   | 'invalid_destination'
   | 'undeliverable_destination'
   | 'attachment_unavailable';
@@ -514,6 +516,29 @@ export class MessageSendService {
         return refusal(
           'sender_mismatch',
           'Conversation sender does not match fromPhoneNumberId',
+        );
+      }
+
+      /*
+       * The line has changed hands since this thread began. Its history stays
+       * with the owner it was started under, and a message sent now belongs
+       * to the new owner's thread, which a new conversation reaches. Somebody
+       * who can read both, a member of the old and the new department, would
+       * otherwise write into a thread its new owner cannot see.
+       *
+       * The owner is read again here rather than taken from `sender`, which
+       * was loaded before this transaction and before any media lookup: a
+       * reassignment in between would otherwise be missed.
+       */
+      const line = await tx.phoneNumber.findUnique({
+        where: { id: sender.id },
+        select: { userId: true, departmentId: true },
+      });
+
+      if (!line || !isLineOwnersThread(conversation, line)) {
+        return refusal(
+          'line_reassigned',
+          'This number has changed hands since this conversation; start a new conversation to message this contact from it',
         );
       }
 

@@ -12,6 +12,7 @@ import { MessagingContactService } from './contact.service.js';
 import {
   buildConversationScope,
   canAccessConversation,
+  lineOwnerOf,
   loadDepartmentIds,
 } from './conversation-scope.js';
 import { messageRecordInclude, toMessageDto } from './message-record.js';
@@ -259,9 +260,16 @@ export class MessageConversationService {
   }
 
   /**
+   * The thread a new message between this contact and this line belongs to:
+   * the one the line's current owner has with the contact, created if they
+   * have none. A thread under a previous owner of the line is never returned;
+   * it stays with that owner, and the line starts clean for the new one.
+   *
    * `contactPhoneNumber` must already be canonical: E.164 for a number, and a
    * short code or sender id as the provider sent it. Callers normalise at their
    * boundary.
+   *
+   * @throws Error when the line is gone, not active, or held by nobody.
    */
   async findOrCreateFor(
     contactPhoneNumber: string,
@@ -286,27 +294,44 @@ export class MessageConversationService {
       }),
     ]);
 
+    const owner = sourcePhoneNumber && lineOwnerOf(sourcePhoneNumber);
+
     if (
       !sourcePhoneNumber ||
       sourcePhoneNumber.deletedAt ||
-      sourcePhoneNumber.status !== 'ACTIVE'
+      sourcePhoneNumber.status !== 'ACTIVE' ||
+      !owner
     ) {
       throw new Error('Source phone number not found');
     }
 
+    const pair = { contactId: contact.id, sourcePhoneNumberId };
+
+    /*
+     * Upserted on the owner's own unique key so that two deliveries creating
+     * the same thread at once meet in the database. The existing row is left
+     * as it is: its owner is part of the key that found it.
+     */
     return dbClient.messageConversation.upsert({
-      where: {
-        contactId_sourcePhoneNumberId: {
-          contactId: contact.id,
-          sourcePhoneNumberId,
-        },
-      },
+      where:
+        owner.kind === 'user'
+          ? {
+              contactId_sourcePhoneNumberId_userId: {
+                ...pair,
+                userId: owner.userId,
+              },
+            }
+          : {
+              contactId_sourcePhoneNumberId_departmentId: {
+                ...pair,
+                departmentId: owner.departmentId,
+              },
+            },
       update: {},
       create: {
-        contactId: contact.id,
-        sourcePhoneNumberId,
-        userId: sourcePhoneNumber.userId,
-        departmentId: sourcePhoneNumber.departmentId,
+        ...pair,
+        userId: owner.kind === 'user' ? owner.userId : null,
+        departmentId: owner.kind === 'department' ? owner.departmentId : null,
       },
       select: sendRecordSelect,
     });

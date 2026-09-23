@@ -134,8 +134,9 @@ function ContactItem({
         )}
 
         {/*
-         * One thread per line, so the lines are the links: opening "the"
-         * conversation would mean picking one of them for the reader.
+         * One thread per line and owner of that line, so the threads are the
+         * links: opening "the" conversation would mean picking one of them
+         * for the reader.
          */}
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {contact.conversations.map((conversation) => (

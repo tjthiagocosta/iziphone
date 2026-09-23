@@ -27,7 +27,18 @@ const contact: MessageConversation['contact'] = {
   phoneNumber: '+15155550123',
 };
 
-const conversation = { contact, isSuppressed: false, sourcePhoneNumber: line };
+const owner: MessageConversation['owner'] = {
+  type: 'department',
+  id: 'dept-1',
+  name: 'Sales',
+};
+
+const conversation = {
+  contact,
+  isSuppressed: false,
+  owner,
+  sourcePhoneNumber: line,
+};
 
 describe('sendEligibility', () => {
   test('allows a reply from a line the user sends on', () => {
@@ -68,6 +79,29 @@ describe('sendEligibility', () => {
         [sender],
       ),
     ).toEqual({ canSend: true });
+  });
+
+  test('refuses a thread from before the line changed hands', () => {
+    // The line moved from Sales to Support and the reader is in both: they
+    // still read Sales' thread and still send on the line, but a message now
+    // belongs to Support's thread, which the API would otherwise refuse only
+    // after typing.
+    const outcome = sendEligibility(conversation, [
+      { ...sender, ownerId: 'dept-2', ownerName: 'Support' },
+    ]);
+
+    expect(outcome.canSend).toBe(false);
+    expect(outcome.canSend === false && outcome.reason).toMatch(
+      /changed hands/,
+    );
+    expect(
+      sendEligibility(conversation, [
+        { ...sender, ownerType: 'user', ownerId: 'dept-1' },
+      ]),
+    ).toMatchObject({ canSend: false });
+    expect(
+      sendEligibility({ ...conversation, owner: null }, [sender]),
+    ).toMatchObject({ canSend: false });
   });
 
   test('refuses a line that cannot text at all', () => {

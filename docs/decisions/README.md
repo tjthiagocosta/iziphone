@@ -23,6 +23,7 @@ would otherwise ask "why not the obvious way?".
 | [0008](0008-a-sender-is-not-always-a-phone-number.md) | A sender is not always a phone number | 2026-09-20 |
 | [0009](0009-declining-a-call-stops-your-ring-only.md) | Declining a call stops your ring only | 2026-09-21 |
 | [0010](0010-the-controller-relays-a-notification-it-does-not-understand.md) | The controller relays a notification it does not understand | 2026-09-22 |
+| [0011](0011-a-lines-history-stays-with-the-owner-it-was-written-under.md) | A line's history stays with the owner it was written under | 2026-09-23 |
 
 ## Writing one
 

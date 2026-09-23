@@ -256,6 +256,33 @@ describe('messageRoutes', () => {
     });
   });
 
+  test('should return 400 for a reply in a thread from before the line changed hands', async () => {
+    // 400 rather than 409: the web reads 409 as a failure the API stored, and
+    // nothing is stored here.
+    sendSmsSpy.mockResolvedValueOnce({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+      detail: 'This number has changed hands since this conversation',
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/',
+      payload: {
+        fromPhoneNumberId: 'phone-1',
+        conversationId: 'conversation-1',
+        body: 'Hello there',
+        idempotencyKey: 'sms-reassigned',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'Bad Request',
+      message: 'This number has changed hands since this conversation',
+    });
+  });
+
   test('should return 409 when the recipient is suppressed', async () => {
     const message = buildMessage({
       status: 'FAILED',

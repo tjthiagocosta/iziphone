@@ -31,6 +31,17 @@ There is no migrations directory yet: the schema is applied with
 `prisma db push`, which reshapes the database to match rather than replaying a
 migration.
 
+`db:push` stops with a data-loss warning whenever a change adds a unique
+constraint, because existing rows could break it. Read the warning before
+accepting it with `pnpm db:push -- --accept-data-loss`. Changes known to be
+safe:
+
+- **Text conversations keyed by owner** ([decision 0011](../decisions/0011-a-lines-history-stays-with-the-owner-it-was-written-under.md)).
+  The unique key on `message_conversations` (contact, number) is replaced by
+  two: (contact, number, user) and (contact, number, department). The old key
+  was stricter, so no existing row can break the new ones, and existing rows
+  need no backfill: each already names the owner it belongs to.
+
 Once the services are up, `GET /health` answers without touching the bucket,
 and `GET /health/storage` and `GET /health/all` (admin only) report whether the
 bucket answers.

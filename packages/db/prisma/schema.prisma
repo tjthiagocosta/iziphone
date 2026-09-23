@@ -381,7 +381,13 @@ model MessageConversation {
   createdAt           DateTime               @default(now()) @map("created_at")
   updatedAt           DateTime               @updatedAt @map("updated_at")
 
-  @@unique([contactId, sourcePhoneNumberId])
+  /// One thread per contact, line and owner: a line that changes hands starts
+  /// a new thread for its new owner and the old one stays with the old owner
+  /// (docs/decisions/0011). A number has one owner, a user or a department,
+  /// so each row falls under exactly one of these two keys; Postgres leaves
+  /// the NULL side of the other out of it.
+  @@unique([contactId, sourcePhoneNumberId, userId])
+  @@unique([contactId, sourcePhoneNumberId, departmentId])
   @@index([userId, lastMessageAt])
   @@index([departmentId, lastMessageAt])
   @@index([sourcePhoneNumberId])

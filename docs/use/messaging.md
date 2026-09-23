@@ -25,6 +25,11 @@ threads, each labelled with its line. Text conversations on a number are shared
 with everyone who works that line, so a teammate can pick up where you left off.
 A department page shows the same inbox scoped to that department's line.
 
+When an administrator gives a number to somebody else, its conversations stay
+with whoever had it. You keep reading the threads from your time on the number
+but can no longer send from it; the new owner starts with none of them, and
+anything the contact sends afterwards goes to the new owner.
+
 ## When a message arrives
 
 A message shows up on its own; you do not have to reload. A sound plays, and the
@@ -64,6 +69,7 @@ The composer is disabled with the reason above it:
 - "This sender cannot receive replies." — the thread is with a service that texts from a name rather than a number, and the carrier has no address to send an answer to. The messages are kept; nothing can go back.
 - "This contact has opted out of messages from this number." — they replied STOP. Nothing more can be sent to them from this line.
 - "You cannot send from the number this conversation is on." — the line is not one of yours.
+- "This number has changed hands since this conversation. Start a new message to write from it." — the number moved to somebody else since this thread, for example from one of your departments to another. The thread stays readable; write to the contact with **New message** from the number, which goes to its current owner's thread.
 - "This number cannot send text messages." — the line has no SMS capability.
 
 A message the provider rejected appears in the thread in red with the reason, so

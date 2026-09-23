@@ -178,7 +178,7 @@ describe('MessageConversationService', () => {
     expect(messageFindMany).not.toHaveBeenCalled();
   });
 
-  test('should upsert conversations by contact and source phone number', async () => {
+  test('should find or create the thread of the user who holds the line now', async () => {
     phoneNumberFindUnique.mockResolvedValueOnce({
       id: 'phone-1',
       deletedAt: null,
@@ -194,42 +194,73 @@ describe('MessageConversationService', () => {
       undefined,
       expect.any(Object),
     );
-    expect(messageConversationUpsert).toHaveBeenCalledWith({
-      where: {
-        contactId_sourcePhoneNumberId: {
+    // The owner is part of the key, so a thread started under a previous
+    // owner of the line is never found here, and an existing one is never
+    // handed over: `update` stays empty.
+    expect(messageConversationUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          contactId_sourcePhoneNumberId_userId: {
+            contactId: 'contact-1',
+            sourcePhoneNumberId: 'phone-1',
+            userId: 'user-1',
+          },
+        },
+        update: {},
+        create: {
           contactId: 'contact-1',
           sourcePhoneNumberId: 'phone-1',
+          userId: 'user-1',
+          departmentId: null,
         },
-      },
-      update: {},
-      create: {
-        contactId: 'contact-1',
-        sourcePhoneNumberId: 'phone-1',
-        userId: 'user-1',
-        departmentId: null,
-      },
-      select: {
-        id: true,
-        contactId: true,
-        sourcePhoneNumberId: true,
-        userId: true,
-        departmentId: true,
-        contact: {
-          select: {
-            id: true,
-            name: true,
-            phoneNumber: true,
-          },
-        },
-        sourcePhoneNumber: {
-          select: {
-            id: true,
-            phoneNumber: true,
-            label: true,
-          },
-        },
-      },
+      }),
+    );
+  });
+
+  test('should find or create the thread of the department that holds the line now', async () => {
+    phoneNumberFindUnique.mockResolvedValueOnce({
+      id: 'phone-1',
+      deletedAt: null,
+      status: 'ACTIVE',
+      userId: null,
+      departmentId: 'dept-1',
     });
+
+    await service.findOrCreateFor('+15555550123', 'phone-1');
+
+    expect(messageConversationUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          contactId_sourcePhoneNumberId_departmentId: {
+            contactId: 'contact-1',
+            sourcePhoneNumberId: 'phone-1',
+            departmentId: 'dept-1',
+          },
+        },
+        update: {},
+        create: {
+          contactId: 'contact-1',
+          sourcePhoneNumberId: 'phone-1',
+          userId: null,
+          departmentId: 'dept-1',
+        },
+      }),
+    );
+  });
+
+  test('should refuse to create a conversation on a line nobody holds', async () => {
+    phoneNumberFindUnique.mockResolvedValueOnce({
+      id: 'phone-1',
+      deletedAt: null,
+      status: 'ACTIVE',
+      userId: null,
+      departmentId: null,
+    });
+
+    await expect(
+      service.findOrCreateFor('+15555550123', 'phone-1'),
+    ).rejects.toThrow('Source phone number not found');
+    expect(messageConversationUpsert).not.toHaveBeenCalled();
   });
 
   test('should refuse to create a conversation for an inactive source number', async () => {

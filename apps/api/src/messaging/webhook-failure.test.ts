@@ -58,15 +58,29 @@ describe('classifyWebhookWriteFailure', () => {
   });
 
   test('reads a collision on the conversation as a race worth running again', () => {
+    // A conversation is keyed on the contact, the line and the line's owner,
+    // a user or a department, and either key can be the one that collided.
     expect(
       classifyWebhookWriteFailure(
         uniqueViolation({
-          fields: ['contact_id', 'source_phone_number_id'],
+          index:
+            'message_conversations_contact_id_source_phone_number_id_use_key',
         }),
       ),
     ).toEqual({
       kind: 'lost-race',
-      constraint: 'contact_id,source_phone_number_id',
+      constraint:
+        'message_conversations_contact_id_source_phone_number_id_use_key',
+    });
+    expect(
+      classifyWebhookWriteFailure(
+        uniqueViolation({
+          fields: ['contact_id', 'source_phone_number_id', 'department_id'],
+        }),
+      ),
+    ).toEqual({
+      kind: 'lost-race',
+      constraint: 'contact_id,source_phone_number_id,department_id',
     });
   });
 
