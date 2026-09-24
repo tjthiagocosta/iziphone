@@ -201,9 +201,13 @@ Redis lock (`telephony:reconcile`, `SET NX PX`) and keeps it for nine rounds,
 one short of the time to the next, so that its holder finds it lapsed when
 that comes. An instance that finds it taken stays due and tries again every
 round until it lapses. An instance that stops starts no further call's
-reconciliation, waits for the calls already under way, so that none is cut
-off between its state write and the events that tell the API, and then gives
-the lock up, so the one that starts next reconciles at once. The cost is one
+reconciliation, waits up to eight seconds for the calls already under way, so
+that none is cut off between its state write and the events that tell the
+API, and then gives the lock up regardless, so the one that starts next
+reconciles at once. The wait is bounded because handling a call can wait on
+Twilio for longer than a container is commonly given to stop; a call still
+being handled at the deadline can lose its end, and the next reconciliation
+covers what it can. The cost is one
 Twilio request per leg of every live call every five minutes, however many
 instances run.
 

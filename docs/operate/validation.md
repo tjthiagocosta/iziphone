@@ -46,9 +46,14 @@ Calls in progress survive an upgrade of the call controller: their state is in
 Redis, and the controller that starts finds every call's state, including one
 it did not track yet, claims its people again and asks Twilio whether it is
 still going. Stop the old controller with `SIGTERM` rather than killing it: it
-then finishes the calls it is asking Twilio about, a few seconds at most, and
+then finishes the calls it is asking Twilio about, for up to eight seconds, and
 gives up the reconcile lock, so the new one asks Twilio at once instead of
-within five minutes.
+within five minutes. Give it at least ten seconds to stop, as Docker does by
+default. A call still being handled when the eight seconds run out, which
+takes a slow or unreachable Twilio, can lose its end: the API is never told it
+ended and keeps showing it in progress. The next reconciliation covers what it
+can, a call whose state is still in Redis, but not one whose state was removed
+before its end was reported.
 
 Once the services are up, `GET /health` answers without touching the bucket,
 and `GET /health/storage` and `GET /health/all` (admin only) report whether the

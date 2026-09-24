@@ -1,7 +1,11 @@
 import { AVAILABILITY } from '@repo/events';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createFakeLogger } from '../test/fake-logger.js';
-import { RECONCILE_EVERY_ROUNDS, startClaimRenewal } from './claim-renewal.js';
+import {
+  RECONCILE_EVERY_ROUNDS,
+  STOP_DEADLINE_MS,
+  startClaimRenewal,
+} from './claim-renewal.js';
 
 const INTERVAL = AVAILABILITY.CLAIM_RENEW_INTERVAL_MS;
 
@@ -252,6 +256,33 @@ describe('startClaimRenewal', () => {
       finishCall();
       await stopping;
       expect(telephony.lockHolder()).toBeUndefined();
+    });
+
+    test('gives the lock up at the deadline when a call the reconciliation started is never done', async () => {
+      const flow = buildFlow();
+      flow.reconcileWithTwilio.mockImplementation(
+        () => new Promise<undefined>(() => undefined),
+      );
+      const telephony = buildTelephony();
+      const log = createFakeLogger();
+      const renewal = startClaimRenewal({ flow, telephony, log });
+      await vi.advanceTimersByTimeAsync(0);
+
+      let stopped = false;
+      const stopping = renewal.stop().then(() => {
+        stopped = true;
+      });
+      await vi.advanceTimersByTimeAsync(STOP_DEADLINE_MS - 1);
+      expect(stopped).toBe(false);
+      expect(telephony.lockHolder()).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await stopping;
+      expect(telephony.lockHolder()).toBeUndefined();
+      expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+        { deadlineMs: STOP_DEADLINE_MS },
+        expect.stringContaining('the next one covers what it can'),
+      );
     });
 
     test('a stop while the lock is being taken starts no call and still gives the lock up', async () => {

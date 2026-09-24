@@ -29,11 +29,19 @@ import type { TelephonyService } from './telephony.service.js';
  */
 export const RECONCILE_EVERY_ROUNDS = 10;
 
+/**
+ * How long a stop waits for the reconciliation under way before it gives the
+ * lock up anyway: under the ten seconds Docker gives a container to stop by
+ * default, so that the deadline, not a kill, is what ends the wait.
+ */
+export const STOP_DEADLINE_MS = 8000;
+
 export interface ClaimRenewal {
   /**
    * Stop the rounds, let a reconciliation under way finish the calls it
-   * already started, and then give the reconcile lock up if this instance
-   * holds it, so that whichever starts next reconciles at once.
+   * already started, for up to `STOP_DEADLINE_MS`, and then give the
+   * reconcile lock up if this instance holds it, so that whichever starts
+   * next reconciles at once.
    */
   stop(): Promise<void>;
 }
@@ -146,10 +154,25 @@ export function startClaimRenewal(deps: {
     async stop() {
       // A call cut off between its state write and its events would leave
       // the API believing it is still going, with nothing left to replay.
-      // The ones under way finish, a few seconds at most; no other starts.
+      // No other call starts, and those under way get until the deadline:
+      // usually well under a second, but a slow Twilio can hold a call's
+      // hangups for as long as its client waits.
       stopping.abort();
       clearInterval(timer);
-      await reconciliation;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const finished = await Promise.race([
+        reconciliation.then(() => true),
+        new Promise<false>((resolve) => {
+          deadline = setTimeout(() => resolve(false), STOP_DEADLINE_MS);
+        }),
+      ]);
+      clearTimeout(deadline);
+      if (!finished) {
+        log.warn(
+          { deadlineMs: STOP_DEADLINE_MS },
+          'Stopped before the reconciliation under way was done; the next one covers what it can',
+        );
+      }
       try {
         await telephony.releaseReconcileLock(holder);
       } catch (error) {
