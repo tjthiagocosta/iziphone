@@ -62,7 +62,7 @@ describe('planInboundCall', () => {
       strategy: 'SIMULTANEOUS',
       userIds: ['user-1'],
       ringDuration: undefined,
-      whenNobodyIsOnline: 'user-unavailable',
+      whenNobodyIsAvailable: 'user-unavailable',
     });
   });
 
@@ -72,7 +72,7 @@ describe('planInboundCall', () => {
       strategy: 'SIMULTANEOUS',
       userIds: ['user-b', 'user-a', 'user-c'],
       ringDuration: 25,
-      whenNobodyIsOnline: 'no-agents',
+      whenNobodyIsAvailable: 'no-agents',
     });
   });
 
@@ -90,7 +90,7 @@ describe('planInboundCall', () => {
       strategy: 'FIXED_ORDER',
       userIds: ['user-a', 'user-b', 'user-c'],
       ringDuration: 25,
-      whenNobodyIsOnline: 'fixed-order-unavailable',
+      whenNobodyIsAvailable: 'fixed-order-unavailable',
     });
   });
 

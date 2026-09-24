@@ -9,6 +9,8 @@ import type { CallParticipantType } from '@repo/events';
  * Everything the controller remembers about a live call. A call is a Twilio
  * conference; each person in it is a leg (a Twilio call SID). The state lives
  * in Redis for the duration of the call and is deleted when it is finalized.
+ * Every write is made from the version it read and refused if another write
+ * landed in between; see `TelephonyService.updateCallState`.
  */
 
 export interface CallParticipant {
@@ -22,6 +24,11 @@ export interface LegMetadata extends CallParticipant {
 }
 
 export interface CallState {
+  /**
+   * Grows with every write. A change decided on an older version is refused
+   * and decided again on the current one.
+   */
+  version: number;
   conversationUuid: string;
   /** The Twilio conference friendly name; see `conversationNameFor`. */
   conversationName: string;
@@ -110,6 +117,59 @@ export function legUuidsOf(state: CallState): string[] {
 
 export function hasActiveLegs(state: CallState): boolean {
   return legUuidsOf(state).length > 0;
+}
+
+/**
+ * The users this call keeps from being offered another: the agent talking on
+ * it (on hold or not, and from the moment they dial out), everybody whose leg
+ * joined it and has not dropped yet (the agent who handed it to a teammate,
+ * until their leg is gone), everybody it is still ringing before anyone
+ * answers, and the teammate a transfer is ringing. Once nobody will pick up
+ * (voicemail) it keeps nobody. Ending changes none of this: each keeps their
+ * place until their leg drops, and a ring that lost to an answer stays let go
+ * although its leg is not reported gone yet.
+ */
+export function occupantsOf(state: CallState): string[] {
+  if (state.voicemail) {
+    return [];
+  }
+
+  const talking = state.agentLegUuid ? state.activeAgentUserId : undefined;
+  const joined = Object.entries(state.agentLegs)
+    .filter(([legUuid]) => !state.pendingAgentLegUuids.includes(legUuid))
+    .map(([, userId]) => userId);
+  // After an answer the rings that lost are only waiting to be reported gone.
+  const ringing = state.answered
+    ? []
+    : state.pendingAgentLegUuids.map((legUuid) => state.agentLegs[legUuid]);
+  const users = new Set(
+    [talking, ...joined, ...ringing, state.pendingTransferToUserId].filter(
+      (userId): userId is string => Boolean(userId),
+    ),
+  );
+
+  return [...users];
+}
+
+/**
+ * Who a change to the call let go: everybody it occupied, or had a leg on,
+ * before the change and no longer occupies after it. `after` is null when the
+ * change ended the call.
+ */
+export function usersLetGo(
+  before: CallState,
+  after: CallState | null,
+): string[] {
+  const stillOccupied = new Set(after ? occupantsOf(after) : []);
+  const legsAfter = after?.agentLegs ?? {};
+  const candidates = new Set([
+    ...occupantsOf(before),
+    ...Object.entries(before.agentLegs)
+      .filter(([legUuid]) => !(legUuid in legsAfter))
+      .map(([, userId]) => userId),
+  ]);
+
+  return [...candidates].filter((userId) => !stillOccupied.has(userId));
 }
 
 /** Forget a leg that has left the call. Mutates `state`; callers save it. */

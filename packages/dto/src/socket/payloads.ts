@@ -80,6 +80,32 @@ export const MessageActivitySchema = z.object({
   conversationId: EntityIdSchema,
 });
 
+/**
+ * Whether a user can be offered a call. `available` is the only state in
+ * which a call rings them; the others say why not, in the order they win:
+ * no softphone connected, do not disturb, then already on or being offered
+ * another call.
+ */
+export const AvailabilityStateSchema = z.enum([
+  'available',
+  'offline',
+  'dnd',
+  'busy',
+]);
+
+/**
+ * A user's availability, sent to that user's own softphones whenever it
+ * changes. Nothing about the call that made them busy travels with it.
+ * `revision` only grows: a softphone keeps the highest it has applied and
+ * drops anything older, and reads a snapshot on every (re)connect, because a
+ * change sent while it was away is not sent again.
+ */
+export const UserAvailabilitySchema = z.object({
+  userId: EntityIdSchema,
+  state: AvailabilityStateSchema,
+  revision: z.number().int().nonnegative(),
+});
+
 export const AuthRefreshedSchema = z.object({
   success: z.boolean(),
   error: z.string().optional(),
@@ -125,6 +151,10 @@ export type TransferFailureReason = z.infer<typeof TransferFailureReasonSchema>;
 export type CallTransferOutcome = z.infer<typeof CallTransferOutcomeSchema>;
 export type MessageActivityKind = z.infer<typeof MessageActivityKindSchema>;
 export type MessageActivity = z.infer<typeof MessageActivitySchema>;
+export type AvailabilityState = z.infer<typeof AvailabilityStateSchema>;
+/** Why a user cannot be offered a call: every state but `available`. */
+export type UnavailableReason = Exclude<AvailabilityState, 'available'>;
+export type UserAvailability = z.infer<typeof UserAvailabilitySchema>;
 export type AuthRefreshed = z.infer<typeof AuthRefreshedSchema>;
 export type SocketError = z.infer<typeof SocketErrorSchema>;
 export type UserSocketRegistration = z.infer<

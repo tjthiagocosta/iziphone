@@ -51,7 +51,8 @@ validation, `routing/` the cache lookup with its API fallback, business hours
 and the pure inbound call plan, `calls/` the call state in Redis, the Twilio
 telephony service, the call flow the webhooks drive, the voice and webhook
 routes and the Redis command and event bridges, `realtime/` the Socket.IO
-server, its auth, presence and the call-ended broadcast, and `health/` the
+server, its auth, presence, availability (do not disturb, the per-user call
+claims and the pure rule over them) and the call-ended broadcast, and `health/` the
 health routes. `calls` never imports `realtime`; `app.ts` passes it in behind
 the `CallRealtime` interface.
 

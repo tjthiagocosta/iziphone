@@ -1,12 +1,18 @@
 import {
+  AVAILABILITY_LOOKUP_MAX_USERS,
+  AvailabilityLookupQuerySchema,
+  type AvailabilityLookupResponse,
   type CallControlRefusal,
+  DoNotDisturbSchema,
   HoldCallSchema,
   type OutboundGrantRefusal,
   OutboundGrantRequestSchema,
   type OutboundGrantResponse,
+  type OwnAvailabilityResponse,
   type Role,
   TransferCallSchema,
   toE164PhoneNumber,
+  type UserAvailability,
   type VoiceHangupResponse,
   type VoiceHoldResponse,
   type VoiceTokenResponse,
@@ -23,10 +29,11 @@ import type { TelephonyService } from './telephony.service.js';
 /*
  * What the softphone calls directly: a Twilio access token to register the
  * browser, the grant to place an outbound call on, and the controls an agent
- * has over a call they are on: hang up, hold and transfer. Requests carry the
- * realtime JWT the API issued; the controls also name the agent's own leg, so
- * each one is checked against the live call and answered with what actually
- * happened to it.
+ * has over a call they are on: hang up, hold and transfer; and who can take
+ * a call, with the agent's own do not disturb. Requests carry the realtime
+ * JWT the API issued; the controls also name the agent's own leg, so each one
+ * is checked against the live call and answered with what actually happened
+ * to it.
  */
 
 interface AuthenticatedUser {
@@ -39,6 +46,16 @@ declare module 'fastify' {
   interface FastifyRequest {
     user?: AuthenticatedUser;
   }
+}
+
+/** Who can take a call. The realtime layer keeps it; `app.ts` passes it in. */
+export interface AvailabilityLookup {
+  availabilityOf(userIds: string[]): Promise<UserAvailability[]>;
+  ownAvailability(userId: string): Promise<OwnAvailabilityResponse>;
+  setDoNotDisturb(
+    userId: string,
+    on: boolean,
+  ): Promise<OwnAvailabilityResponse>;
 }
 
 export interface VoiceRouteOptions {
@@ -60,6 +77,7 @@ export interface VoiceRouteOptions {
     | 'cancelTransfer'
     | 'declineOfferedCall'
   >;
+  availability: AvailabilityLookup;
 }
 
 const GRANT_REFUSAL_STATUS: Record<OutboundGrantRefusal, number> = {
@@ -76,6 +94,8 @@ const REFUSAL_STATUS: Record<CallControlRefusal, number> = {
   'no-transfer-pending': 409,
   'transfer-to-self': 409,
   'target-on-call': 409,
+  'target-busy': 409,
+  'target-dnd': 409,
   'target-offline': 409,
   'call-gone': 409,
   'provider-error': 502,
@@ -83,7 +103,7 @@ const REFUSAL_STATUS: Record<CallControlRefusal, number> = {
 
 export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
   fastify,
-  { telephony, flow },
+  { telephony, flow, availability },
 ) => {
   const requireAuth = async (request: FastifyRequest, reply: FastifyReply) => {
     const header = request.headers.authorization;
@@ -307,6 +327,63 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
         conversationUuid: result.conversationUuid,
         targetUserId: result.targetUserId,
       } satisfies VoiceTransferResponse;
+    },
+  );
+
+  // What the transfer picker shows. It only informs the choice: a transfer
+  // to somebody who cannot take it is refused on its own when it is asked for.
+  fastify.get(
+    '/api/voice/availability',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const query = AvailabilityLookupQuerySchema.safeParse(request.query);
+      if (!query.success) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: `userIds must list between 1 and ${AVAILABILITY_LOOKUP_MAX_USERS} user ids`,
+        });
+      }
+
+      return {
+        users: await availability.availabilityOf(query.data.userIds),
+      } satisfies AvailabilityLookupResponse;
+    },
+  );
+
+  fastify.get(
+    '/api/voice/availability/me',
+    { preHandler: requireAuth },
+    async (request) => {
+      const user = requireUser(request);
+      return (await availability.ownAvailability(
+        user.id,
+      )) satisfies OwnAvailabilityResponse;
+    },
+  );
+
+  fastify.put(
+    '/api/voice/availability/me/do-not-disturb',
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const user = requireUser(request);
+
+      const body = DoNotDisturbSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply.status(400).send({
+          error: 'Bad Request',
+          message: 'doNotDisturb must be a boolean',
+        });
+      }
+
+      const own = await availability.setDoNotDisturb(
+        user.id,
+        body.data.doNotDisturb,
+      );
+      request.log.info(
+        { userId: user.id, doNotDisturb: own.doNotDisturb },
+        'Changed do not disturb',
+      );
+      return own satisfies OwnAvailabilityResponse;
     },
   );
 

@@ -1,3 +1,4 @@
+import type { OwnAvailabilityResponse, UserAvailability } from '@repo/dto';
 import { signJWT } from '@repo/events';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -10,6 +11,7 @@ import type { CallState, LegMetadata } from './call-state.js';
 import { voiceRoutes } from './voice.routes.js';
 
 const activeCall: CallState = {
+  version: 3,
   conversationUuid: 'CAcall1',
   conversationName: 'call-CAcall1',
   direction: 'inbound',
@@ -66,17 +68,52 @@ function buildFlow() {
   };
 }
 
+const ownAvailability: OwnAvailabilityResponse = {
+  availability: { userId: 'user-1', state: 'available', revision: 4 },
+  doNotDisturb: false,
+};
+
+function buildAvailability() {
+  return {
+    availabilityOf: vi.fn(async (userIds: string[]) =>
+      userIds.map(
+        (userId): UserAvailability => ({
+          userId,
+          state: 'busy',
+          revision: 2,
+        }),
+      ),
+    ),
+    ownAvailability: vi.fn(async () => ownAvailability),
+    setDoNotDisturb: vi.fn(
+      async (
+        _userId: string,
+        on: boolean,
+      ): Promise<OwnAvailabilityResponse> => ({
+        availability: {
+          userId: 'user-1',
+          state: on ? 'dnd' : 'available',
+          revision: 5,
+        },
+        doNotDisturb: on,
+      }),
+    ),
+  };
+}
+
 describe('voiceRoutes', () => {
   let app: FastifyInstance;
   let telephony: ReturnType<typeof buildTelephony>;
   let flow: ReturnType<typeof buildFlow>;
+  let availability: ReturnType<typeof buildAvailability>;
   let authorization: string;
 
   beforeEach(async () => {
     telephony = buildTelephony();
     flow = buildFlow();
+    availability = buildAvailability();
     app = await createControllerRouteApp(voiceRoutes, {
-      registerOptions: { telephony, flow },
+      registerOptions: { telephony, flow, availability },
     });
     const token = await signJWT(
       { sub: 'user-1', email: 'agent@example.com', role: 'AGENT' },
@@ -563,6 +600,8 @@ describe('voiceRoutes', () => {
       ['transfer-pending', 409],
       ['transfer-to-self', 409],
       ['target-on-call', 409],
+      ['target-busy', 409],
+      ['target-dnd', 409],
       ['target-offline', 409],
       ['no-transfer-pending', 409],
       ['call-gone', 409],
@@ -613,6 +652,99 @@ describe('voiceRoutes', () => {
 
       expect(response.statusCode).toBe(status);
       expect(response.json()).toMatchObject({ code: refusal });
+    });
+  });
+
+  describe('availability', () => {
+    test('requires a bearer token', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/voice/availability?userIds=user-2',
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(availability.availabilityOf).not.toHaveBeenCalled();
+    });
+
+    test('reports where each teammate stands, once each', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/voice/availability?userIds=user-2,user-3,user-2',
+        headers: { authorization },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        users: [
+          { userId: 'user-2', state: 'busy', revision: 2 },
+          { userId: 'user-3', state: 'busy', revision: 2 },
+        ],
+      });
+      expect(availability.availabilityOf).toHaveBeenCalledWith([
+        'user-2',
+        'user-3',
+      ]);
+    });
+
+    test.each([
+      ['no list', ''],
+      ['an empty list', '?userIds=,'],
+      [
+        'too many teammates',
+        `?userIds=${Array.from({ length: 201 }, (_, index) => `user-${index}`).join(',')}`,
+      ],
+    ])('answers 400 to %s', async (_name, query) => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/voice/availability${query}`,
+        headers: { authorization },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(availability.availabilityOf).not.toHaveBeenCalled();
+    });
+
+    test('reports the asking user their own availability and do not disturb', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/voice/availability/me',
+        headers: { authorization },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(ownAvailability);
+      expect(availability.ownAvailability).toHaveBeenCalledWith('user-1');
+    });
+
+    test('turns do not disturb on for the asking user only', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/voice/availability/me/do-not-disturb',
+        headers: { authorization },
+        payload: { doNotDisturb: true, userId: 'user-2' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        availability: { userId: 'user-1', state: 'dnd', revision: 5 },
+        doNotDisturb: true,
+      });
+      expect(availability.setDoNotDisturb).toHaveBeenCalledExactlyOnceWith(
+        'user-1',
+        true,
+      );
+    });
+
+    test('answers 400 to a do not disturb that is not a boolean', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/api/voice/availability/me/do-not-disturb',
+        headers: { authorization },
+        payload: { doNotDisturb: 'yes' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(availability.setDoNotDisturb).not.toHaveBeenCalled();
     });
   });
 });

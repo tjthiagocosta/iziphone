@@ -106,7 +106,7 @@ export type InboundCallPlan =
       /** In ring order for FIXED_ORDER; order is irrelevant otherwise. */
       userIds: string[];
       ringDuration: number | undefined;
-      whenNobodyIsOnline: Extract<
+      whenNobodyIsAvailable: Extract<
         VoicemailReason,
         'user-unavailable' | 'fixed-order-unavailable' | 'no-agents'
       >;
@@ -126,7 +126,7 @@ export function planInboundCall(
       strategy: 'SIMULTANEOUS',
       userIds: routing.userIds,
       ringDuration: routing.settings?.ringDuration,
-      whenNobodyIsOnline: 'user-unavailable',
+      whenNobodyIsAvailable: 'user-unavailable',
     };
   }
 
@@ -167,7 +167,7 @@ export function planInboundCall(
       strategy: 'FIXED_ORDER',
       userIds: ordered,
       ringDuration: settings.ringDuration,
-      whenNobodyIsOnline: 'fixed-order-unavailable',
+      whenNobodyIsAvailable: 'fixed-order-unavailable',
     };
   }
 
@@ -176,6 +176,6 @@ export function planInboundCall(
     strategy: 'SIMULTANEOUS',
     userIds: routing.userIds,
     ringDuration: settings?.ringDuration,
-    whenNobodyIsOnline: 'no-agents',
+    whenNobodyIsAvailable: 'no-agents',
   };
 }

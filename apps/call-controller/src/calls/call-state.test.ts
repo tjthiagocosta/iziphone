@@ -4,13 +4,16 @@ import {
   conversationNameFor,
   hasActiveLegs,
   legUuidsOf,
+  occupantsOf,
   parseConversationName,
   participantOfLeg,
   removeLeg,
+  usersLetGo,
 } from './call-state.js';
 
 function buildState(overrides: Partial<CallState> = {}): CallState {
   return {
+    version: 1,
     conversationUuid: 'CAcall1',
     conversationName: 'call-CAcall1',
     direction: 'inbound',
@@ -91,5 +94,136 @@ describe('participantOfLeg', () => {
       participantId: '+15555550102',
     });
     expect(participantOfLeg(state, 'CAunknown')).toBeNull();
+  });
+});
+
+describe('occupantsOf', () => {
+  test('a call still ringing occupies everybody it rings', () => {
+    const ringing = buildState({
+      answered: false,
+      agentLegUuid: undefined,
+      agentLegs: { CAagent1: 'user-1', CAagent2: 'user-2' },
+      pendingAgentLegUuids: ['CAagent1', 'CAagent2'],
+    });
+
+    expect(occupantsOf(ringing)).toEqual(['user-1', 'user-2']);
+  });
+
+  test('an answered call occupies the agent talking, not the rings that lost', () => {
+    const answered = buildState({ activeAgentUserId: 'user-1' });
+
+    expect(occupantsOf(answered)).toEqual(['user-1']);
+  });
+
+  test('a held call still occupies its agent', () => {
+    expect(
+      occupantsOf(buildState({ activeAgentUserId: 'user-1', held: true })),
+    ).toEqual(['user-1']);
+  });
+
+  test('a transfer occupies both the agent handing it over and the teammate', () => {
+    const transferring = buildState({
+      activeAgentUserId: 'user-1',
+      pendingTransferToUserId: 'user-3',
+    });
+
+    expect(occupantsOf(transferring)).toEqual(['user-1', 'user-3']);
+  });
+
+  test('after a transfer the agent who handed it over stays occupied until their leg is gone', () => {
+    const handedOver = buildState({
+      agentLegUuid: 'CAagent3',
+      activeAgentUserId: 'user-3',
+      agentLegs: { CAagent1: 'user-1', CAagent3: 'user-3' },
+      pendingAgentLegUuids: [],
+    });
+
+    expect(occupantsOf(handedOver)).toEqual(['user-3', 'user-1']);
+    expect(
+      occupantsOf({ ...handedOver, agentLegs: { CAagent3: 'user-3' } }),
+    ).toEqual(['user-3']);
+  });
+
+  test('an outbound call occupies the agent from the moment they dial', () => {
+    const dialing = buildState({
+      direction: 'outbound',
+      routingType: 'OUTBOUND',
+      answered: false,
+      callerLegUuid: undefined,
+      agentLegUuid: 'CAagent1',
+      activeAgentUserId: 'user-1',
+      agentLegs: { CAagent1: 'user-1' },
+      pendingAgentLegUuids: [],
+    });
+
+    expect(occupantsOf(dialing)).toEqual(['user-1']);
+  });
+
+  test('voicemail occupies nobody; an ending call keeps everybody whose leg is still up', () => {
+    expect(occupantsOf(buildState({ voicemail: true }))).toEqual([]);
+    expect(
+      occupantsOf(
+        buildState({ ending: true, pendingAgentLegUuids: [], held: true }),
+      ),
+    ).toEqual(['user-1', 'user-2']);
+  });
+
+  test('an ending call does not take back a ring that lost to the answer, though its leg is still up', () => {
+    const ending = buildState({ ending: true, activeAgentUserId: 'user-1' });
+
+    expect(occupantsOf(ending)).toEqual(['user-1']);
+  });
+
+  test('an ending call that nobody answered keeps everybody it was ringing', () => {
+    const ending = buildState({
+      ending: true,
+      answered: false,
+      agentLegUuid: undefined,
+      pendingAgentLegUuids: ['CAagent1', 'CAagent2'],
+    });
+
+    expect(occupantsOf(ending)).toEqual(['user-1', 'user-2']);
+  });
+});
+
+describe('usersLetGo', () => {
+  test('an answer lets go of every ring that lost', () => {
+    const ringing = buildState({
+      answered: false,
+      agentLegUuid: undefined,
+      agentLegs: { CAagent1: 'user-1', CAagent2: 'user-2', CAagent3: 'user-3' },
+      pendingAgentLegUuids: ['CAagent1', 'CAagent2', 'CAagent3'],
+    });
+    const answered: CallState = {
+      ...ringing,
+      answered: true,
+      agentLegUuid: 'CAagent2',
+      activeAgentUserId: 'user-2',
+      pendingAgentLegUuids: ['CAagent1', 'CAagent3'],
+    };
+
+    expect(usersLetGo(ringing, answered)).toEqual(['user-1', 'user-3']);
+  });
+
+  test('a leg that drops lets its user go, unless the call still occupies them', () => {
+    const ending = buildState({ ending: true, pendingAgentLegUuids: [] });
+    const afterOne: CallState = {
+      ...ending,
+      agentLegs: { CAagent1: 'user-1' },
+    };
+
+    expect(usersLetGo(ending, afterOne)).toEqual(['user-2']);
+  });
+
+  test('the end of the call lets everybody go', () => {
+    const answered = buildState({ activeAgentUserId: 'user-1' });
+
+    expect(usersLetGo(answered, null)).toEqual(['user-1', 'user-2']);
+  });
+
+  test('a change that keeps everybody lets nobody go', () => {
+    const answered = buildState({ activeAgentUserId: 'user-1' });
+
+    expect(usersLetGo(answered, { ...answered, held: true })).toEqual([]);
   });
 });

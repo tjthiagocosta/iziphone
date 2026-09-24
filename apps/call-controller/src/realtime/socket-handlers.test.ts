@@ -70,6 +70,7 @@ function buildDeps() {
     onCallRejected: vi.fn(
       async (_conversationUuid: string, _userId: string) => null,
     ),
+    onConnectionChanged: vi.fn(async (_userId: string) => undefined),
   };
 }
 
@@ -122,6 +123,60 @@ describe('registerSocketHandlers', () => {
     await vi.advanceTimersByTimeAsync(10 * SOCKET_HEARTBEAT_MS);
 
     expect(deps.presence.registerSocket).toHaveBeenCalledTimes(2);
+  });
+
+  test('says the user’s connection changed once registered and once gone, not on each heartbeat', async () => {
+    const deps = buildDeps();
+    const { send } = connect(deps);
+
+    await send('register_user', {});
+    expect(deps.onConnectionChanged.mock.calls).toEqual([['user-1']]);
+    // Only once presence counts the socket: availability is read from it.
+    expect(
+      deps.presence.registerSocket.mock.invocationCallOrder[0],
+    ).toBeLessThan(deps.onConnectionChanged.mock.invocationCallOrder[0] ?? 0);
+
+    await vi.advanceTimersByTimeAsync(3 * SOCKET_HEARTBEAT_MS);
+    expect(deps.onConnectionChanged).toHaveBeenCalledTimes(1);
+
+    await send('disconnect', 'transport close');
+    expect(deps.onConnectionChanged).toHaveBeenCalledTimes(2);
+    expect(
+      deps.presence.unregisterSocket.mock.invocationCallOrder[0],
+    ).toBeLessThan(deps.onConnectionChanged.mock.invocationCallOrder[1] ?? 0);
+  });
+
+  test('a socket that never asked for calls changes nobody’s connection', async () => {
+    const deps = buildDeps();
+    const { send } = connect(deps);
+
+    await send('disconnect', 'transport close');
+
+    expect(deps.onConnectionChanged).not.toHaveBeenCalled();
+  });
+
+  test('a registration that could not be stored is not announced', async () => {
+    const deps = buildDeps();
+    deps.presence.registerSocket.mockRejectedValue(new Error('redis down'));
+    const { send } = connect(deps);
+
+    await send('register_user', {});
+
+    expect(deps.onConnectionChanged).not.toHaveBeenCalled();
+  });
+
+  test('a connection change that cannot be announced leaves the registration standing', async () => {
+    const deps = buildDeps();
+    deps.onConnectionChanged.mockRejectedValue(new Error('redis down'));
+    const { socket, send } = connect(deps);
+
+    await send('register_user', {});
+
+    expect(socket.emit).not.toHaveBeenCalledWith('error', expect.anything());
+    expect(log.warn).toHaveBeenCalledWith(
+      { err: new Error('redis down') },
+      'Failed to announce a change of connection',
+    );
   });
 
   test('never registers a socket that did not ask for calls', async () => {

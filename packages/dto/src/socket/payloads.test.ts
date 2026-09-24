@@ -4,6 +4,7 @@ import {
   CallTransferOutcomeSchema,
   IncomingCallSchema,
   MessageActivitySchema,
+  UserAvailabilitySchema,
   UserSocketRegistrationSchema,
 } from './payloads.js';
 
@@ -117,6 +118,36 @@ describe('CallTransferOutcomeSchema', () => {
         ...outcome,
         status: 'failed',
         reason: 'busy',
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('UserAvailabilitySchema', () => {
+  test('carries the user, the state and the revision, and nothing else', () => {
+    expect(
+      UserAvailabilitySchema.parse({
+        userId: 'user-1',
+        state: 'busy',
+        revision: 7,
+        conversationUuid: 'conv-1',
+      }),
+    ).toEqual({ userId: 'user-1', state: 'busy', revision: 7 });
+  });
+
+  test('rejects an unknown state or a revision that is not a count', () => {
+    expect(
+      UserAvailabilitySchema.safeParse({
+        userId: 'user-1',
+        state: 'away',
+        revision: 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      UserAvailabilitySchema.safeParse({
+        userId: 'user-1',
+        state: 'dnd',
+        revision: 1.5,
       }).success,
     ).toBe(false);
   });

@@ -4,8 +4,8 @@ For the administrator of a deployment. Covers what a department is, who it rings
 and the settings that decide how an inbound call is handled.
 
 A department owns one or more phone numbers and has members. An inbound call to
-one of its numbers rings its members; members can be online or offline, and a
-call can go to voicemail when nobody answers.
+one of its numbers rings the members who can take it, and goes to voicemail when
+nobody answers.
 
 ## Members
 
@@ -83,6 +83,30 @@ The **Routing** tab decides what happens to a call:
 - **Closed hours**: send to voicemail, or forward to an external number.
 - **Voicemail greeting**: what a caller hears before the beep. See [Voicemail greeting](voicemail-greeting.md).
 
+### Who is rung
+
+A call rings only the members who can take it. A member is left out when:
+
+- **offline**: no softphone of theirs is connected;
+- **in do not disturb**: they switched it on from the softphone;
+- **busy**: they are already on a call, placing one, or being rung for another.
+  A call on hold still counts.
+
+With **all members at once**, everybody else rings. With **fixed order**, the
+call skips to the next member without ringing the one left out. If nobody can
+take it, the caller goes to voicemail at once, as if nobody had answered.
+Nothing holds the caller in a queue, and a busy member is never sent a second
+call.
+
+A call to a user's own number follows the same rule. If they are busy or in do
+not disturb, the caller goes straight to their voicemail and is told the person
+is unavailable, with no ring and no busy tone.
+
+Do not disturb is kept by the call controller in Redis, not with the user's
+settings. It stays on until the user switches it off, but restarting Redis with
+its data cleared turns it off for everybody. See
+[0012. Call availability belongs to the controller](../decisions/0012-call-availability-belongs-to-the-controller.md).
+
 ### What a decline does
 
 Declining means "stop ringing me". It never hangs up on the caller:
@@ -95,8 +119,8 @@ Declining means "stop ringing me". It never hangs up on the caller:
   goes to voicemail, exactly as an unanswered ring does.
 
 Declining changes nothing about the member's availability: they are still rung by
-the next call. A decline is only accepted from somebody the call is actually
-ringing.
+the next call. To stop calls altogether they switch on do not disturb. A decline
+is only accepted from somebody the call is actually ringing.
 
 A call being handed over is different: if the teammate a
 [transfer](../use/softphone.md#transferring) is ringing declines it, the
@@ -115,3 +139,4 @@ directly. The snapshot's lifetime is 24 hours by default
 - [The softphone](../use/softphone.md) — what a ringing member sees
 - [Voicemail greeting](voicemail-greeting.md)
 - [0001. Two services, one database](../decisions/0001-two-services-one-database.md) — why routing is cached
+- [0012. Call availability belongs to the controller](../decisions/0012-call-availability-belongs-to-the-controller.md) — who counts as busy, and why

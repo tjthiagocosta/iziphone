@@ -10,6 +10,7 @@ import {
   remoteLegOf,
   transferFailureReasonOf,
   transferOfferOf,
+  transferRefusalOf,
 } from './call-control.js';
 import type { CallState, LegMetadata } from './call-state.js';
 
@@ -19,6 +20,7 @@ const line = '+15555550100';
 /** An inbound call user-1 is talking on through CAagent1. */
 function connectedCall(overrides: Partial<CallState> = {}): CallState {
   return {
+    version: 1,
     conversationUuid: 'CAcall1',
     conversationName: 'call-CAcall1',
     direction: 'inbound',
@@ -354,6 +356,16 @@ describe('transferOfferOf', () => {
       transferredBy: { userId: 'user-1' },
     });
     expect(offer.routingType).toBeUndefined();
+  });
+});
+
+describe('transferRefusalOf', () => {
+  test.each([
+    ['busy', 'target-busy'],
+    ['dnd', 'target-dnd'],
+    ['offline', 'target-offline'],
+  ] as const)('refuses a teammate who is %s with %s', (reason, refusal) => {
+    expect(transferRefusalOf(reason)).toBe(refusal);
   });
 });
 

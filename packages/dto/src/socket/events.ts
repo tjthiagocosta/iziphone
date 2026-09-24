@@ -9,6 +9,7 @@ import type {
   IncomingCall,
   MessageActivity,
   SocketError,
+  UserAvailability,
   UserSocketRegistration,
 } from './payloads.js';
 
@@ -23,6 +24,7 @@ export interface ServerToClientEvents {
   call_ended: (data: CallEnded) => void;
   call_transfer_outcome: (data: CallTransferOutcome) => void;
   message_activity: (data: MessageActivity) => void;
+  user_availability: (data: UserAvailability) => void;
   'auth:refreshed': (data: AuthRefreshed) => void;
   error: (data: SocketError) => void;
 }

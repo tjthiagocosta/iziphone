@@ -11,6 +11,8 @@ import {
   type MessageActivity,
   MessageActivitySchema,
   type ServerToClientEvents,
+  type UserAvailability,
+  UserAvailabilitySchema,
 } from '@repo/dto';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { io, type Socket } from 'socket.io-client';
@@ -24,6 +26,10 @@ export interface CallSocketOptions {
   getRealtimeToken: () => Promise<string>;
   /** How a transfer this user started, or was rung for, turned out. */
   onTransferOutcome?: (outcome: CallTransferOutcome) => void;
+  /** Every time the socket connects, the first time and after each drop. */
+  onConnected?: () => void;
+  /** The user's own availability changed; older news may still arrive late. */
+  onAvailability?: (availability: UserAvailability) => void;
 }
 
 export interface CallSocketState {
@@ -62,6 +68,8 @@ export function useCallSocket({
   userId,
   getRealtimeToken,
   onTransferOutcome,
+  onConnected,
+  onAvailability,
 }: CallSocketOptions): CallSocketState {
   const [isConnected, setIsConnected] = useState(false);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
@@ -80,6 +88,18 @@ export function useCallSocket({
   useEffect(() => {
     onTransferOutcomeRef.current = onTransferOutcome;
   }, [onTransferOutcome]);
+
+  const onConnectedRef = useRef(onConnected);
+
+  useEffect(() => {
+    onConnectedRef.current = onConnected;
+  }, [onConnected]);
+
+  const onAvailabilityRef = useRef(onAvailability);
+
+  useEffect(() => {
+    onAvailabilityRef.current = onAvailability;
+  }, [onAvailability]);
 
   useEffect(() => {
     if (!userId) {
@@ -107,6 +127,7 @@ export function useCallSocket({
       socket.emit('register_user', {
         deviceInfo: { userAgent: navigator.userAgent.slice(0, 512) },
       });
+      onConnectedRef.current?.();
     });
 
     socket.on('disconnect', () => {
@@ -177,6 +198,17 @@ export function useCallSocket({
       // A new object every time, even for a repeat of the same conversation
       // and kind: the listeners react to the event, not to a changed value.
       setLastMessageActivity(parsed.data);
+    });
+
+    socket.on('user_availability', (data) => {
+      const parsed = UserAvailabilitySchema.safeParse(data);
+      if (!parsed.success) {
+        console.error(
+          'Ignored an availability change with an unexpected payload',
+        );
+        return;
+      }
+      onAvailabilityRef.current?.(parsed.data);
     });
 
     socket.on('error', (data) => {

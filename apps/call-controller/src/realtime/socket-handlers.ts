@@ -16,6 +16,11 @@ export interface SocketHandlerDependencies {
   log: FastifyBaseLogger;
   /** The user declined an offered call. */
   onCallRejected(conversationUuid: string, userId: string): Promise<unknown>;
+  /**
+   * A softphone of the user registered for calls or went away; told once
+   * presence has changed, and not on the heartbeats in between.
+   */
+  onConnectionChanged(userId: string): Promise<void>;
 }
 
 /** What a connected softphone can ask of this service. */
@@ -52,6 +57,17 @@ export function registerSocketHandlers(
         // Not retried: nothing refreshes a closed socket, so presence stops
         // counting it once it is stale.
         log.error({ err: error }, 'Failed to unregister socket');
+      }
+    };
+
+    const connectionChanged = async (): Promise<void> => {
+      try {
+        await deps.onConnectionChanged(userId);
+      } catch (error) {
+        // Costs the notice and one step of the revision: an offer decided on
+        // the connection as it was may still stand, and rings a softphone
+        // that is not there until the ring times out.
+        log.warn({ err: error }, 'Failed to announce a change of connection');
       }
     };
 
@@ -112,6 +128,7 @@ export function registerSocketHandlers(
       try {
         await register();
         log.info('Socket registered for calls');
+        await connectionChanged();
       } catch (error) {
         log.error({ err: error }, 'Failed to register socket');
         socket.emit('error', {
@@ -157,6 +174,9 @@ export function registerSocketHandlers(
       refreshers.delete(refresh);
       log.info({ reason }, 'Socket disconnected');
       await unregister();
+      if (registered) {
+        await connectionChanged();
+      }
     });
   });
 }

@@ -18,6 +18,7 @@ import {
 } from 'react';
 import { useCallLines } from '@/hooks/use-call-lines';
 import { useCallSocket } from '@/hooks/use-call-socket';
+import { useOwnAvailability } from '@/hooks/use-own-availability';
 import { useTeammates } from '@/hooks/use-teammates';
 import {
   type CallEndReason,
@@ -84,6 +85,18 @@ export interface CallContextValue {
    */
   lastMessageActivity: MessageActivity | null;
   isSocketConnected: boolean;
+  /**
+   * Whether the user's do not disturb is on, as the controller keeps it; null
+   * until it has said, or while it could not be read. It holds back every
+   * call offered to the user, on all their devices, and not the calls they
+   * place.
+   */
+  doNotDisturb: boolean | null;
+  isChangingDoNotDisturb: boolean;
+  doNotDisturbError: string | null;
+  setDoNotDisturb: (on: boolean) => void;
+  /** Read do not disturb afresh, as after a read of it failed. */
+  reloadDoNotDisturb: () => void;
   /** The user's numbers a call may leave from; see `lib/telephony/call-line`. */
   callLines: CallLines;
   /** Asks the API for the lines again; see `useCallLines`. */
@@ -124,10 +137,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
     identity: user?.id,
     getRealtimeToken,
   });
+  const availability = useOwnAvailability({
+    userId: user?.id,
+    getRealtimeToken,
+  });
   const socket = useCallSocket({
     userId: user?.id,
     getRealtimeToken,
     onTransferOutcome: telephony.applyTransferOutcome,
+    onConnected: availability.resync,
+    onAvailability: availability.applyEvent,
   });
   const directory = useTeammates({ userId: user?.id });
   const { callLines, reload: reloadCallLines } = useCallLines({
@@ -285,6 +304,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     lastEndedCall: socket.lastEndedCall,
     lastMessageActivity: socket.lastMessageActivity,
     isSocketConnected: socket.isConnected,
+    doNotDisturb: availability.doNotDisturb,
+    isChangingDoNotDisturb: availability.isChangingDoNotDisturb,
+    doNotDisturbError: availability.doNotDisturbError,
+    setDoNotDisturb: availability.setDoNotDisturb,
+    reloadDoNotDisturb: availability.resync,
     callLines,
     reloadCallLines,
     chosenCallLineId: chosenLineIdFor(callLineChoice, userId),

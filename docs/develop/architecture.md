@@ -121,6 +121,23 @@ short-lived JWT issued by the API. Each user's sockets are tracked in Redis
 user has open, and so a message arriving on a line reaches everybody who works
 it.
 
+**Availability.** A socket says a browser is reachable, not that its user can
+take a call. The controller also keeps each user's do not disturb and the calls
+that claim them (`availability:user:*`, `availability:claims:*`), and one pure
+rule turns the three into available, busy, do not disturb or offline. An offer
+claims each user before dialing, so two calls cannot ring the same free person;
+claims are renewed at start and every 30 seconds for every call still going
+(`telephony:calls`), claimed again if they ran out while the call went on, and
+lapse after 90 seconds unrenewed. At start and about every five minutes the
+renewal also asks Twilio about every leg of those calls and handles a leg that
+is over as its lost status callback would have been, so a call whose end was
+never reported does not keep its people busy. A user's softphones hear
+`user_availability` when theirs changes, including when one of them connects
+or goes away. Every change to a call's state is a conditional write on its
+`version`. The call-state keys (`telephony:call:*`, `telephony:calls`,
+`telephony:leg:*`) are declared in `@repo/events` with the other Redis keys.
+See [0012](../decisions/0012-call-availability-belongs-to-the-controller.md).
+
 **Browser softphone behavior.** The web app registers a Twilio Voice device on
 sign-in and refreshes its token before it expires. Microphone access is
 requested before the device registers.

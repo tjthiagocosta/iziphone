@@ -5,6 +5,7 @@ import type {
   IncomingCall,
   OutboundGrantRefusal,
   TransferFailureReason,
+  UnavailableReason,
 } from '@repo/dto';
 import { OUTBOUND_GRANT } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
@@ -25,6 +26,7 @@ import {
   remoteLegOf,
   transferFailureReasonOf,
   transferOfferOf,
+  transferRefusalOf,
 } from './call-control.js';
 import type { CallEventPublisher } from './call-events.js';
 import {
@@ -34,8 +36,10 @@ import {
   hasActiveLegs,
   type LegMetadata,
   legUuidsOf,
+  occupantsOf,
   participantOfLeg,
   removeLeg,
+  usersLetGo,
 } from './call-state.js';
 import {
   admitOutboundCall,
@@ -49,25 +53,56 @@ import {
   participantDescription,
   participantEventType,
 } from './participant-status.js';
-import type { TelephonyService } from './telephony.service.js';
+import type {
+  CallStateChange,
+  CallStateUpdate,
+  TelephonyService,
+} from './telephony.service.js';
 
 /*
  * The life of a call, from Twilio's first webhook to the `call:ended` event.
- * Twilio drives it: every method here answers one webhook, loads the call
- * state, decides what happens next, and saves the state back. The agent on
- * the call drives the rest: holding the other party and handing the call to
- * a teammate.
+ * Twilio drives it: every method here answers one webhook, decides from the
+ * call state what happens next, writes the state back, and only then acts on
+ * what it decided. The agent on the call drives the rest: holding the other
+ * party and handing the call to a teammate.
  *
- * Nothing locks the state, and a webhook, a softphone request and a socket
- * message can all act on one call at once. So whatever waited on Twilio reads
- * the state again before writing, and a pending transfer is settled by
- * whoever clears its marker first; the ones that find it cleared step back.
+ * A webhook, a softphone request and a socket message can all act on one
+ * call at once. Every change is therefore written from the version of the
+ * state it was decided on, and decided again from the current one when
+ * another write landed in between (`TelephonyService.updateCallState`); a
+ * pending transfer is settled by whoever clears its marker first, and the
+ * ones that find it cleared step back.
+ *
+ * A call claims the users it occupies (`occupantsOf`), so that no other call
+ * is offered to them meanwhile. The realtime layer keeps the claims; every
+ * change here lets go of the users it stopped occupying.
  */
+
+/** Who an offer reached, and why the others were left out. */
+export interface CallOffer {
+  /** Claimed for this call and shown the offer. */
+  offered: string[];
+  refused: Array<{ userId: string; reason: UnavailableReason }>;
+}
 
 /** What the flow needs from the realtime layer, without depending on it. */
 export interface CallRealtime {
-  /** Offer the call to the users who are online; resolves to those reached. */
-  notifyIncomingCall(userIds: string[], call: IncomingCall): Promise<string[]>;
+  /**
+   * Offer the call to those of these users who can take it now, claiming
+   * each one for this call before the offer goes out: until the claim is
+   * released or runs out, no other call is offered to them. A user this call
+   * already claims can be offered it again.
+   */
+  offerCall(userIds: string[], call: IncomingCall): Promise<CallOffer>;
+  /**
+   * Claim users for this call whatever their availability, for a call they
+   * placed themselves: busy or on do not disturb, an agent may still dial.
+   */
+  occupy(conversationUuid: string, userIds: string[]): Promise<void>;
+  /** Let go of users this call no longer occupies. */
+  release(conversationUuid: string, userIds: string[]): Promise<void>;
+  /** Keep the claims this call holds on these users from running out. */
+  renew(conversationUuid: string, userIds: string[]): Promise<void>;
   /** Remember who should hear that the call ended. */
   trackCallParticipants(
     conversationUuid: string,
@@ -83,8 +118,10 @@ export interface CallRealtime {
 export type CallFlowTelephony = Pick<
   TelephonyService,
   | 'getCallState'
-  | 'saveCallState'
-  | 'deleteCallState'
+  | 'createCallState'
+  | 'updateCallState'
+  | 'liveCallIds'
+  | 'forgetLiveCall'
   | 'setLegMetadata'
   | 'getLegMetadata'
   | 'deleteLegMetadata'
@@ -99,6 +136,7 @@ export type CallFlowTelephony = Pick<
   | 'holdConversation'
   | 'transferConversation'
   | 'safeHangup'
+  | 'fetchLegStatus'
   | 'redirectLegToVoicemail'
   | 'buildConferenceTwiml'
   | 'buildVoicemailTwiml'
@@ -242,7 +280,15 @@ export class CallFlow {
 
     const { grant } = admission;
     const agentUserId = grant.userId;
-    const state: CallState = {
+    const agent: CallParticipant = {
+      participantType: 'agent',
+      participantId: agentUserId,
+    };
+
+    // Claimed without asking: an agent who is busy or on do not disturb may
+    // still dial out, and nobody may offer them a call while they talk.
+    await realtime.occupy(callSid, [agentUserId]);
+    const state = await telephony.createCallState({
       conversationUuid: callSid,
       conversationName: conversationNameFor(callSid),
       direction: 'outbound',
@@ -260,13 +306,7 @@ export class CallFlow {
       voicemail: false,
       ending: false,
       createdAt: new Date().toISOString(),
-    };
-    const agent: CallParticipant = {
-      participantType: 'agent',
-      participantId: agentUserId,
-    };
-
-    await telephony.saveCallState(state);
+    });
     await telephony.setLegMetadata(callSid, {
       conversationUuid: callSid,
       ...agent,
@@ -298,7 +338,7 @@ export class CallFlow {
             'Failed to dial the outbound number',
           );
           await telephony.hangupConversation(callSid);
-          await this.finalize(latest, 'failed');
+          await this.finalize(callSid, 'failed');
         }),
       'outbound dial',
     );
@@ -315,7 +355,7 @@ export class CallFlow {
       participantType: 'caller',
       participantId: from,
     };
-    const base: CallState = {
+    const base: Omit<CallState, 'version'> = {
       conversationUuid: callSid,
       conversationName: conversationNameFor(callSid),
       direction: 'inbound',
@@ -333,8 +373,10 @@ export class CallFlow {
 
     const routed = await routing.lookupByPhone(to);
     if (!routed) {
-      const state: CallState = { ...base, voicemail: true };
-      await telephony.saveCallState(state);
+      const state = await telephony.createCallState({
+        ...base,
+        voicemail: true,
+      });
       await telephony.setLegMetadata(callSid, {
         conversationUuid: callSid,
         ...caller,
@@ -370,7 +412,7 @@ export class CallFlow {
       );
     }
 
-    const state: CallState = {
+    const state = await telephony.createCallState({
       ...base,
       routingType: routed.type,
       departmentId: routed.departmentId,
@@ -382,9 +424,7 @@ export class CallFlow {
       ringStrategy: plan.action === 'ring' ? plan.strategy : undefined,
       ringDuration: routed.settings?.ringDuration,
       voicemailGreetingUrl,
-    };
-
-    await telephony.saveCallState(state);
+    });
     await telephony.setLegMetadata(callSid, {
       conversationUuid: callSid,
       ...caller,
@@ -406,14 +446,17 @@ export class CallFlow {
         this.forwardToExternalNumber(state, plan);
         return telephony.buildConferenceTwiml(state, caller);
       case 'ring': {
+        // Busy and do-not-disturb members are left out like offline ones,
+        // so a line whose people are all taken answers with its fallback
+        // at once rather than ringing anybody.
         const ringing =
           plan.strategy === 'FIXED_ORDER'
-            ? await this.ringNextInOrder(state)
+            ? await this.ringNextInOrder(callSid)
             : (await this.ringAllAtOnce(state, plan.userIds)).length > 0;
 
         return ringing
           ? telephony.buildConferenceTwiml(state, caller)
-          : this.voicemailInsteadOfRinging(state, plan.whenNobodyIsOnline);
+          : this.voicemailInsteadOfRinging(state, plan.whenNobodyIsAvailable);
       }
     }
   }
@@ -436,12 +479,7 @@ export class CallFlow {
       return;
     }
 
-    const state = await this.deps.telephony.getCallState(
-      notice.conversationUuid,
-    );
-    if (state) {
-      await this.finalize(state, 'completed');
-    }
+    await this.finalize(notice.conversationUuid, 'completed');
   }
 
   async handleTranscriptionReady(
@@ -498,7 +536,7 @@ export class CallFlow {
         participant,
         'answered',
       );
-      await this.onParticipantJoined(state, participant, legUuid);
+      await this.onParticipantJoined(conversationUuid, participant, legUuid);
       return;
     }
 
@@ -523,7 +561,7 @@ export class CallFlow {
       'completed',
     );
     await this.onLegEnded(
-      state,
+      conversationUuid,
       participant,
       legUuid,
       'completed',
@@ -557,8 +595,8 @@ export class CallFlow {
 
     // Twilio reports a leg's end twice (conference leave and call status);
     // a leg the call no longer tracks has already been handled. A transfer
-    // stops tracking the legs it releases before they are gone, so what is
-    // still known about such a leg is forgotten here.
+    // stops tracking a ring its teammate lost earlier before it is gone, so
+    // what is still known about such a leg is forgotten here.
     if (isTerminalStatus(status) && !legUuidsOf(state).includes(legUuid)) {
       await telephony.deleteLegMetadata([legUuid]);
       return;
@@ -574,12 +612,111 @@ export class CallFlow {
 
     if (isTerminalStatus(status)) {
       await this.onLegEnded(
-        state,
+        conversationUuid,
         participant,
         legUuid,
         status,
         notice.duration,
       );
+    }
+  }
+
+  /**
+   * Keep the claims of every call still going from running out: each call's
+   * current occupants are renewed, and claimed again if their claim already
+   * ran out. A call whose state is gone leaves the live set, and whatever it
+   * still claimed runs out on its own. One call that fails does not keep the
+   * others from being renewed.
+   *
+   * With `reconcile`, Twilio is then asked about every leg of each call, and
+   * a leg it says is over is handled as its lost status callback would have
+   * been: a call nobody is left on ends, and lets its users go. Every call is
+   * renewed before Twilio is asked about any, so a Twilio that is slow or
+   * failing never leaves a user on a call unclaimed, least of all on the
+   * round at start, which claims back what ran out while this service was
+   * down.
+   */
+  async renewClaims({ reconcile = false } = {}): Promise<void> {
+    const { telephony, log } = this.deps;
+    const conversationUuids = await telephony.liveCallIds();
+
+    for (const conversationUuid of conversationUuids) {
+      try {
+        await this.renewCall(conversationUuid);
+      } catch (error) {
+        log.warn(
+          { err: error, conversationUuid },
+          'Failed to renew the claims of a call',
+        );
+      }
+    }
+
+    if (!reconcile) {
+      return;
+    }
+
+    for (const conversationUuid of conversationUuids) {
+      try {
+        await this.reconcileWithTwilio(conversationUuid);
+      } catch (error) {
+        log.warn(
+          { err: error, conversationUuid },
+          'Failed to reconcile a call with Twilio',
+        );
+      }
+    }
+  }
+
+  private async reconcileWithTwilio(conversationUuid: string): Promise<void> {
+    const { telephony } = this.deps;
+
+    const state = await telephony.getCallState(conversationUuid);
+    if (!state) {
+      return;
+    }
+
+    const legs = await Promise.all(
+      legUuidsOf(state).map(async (legUuid) => ({
+        legUuid,
+        ...(await telephony.fetchLegStatus(legUuid)),
+      })),
+    );
+    // One leg at a time: each is decided on what the one before it left.
+    for (const { legUuid, status, duration } of legs) {
+      const normalized = normalizeCallStatus(status);
+      if (normalized && isTerminalStatus(normalized)) {
+        await this.handleCallStatus({
+          conversationUuid,
+          legUuid,
+          status,
+          duration,
+        });
+      }
+    }
+  }
+
+  private async renewCall(conversationUuid: string): Promise<void> {
+    const { telephony, realtime } = this.deps;
+
+    const state = await telephony.getCallState(conversationUuid);
+    if (!state) {
+      await telephony.forgetLiveCall(conversationUuid);
+      return;
+    }
+
+    const occupants = occupantsOf(state);
+    if (occupants.length === 0) {
+      return;
+    }
+    await realtime.renew(conversationUuid, occupants);
+
+    // A renewal claims its users whether or not they still hold a claim, so
+    // one that crossed a change letting somebody go has claimed them back.
+    // The change released them before or after; if before, its version is
+    // already here.
+    const now = await telephony.getCallState(conversationUuid);
+    if (now?.version !== state.version) {
+      await this.letGo(conversationUuid, usersLetGo(state, now));
     }
   }
 
@@ -619,6 +756,8 @@ export class CallFlow {
    * The agent on the call hands it to a teammate: the other party waits on
    * hold while the teammate's softphone rings. Resolves once it rings; how it
    * ends is told to both softphones when the teammate's leg joins or is gone.
+   * A teammate who is offline, busy or on do not disturb is refused here,
+   * whatever the softphone showed when the agent picked them.
    */
   async transferCall(
     request: CallControlRequest,
@@ -631,47 +770,63 @@ export class CallFlow {
       return call;
     }
 
-    const { state } = call;
-    const refusal = refuseTransfer(state, call.leg, request, targetUserId);
-    if (refusal) {
-      return { ok: false, refusal };
+    // Checked and marked in one write, so that of two requests at once only
+    // one finds the call free to hand over, and a decline that comes straight
+    // back from the offer finds the transfer it belongs to.
+    const { conversationUuid } = call.state;
+    const marked = await this.changeCall<{
+      refusal: CallControlRefusal | null;
+      lostRingLegUuids: string[];
+    }>(conversationUuid, (draft) => {
+      const refusal = refuseTransfer(draft, call.leg, request, targetUserId);
+      if (refusal) {
+        return { result: { refusal, lostRingLegUuids: [] } };
+      }
+
+      // A ring the teammate lost when this call was answered may not have
+      // been reported gone yet. It is forgotten first, so that its end is
+      // not taken for the end of the ring this transfer is about to start.
+      const lostRingLegUuids = Object.entries(draft.agentLegs)
+        .filter(([, userId]) => userId === targetUserId)
+        .map(([legUuid]) => legUuid);
+      for (const legUuid of lostRingLegUuids) {
+        removeLeg(draft, legUuid);
+      }
+
+      draft.pendingTransferToUserId = targetUserId;
+      draft.transferInitiatedBy = request.userId;
+      draft.transferOriginLegUuid = request.legUuid;
+      return { result: { refusal: null, lostRingLegUuids } };
+    });
+    if (!marked?.after) {
+      return { ok: false, refusal: 'call-gone' };
+    }
+    if (marked.result.refusal) {
+      return { ok: false, refusal: marked.result.refusal };
     }
 
-    // A ring the teammate lost when this call was answered may not have been
-    // reported gone yet. It is forgotten first, so that its end is not taken
-    // for the end of the ring this transfer is about to start.
-    const lostRingLegUuids = Object.entries(state.agentLegs)
-      .filter(([, userId]) => userId === targetUserId)
-      .map(([legUuid]) => legUuid);
-    for (const legUuid of lostRingLegUuids) {
-      removeLeg(state, legUuid);
-    }
-
-    // Marked before anything is awaited on, so that a second request is
-    // refused and a decline that comes straight back from the offer finds
-    // the transfer it belongs to.
-    const { conversationUuid } = state;
-    state.pendingTransferToUserId = targetUserId;
-    state.transferInitiatedBy = request.userId;
-    state.transferOriginLegUuid = request.legUuid;
-    await telephony.saveCallState(state);
     await Promise.all(
-      lostRingLegUuids.map((legUuid) => telephony.safeHangup(legUuid)),
+      marked.result.lostRingLegUuids.map((legUuid) =>
+        telephony.safeHangup(legUuid),
+      ),
     );
 
     // The call is marked from here on, and a marked call refuses holds and
     // further transfers and lets its agent leave without ending it. Whatever
     // throws below therefore takes the mark back before it answers.
     try {
-      const reached = await realtime.notifyIncomingCall(
+      const offer = await realtime.offerCall(
         [targetUserId],
-        transferOfferOf(state, request.userId),
+        transferOfferOf(marked.after, request.userId),
       );
-      if (reached.length === 0) {
+      if (offer.offered.length === 0) {
         // Nothing was held and nobody was told, so nobody needs to hear of
         // it; the caller is still rescued if the agent left in the meantime.
         await this.failPendingTransfer(conversationUuid, targetUserId, null);
-        return { ok: false, refusal: 'target-offline' };
+        return {
+          ok: false,
+          refusal: transferRefusalOf(offer.refused[0]?.reason ?? 'offline'),
+        };
       }
 
       // Nobody is rung for a party who is not waiting: a teammate who
@@ -805,12 +960,13 @@ export class CallFlow {
     // Their legs, and nothing else. Each leg's own status callback then
     // removes it and decides what follows, which is the same path a ring that
     // timed out takes: the next member of a fixed order, or the caller to
-    // voicemail once nobody is left. Writing the state here as well would put
-    // a second writer against that callback, and `CallState` has no version
-    // to settle who wins.
+    // voicemail once nobody is left. Their claim goes at once, though: a
+    // user who turned a call down is free for the next one now, not when
+    // Twilio gets round to reporting the leg.
     await Promise.all(
       ringingLegUuids.map((legUuid) => telephony.safeHangup(legUuid)),
     );
+    await this.letGo(conversationUuid, [userId]);
 
     log.info(
       { conversationUuid, userId, legs: ringingLegUuids.length },
@@ -902,22 +1058,29 @@ export class CallFlow {
     return held;
   }
 
+  /** Only the write that changes the flag tells the timeline. */
   private async recordHold(
     conversationUuid: string,
     held: boolean,
     userId?: string,
   ): Promise<void> {
-    const { telephony, events } = this.deps;
-
-    const latest = await telephony.getCallState(conversationUuid);
-    if (!latest || latest.ending || Boolean(latest.held) === held) {
+    const update = await this.changeCall(conversationUuid, (draft) => {
+      if (draft.ending || Boolean(draft.held) === held) {
+        return { result: false };
+      }
+      draft.held = held;
+      return { result: true };
+    });
+    if (!update?.result || !update.after) {
       return;
     }
 
-    latest.held = held;
-    await telephony.saveCallState(latest);
-
-    const event = { conversationUuid, userId, legUuid: remoteLegOf(latest) };
+    const event = {
+      conversationUuid,
+      userId,
+      legUuid: remoteLegOf(update.after),
+    };
+    const { events } = this.deps;
     await (held ? events.callHeld(event) : events.callResumed(event));
   }
 
@@ -969,36 +1132,39 @@ export class CallFlow {
     targetUserId: string,
     reason: TransferFailureReason | null,
   ): Promise<boolean> {
-    const { telephony, events } = this.deps;
+    const { telephony } = this.deps;
 
-    const state = await telephony.getCallState(conversationUuid);
-    if (
-      !state ||
-      state.ending ||
-      state.pendingTransferToUserId !== targetUserId
-    ) {
+    const update = await this.changeCall(conversationUuid, (draft) => {
+      if (draft.ending || draft.pendingTransferToUserId !== targetUserId) {
+        return { result: null };
+      }
+
+      const settled = {
+        plan: planTransferFailure(draft),
+        initiatedBy: draft.transferInitiatedBy,
+        ringingLegUuids: Object.entries(draft.agentLegs)
+          .filter(
+            ([legUuid, userId]) =>
+              userId === targetUserId && legUuid !== draft.agentLegUuid,
+          )
+          .map(([legUuid]) => legUuid),
+      };
+      draft.pendingTransferToUserId = undefined;
+      draft.transferInitiatedBy = undefined;
+      draft.transferOriginLegUuid = undefined;
+      return { result: settled };
+    });
+    const settled = update?.result;
+    if (!settled) {
       return false;
     }
 
-    const plan = planTransferFailure(state);
-    const wasHeld = Boolean(state.held);
-    const initiatedBy = state.transferInitiatedBy;
-    const ringingLegUuids = Object.entries(state.agentLegs)
-      .filter(
-        ([legUuid, userId]) =>
-          userId === targetUserId && legUuid !== state.agentLegUuid,
-      )
-      .map(([legUuid]) => legUuid);
-
-    state.pendingTransferToUserId = undefined;
-    state.transferInitiatedBy = undefined;
-    state.transferOriginLegUuid = undefined;
-    await telephony.saveCallState(state);
-
-    switch (plan) {
+    switch (settled.plan) {
       case 'return-to-agent':
         await Promise.all(
-          ringingLegUuids.map((legUuid) => telephony.safeHangup(legUuid)),
+          settled.ringingLegUuids.map((legUuid) =>
+            telephony.safeHangup(legUuid),
+          ),
         );
         if (reason) {
           await this.resumeAfterTransfer(conversationUuid);
@@ -1006,16 +1172,7 @@ export class CallFlow {
         break;
       // Both of these hang up the teammate's legs with every other agent leg.
       case 'voicemail':
-        // Leaving the conference for voicemail is what ends the hold, so
-        // there is no participant to resume; the timeline still hears of it.
-        state.held = false;
-        await this.routeCallerToVoicemail(state, 'routing-timeout');
-        if (wasHeld && state.voicemail) {
-          await events.callResumed({
-            conversationUuid,
-            legUuid: state.callerLegUuid,
-          });
-        }
+        await this.routeCallerToVoicemail(conversationUuid, 'routing-timeout');
         break;
       case 'end-call':
         await telephony.requestConversationHangup(conversationUuid);
@@ -1023,7 +1180,7 @@ export class CallFlow {
     }
 
     if (reason) {
-      await this.tellTransferOutcome([initiatedBy, targetUserId], {
+      await this.tellTransferOutcome([settled.initiatedBy, targetUserId], {
         conversationUuid,
         targetUserId,
         status: 'failed',
@@ -1032,7 +1189,7 @@ export class CallFlow {
     }
 
     this.deps.log.info(
-      { conversationUuid, targetUserId, reason, plan },
+      { conversationUuid, targetUserId, reason, plan: settled.plan },
       'Transfer did not go through',
     );
     return true;
@@ -1045,14 +1202,7 @@ export class CallFlow {
    */
   private async completeTransfer(
     conversationUuid: string,
-    transfer: {
-      fromUserId: string;
-      toUserId: string;
-      answeredLegUuid: string;
-      initiatedBy: string | undefined;
-      /** The leg handing the call over, and any second ring of the teammate. */
-      releasedLegUuids: string[];
-    },
+    transfer: TransferHandover,
   ): Promise<void> {
     const { telephony, events } = this.deps;
 
@@ -1075,64 +1225,90 @@ export class CallFlow {
     });
   }
 
-  /** A leg is gone: forget it, then decide what happens to the rest of the call. */
+  /** A leg is gone: forget it, then act on what that means for the call. */
   private async onLegEnded(
-    state: CallState,
+    conversationUuid: string,
     participant: CallParticipant,
     legUuid: string,
     status: CallEndStatus,
     duration: number | undefined,
   ): Promise<void> {
-    await this.deps.telephony.deleteLegMetadata([legUuid]);
+    const { telephony } = this.deps;
+    await telephony.deleteLegMetadata([legUuid]);
 
-    if (state.ending) {
-      await this.tearDownLeg(state, legUuid, status, duration);
+    const update = await this.changeCall(conversationUuid, (draft) =>
+      decideLegEnded(draft, participant, legUuid, status),
+    );
+    const plan = update?.result;
+    if (!plan) {
       return;
     }
 
-    await this.onParticipantLeft(
-      state,
-      participant,
-      legUuid,
-      status,
-      duration ?? 0,
-    );
+    switch (plan.kind) {
+      case 'ignored':
+      case 'forgotten':
+        return;
+      case 'ended':
+        await Promise.all(
+          plan.hangUpLegUuids.map((other) => telephony.safeHangup(other)),
+        );
+        await this.reportEnded(plan.final, status, duration ?? 0);
+        return;
+      case 'ring-next':
+        if (await this.ringNextInOrder(conversationUuid)) {
+          return;
+        }
+        await this.routeCallerToVoicemail(conversationUuid, 'routing-timeout');
+        return;
+      case 'voicemail':
+        await this.routeCallerToVoicemail(conversationUuid, plan.reason);
+        return;
+      case 'transfer-fell-through':
+        await this.failPendingTransfer(
+          conversationUuid,
+          plan.targetUserId,
+          plan.reason,
+        );
+        return;
+    }
   }
 
   // Ringing ------------------------------------------------------------------
 
+  /** Ring everybody who can take the call. Resolves to the users rung. */
   private async ringAllAtOnce(
     state: CallState,
     userIds: string[],
   ): Promise<string[]> {
-    if (state.ending) {
-      return [];
-    }
+    const { realtime, telephony } = this.deps;
+    const { conversationUuid } = state;
 
-    const online = await this.deps.realtime.notifyIncomingCall(
-      userIds,
-      incomingCallOf(state),
+    const offer = await realtime.offerCall(userIds, incomingCallOf(state));
+    const legs = await telephony.ringAgents(conversationUuid, offer.offered, {
+      fromNumber: state.to,
+      ringingTimer: state.ringDuration,
+    });
+
+    const rung = legs.map((leg) => leg.userId);
+    await this.letGo(
+      conversationUuid,
+      offer.offered.filter((userId) => !rung.includes(userId)),
     );
-
-    const legs = await this.deps.telephony.ringAgents(
-      state.conversationUuid,
-      online,
-      { fromNumber: state.to, ringingTimer: state.ringDuration },
-    );
-
-    return legs.map((leg) => leg.userId);
+    return rung;
   }
 
-  /** Ring the next user in the queue who is online. Resolves to false when nobody is. */
-  private async ringNextInOrder(state: CallState): Promise<boolean> {
-    if (state.ending) {
-      return false;
-    }
+  /**
+   * Ring the next user in the queue who can take the call. Resolves to false
+   * when nobody is left, or when the call no longer needs anybody rung.
+   */
+  private async ringNextInOrder(conversationUuid: string): Promise<boolean> {
+    const { telephony, realtime } = this.deps;
 
-    const queue = state.routingQueue ?? [];
+    const start = await telephony.getCallState(conversationUuid);
+    const queue = start?.routingQueue ?? [];
 
     for (
-      let index = state.currentQueueIndex ?? 0;
+      let index = start?.currentQueueIndex ?? 0;
       index < queue.length;
       index += 1
     ) {
@@ -1141,22 +1317,31 @@ export class CallFlow {
         continue;
       }
 
-      state.currentQueueIndex = index;
-      await this.deps.telephony.saveCallState(state);
+      const turn = await this.changeCall(conversationUuid, (draft) => {
+        if (draft.ending || draft.answered || draft.voicemail) {
+          return { result: false };
+        }
+        draft.currentQueueIndex = index;
+        return { result: true };
+      });
+      if (!turn?.result || !turn.after) {
+        return false;
+      }
 
-      const online = await this.deps.realtime.notifyIncomingCall(
+      const offer = await realtime.offerCall(
         [userId],
-        incomingCallOf(state),
+        incomingCallOf(turn.after),
       );
-      if (online.length === 0) {
+      if (offer.offered.length === 0) {
         continue;
       }
 
       try {
-        await this.ringAgent(state, userId);
+        await this.ringAgent(turn.after, userId);
         return true;
       } catch {
         // Already logged by ringAgent; move on to the next user.
+        await this.letGo(conversationUuid, [userId]);
       }
     }
 
@@ -1202,7 +1387,10 @@ export class CallFlow {
             { err: error, conversationUuid },
             'Failed to forward the call to the external number',
           );
-          await this.routeCallerToVoicemail(latest, 'closed-hours-external');
+          await this.routeCallerToVoicemail(
+            conversationUuid,
+            'closed-hours-external',
+          );
         }),
       'forward to external number',
     );
@@ -1215,8 +1403,10 @@ export class CallFlow {
     state: CallState,
     reason: VoicemailReason,
   ): Promise<string> {
-    state.voicemail = true;
-    await this.deps.telephony.saveCallState(state);
+    const update = await this.changeCall(state.conversationUuid, (draft) => {
+      draft.voicemail = true;
+      return { result: undefined };
+    });
     await this.deps.events.callMissed({
       conversationUuid: state.conversationUuid,
       from: state.from,
@@ -1225,56 +1415,107 @@ export class CallFlow {
       userId: state.targetUserId,
     });
 
-    return this.deps.telephony.buildVoicemailTwiml(state, reason);
+    return this.deps.telephony.buildVoicemailTwiml(
+      update?.after ?? state,
+      reason,
+    );
   }
 
-  /** The caller is already in the conference: pull them out into voicemail. */
+  /**
+   * The caller is already in the conference: pull them out into voicemail.
+   * Written first and acted on after, so the legs it hangs up find nothing
+   * left to decide when Twilio reports them gone. An unanswered call still
+   * ringing somebody waits for them instead.
+   */
   private async routeCallerToVoicemail(
-    state: CallState,
+    conversationUuid: string,
     reason: VoicemailReason,
   ): Promise<void> {
     const { telephony, events } = this.deps;
 
-    if (!state.callerLegUuid || state.ending || state.voicemail) {
+    const update = await this.changeCall(conversationUuid, (draft) => {
+      const stillRinging =
+        !draft.answered && draft.pendingAgentLegUuids.length > 0;
+      if (
+        !draft.callerLegUuid ||
+        draft.ending ||
+        draft.voicemail ||
+        stillRinging
+      ) {
+        return { result: null };
+      }
+
+      const moved = {
+        hangUpLegUuids: [
+          ...Object.keys(draft.agentLegs),
+          ...(draft.externalLegUuid ? [draft.externalLegUuid] : []),
+        ],
+        wasHeld: Boolean(draft.held),
+      };
+      draft.voicemail = true;
+      draft.pendingAgentLegUuids = [];
+      draft.agentLegs = {};
+      draft.agentLegUuid = undefined;
+      draft.externalLegUuid = undefined;
+      // Leaving the conference for voicemail is what ends a hold, so there
+      // is no participant to resume; the timeline still hears of it below.
+      draft.held = false;
+      return { result: moved };
+    });
+    const moved = update?.result;
+    const state = update?.after;
+    if (!moved || !state?.callerLegUuid) {
       return;
     }
 
     await Promise.all(
-      Object.keys(state.agentLegs).map((legUuid) =>
-        telephony.safeHangup(legUuid),
-      ),
+      moved.hangUpLegUuids.map((legUuid) => telephony.safeHangup(legUuid)),
     );
-    if (state.externalLegUuid) {
-      await telephony.safeHangup(state.externalLegUuid);
-    }
-
-    state.voicemail = true;
-    state.pendingAgentLegUuids = [];
-    state.agentLegs = {};
-    state.agentLegUuid = undefined;
-    state.externalLegUuid = undefined;
-    await telephony.saveCallState(state);
 
     // A call an agent talked on was not missed, even when the transfer that
     // followed fell through and voicemail is where the caller ends up.
     if (!state.answered) {
       await events.callMissed({
-        conversationUuid: state.conversationUuid,
+        conversationUuid,
         from: state.from,
         to: state.to,
         departmentId: state.departmentId,
         userId: state.targetUserId,
       });
     }
+    if (moved.wasHeld) {
+      await events.callResumed({
+        conversationUuid,
+        legUuid: state.callerLegUuid,
+      });
+    }
 
     await telephony.redirectLegToVoicemail(state.callerLegUuid, state, reason);
   }
 
-  /** The call is over: tell the API and forget the state. */
+  /**
+   * End the call from outside a leg's own report: a voicemail was left, or
+   * the number an agent dialed could not be. Only the one who removes the
+   * state reports the end, so it is reported once.
+   */
   private async finalize(
+    conversationUuid: string,
+    status: CallEndStatus,
+  ): Promise<void> {
+    const update = await this.changeCall(conversationUuid, () => ({
+      result: undefined,
+      remove: true,
+    }));
+    if (update) {
+      await this.reportEnded(update.before, status, 0);
+    }
+  }
+
+  /** The call is over and its state is gone: tell the API, forget the legs. */
+  private async reportEnded(
     state: CallState,
     status: CallEndStatus,
-    duration = 0,
+    duration: number,
   ): Promise<void> {
     const { telephony, events } = this.deps;
 
@@ -1288,41 +1529,12 @@ export class CallFlow {
     });
 
     await telephony.deleteLegMetadata(legUuidsOf(state));
-    await telephony.deleteCallState(state.conversationUuid);
-  }
-
-  /** Hang up everyone except the leg that just left. */
-  private async hangUpOtherLegs(
-    state: CallState,
-    leftLegUuid: string,
-  ): Promise<void> {
-    await Promise.all(
-      legUuidsOf(state)
-        .filter((legUuid) => legUuid !== leftLegUuid)
-        .map((legUuid) => this.deps.telephony.safeHangup(legUuid)),
-    );
-  }
-
-  /** While a hangup is in progress, legs drop one by one; the last one finalizes. */
-  private async tearDownLeg(
-    state: CallState,
-    legUuid: string,
-    status: CallEndStatus,
-    duration: number | undefined,
-  ): Promise<void> {
-    removeLeg(state, legUuid);
-
-    if (hasActiveLegs(state)) {
-      await this.deps.telephony.saveCallState(state);
-    } else {
-      await this.finalize(state, status, duration);
-    }
   }
 
   // Participants -------------------------------------------------------------
 
   private async onParticipantJoined(
-    state: CallState,
+    conversationUuid: string,
     participant: CallParticipant,
     legUuid: string,
   ): Promise<void> {
@@ -1330,73 +1542,36 @@ export class CallFlow {
 
     switch (participant.participantType) {
       case 'caller': {
-        if (state.callerLegUuid !== legUuid) {
-          state.callerLegUuid = legUuid;
-          await telephony.saveCallState(state);
-        }
+        await this.changeCall(conversationUuid, (draft) => {
+          draft.callerLegUuid = legUuid;
+          return { result: undefined };
+        });
         return;
       }
 
       case 'agent': {
         const agentUserId = participant.participantId;
-        const wasAnswered = state.answered;
-        const previousAgentUserId = state.activeAgentUserId;
-        const isTransferTarget = state.pendingTransferToUserId === agentUserId;
+        const update = await this.changeCall(conversationUuid, (draft) =>
+          decideAgentJoined(draft, agentUserId, legUuid),
+        );
+        const joined = update?.result;
+        const state = update?.after;
+        if (!joined || !state) {
+          return;
+        }
 
-        // Someone already has this call and it is not being handed to this
-        // agent: they answered a ring that lost the race, or a transfer that
-        // was cancelled as they picked up. Taking the call over would leave
-        // two agents on it and end it for everyone when this one hangs up.
-        if (
-          wasAnswered &&
-          !isTransferTarget &&
-          previousAgentUserId !== undefined &&
-          previousAgentUserId !== agentUserId
-        ) {
+        if (joined.kind === 'intruder') {
           this.deps.log.info(
-            { conversationUuid: state.conversationUuid, legUuid, agentUserId },
+            { conversationUuid, legUuid, agentUserId },
             'Released an agent who joined a call that was not theirs to take',
           );
           await telephony.safeHangup(legUuid);
           return;
         }
 
-        const transfer =
-          isTransferTarget && previousAgentUserId
-            ? {
-                fromUserId: state.transferInitiatedBy ?? previousAgentUserId,
-                toUserId: agentUserId,
-                answeredLegUuid: legUuid,
-                initiatedBy: state.transferInitiatedBy,
-                releasedLegUuids: Object.keys(state.agentLegs).filter(
-                  (other) => other !== legUuid,
-                ),
-              }
-            : null;
-
-        state.agentLegUuid = legUuid;
-        state.activeAgentUserId = agentUserId;
-        state.pendingAgentLegUuids = state.pendingAgentLegUuids.filter(
-          (pending) => pending !== legUuid,
-        );
-        if (transfer) {
-          // Cleared in the same write that makes the teammate the agent, so
-          // a webhook delivered twice completes the transfer once, and a
-          // decline or a cancel arriving now finds nothing left to undo.
-          state.pendingTransferToUserId = undefined;
-          state.transferInitiatedBy = undefined;
-          state.transferOriginLegUuid = undefined;
-          for (const released of transfer.releasedLegUuids) {
-            delete state.agentLegs[released];
-          }
-        }
-        await telephony.saveCallState(state);
-
-        if (!wasAnswered && state.direction === 'inbound') {
-          state.answered = true;
-          await telephony.saveCallState(state);
+        if (joined.firstAnswer) {
           await events.callStarted({
-            conversationUuid: state.conversationUuid,
+            conversationUuid,
             from: state.from,
             to: state.to,
             userId: agentUserId,
@@ -1408,144 +1583,41 @@ export class CallFlow {
 
           // First to answer wins; stop ringing everyone else.
           await Promise.all(
-            Object.keys(state.agentLegs)
-              .filter((other) => other !== legUuid)
-              .map((other) => telephony.safeHangup(other)),
+            joined.losingLegUuids.map((other) => telephony.safeHangup(other)),
           );
         }
 
-        if (transfer) {
-          await this.completeTransfer(state.conversationUuid, transfer);
+        if (joined.transfer) {
+          await this.completeTransfer(conversationUuid, joined.transfer);
         }
         return;
       }
 
       case 'external': {
-        const wasAnswered = state.answered;
-        state.answered = true;
-        state.externalLegUuid = legUuid;
-        await telephony.saveCallState(state);
-
-        if (!wasAnswered && state.direction === 'outbound') {
-          await events.callStarted({
-            conversationUuid: state.conversationUuid,
-            from: state.from,
-            to: state.to,
-            userId: state.activeAgentUserId ?? state.targetUserId ?? 'unknown',
-            departmentId: state.departmentId,
-            direction: 'outbound',
-            agentLegUuid: state.agentLegUuid,
-            externalLegUuid: legUuid,
-          });
-        }
-        return;
-      }
-    }
-  }
-
-  private async onParticipantLeft(
-    state: CallState,
-    participant: CallParticipant,
-    legUuid: string,
-    status: CallEndStatus,
-    duration: number,
-  ): Promise<void> {
-    switch (participant.participantType) {
-      case 'agent':
-        await this.onAgentLeft(
-          state,
-          participant.participantId,
-          legUuid,
-          status,
-          duration,
-        );
-        return;
-      case 'external':
-        await this.onExternalLeft(state, legUuid, status, duration);
-        return;
-      case 'caller':
-        await this.hangUpOtherLegs(state, legUuid);
-        await this.finalize(state, status, duration);
-        return;
-    }
-  }
-
-  private async onAgentLeft(
-    state: CallState,
-    agentUserId: string,
-    legUuid: string,
-    status: CallEndStatus,
-    duration: number,
-  ): Promise<void> {
-    const { telephony } = this.deps;
-    const wasActiveAgent = state.agentLegUuid === legUuid;
-
-    removeLeg(state, legUuid);
-
-    if (!state.answered) {
-      await telephony.saveCallState(state);
-
-      if (state.ringStrategy === 'FIXED_ORDER') {
-        state.currentQueueIndex = (state.currentQueueIndex ?? 0) + 1;
-        await telephony.saveCallState(state);
-
-        if (await this.ringNextInOrder(state)) {
+        const update = await this.changeCall(conversationUuid, (draft) => {
+          const firstAnswer = !draft.answered && draft.direction === 'outbound';
+          draft.answered = true;
+          draft.externalLegUuid = legUuid;
+          return { result: firstAnswer };
+        });
+        const state = update?.after;
+        if (!update?.result || !state) {
           return;
         }
-      }
 
-      if (state.pendingAgentLegUuids.length > 0) {
+        await events.callStarted({
+          conversationUuid,
+          from: state.from,
+          to: state.to,
+          userId: state.activeAgentUserId ?? state.targetUserId ?? 'unknown',
+          departmentId: state.departmentId,
+          direction: 'outbound',
+          agentLegUuid: state.agentLegUuid,
+          externalLegUuid: legUuid,
+        });
         return;
       }
-
-      await this.routeCallerToVoicemail(state, 'routing-timeout');
-      return;
     }
-
-    if (wasActiveAgent && !state.pendingTransferToUserId) {
-      await this.hangUpOtherLegs(state, legUuid);
-      await this.finalize(state, status, duration);
-      return;
-    }
-
-    await telephony.saveCallState(state);
-
-    // The teammate's leg ended without an answer. A second ring of theirs
-    // that is still out (the same transfer asked for twice) keeps it alive.
-    const transferFellThrough =
-      state.pendingTransferToUserId === agentUserId &&
-      !Object.values(state.agentLegs).includes(agentUserId);
-    if (transferFellThrough) {
-      await this.failPendingTransfer(
-        state.conversationUuid,
-        agentUserId,
-        transferFailureReasonOf(status),
-      );
-    }
-  }
-
-  private async onExternalLeft(
-    state: CallState,
-    legUuid: string,
-    status: CallEndStatus,
-    duration: number,
-  ): Promise<void> {
-    const { telephony } = this.deps;
-
-    removeLeg(state, legUuid);
-
-    if (state.direction === 'outbound') {
-      await this.hangUpOtherLegs(state, legUuid);
-      await this.finalize(state, status, duration);
-      return;
-    }
-
-    if (!state.answered && state.callerLegUuid) {
-      await this.routeCallerToVoicemail(state, 'closed-hours-external');
-      return;
-    }
-
-    await this.finalize(state, status, duration);
   }
 
   private async resolveParticipant(
@@ -1592,11 +1664,282 @@ export class CallFlow {
     });
   }
 
+  // Claims -------------------------------------------------------------------
+
+  /**
+   * Change the call's state, then let go of whoever the change stopped
+   * occupying, so a user is free for another call the moment this one no
+   * longer needs them rather than when the claim runs out.
+   */
+  private async changeCall<R>(
+    conversationUuid: string,
+    decide: (draft: CallState) => CallStateChange<R>,
+  ): Promise<CallStateUpdate<R> | null> {
+    const update = await this.deps.telephony.updateCallState(
+      conversationUuid,
+      decide,
+    );
+    if (update && update.after !== update.before) {
+      await this.letGo(
+        conversationUuid,
+        usersLetGo(update.before, update.after),
+      );
+    }
+    return update;
+  }
+
+  private async letGo(
+    conversationUuid: string,
+    userIds: string[],
+  ): Promise<void> {
+    if (userIds.length === 0) {
+      return;
+    }
+
+    try {
+      await this.deps.realtime.release(conversationUuid, userIds);
+    } catch (error) {
+      // Not retried: the call no longer renews these claims, so they run
+      // out on their own and the users are free again within their lifetime.
+      this.deps.log.warn(
+        { err: error, conversationUuid, userIds },
+        'Failed to release users from a call',
+      );
+    }
+  }
+
   /** Work that outlives the webhook response; a failure must not go unnoticed. */
   private inBackground(work: Promise<unknown>, description: string): void {
     work.catch((error: unknown) => {
       this.deps.log.error({ err: error }, `Background ${description} failed`);
     });
+  }
+}
+
+/** The teammate who answered a transfer, and what is left of the agent handing it over. */
+interface TransferHandover {
+  fromUserId: string;
+  toUserId: string;
+  answeredLegUuid: string;
+  initiatedBy: string | undefined;
+  /** The leg handing the call over, and any second ring of the teammate. */
+  releasedLegUuids: string[];
+}
+
+type AgentJoin =
+  | { kind: 'intruder' }
+  | {
+      kind: 'joined';
+      /** The first answer of an inbound call, which stops everybody else's ring. */
+      firstAnswer: boolean;
+      losingLegUuids: string[];
+      transfer: TransferHandover | null;
+    };
+
+/**
+ * An agent's leg joined the conference: they take the call, or finish a
+ * transfer, or are turned away. Changes `draft` to match.
+ */
+function decideAgentJoined(
+  draft: CallState,
+  agentUserId: string,
+  legUuid: string,
+): CallStateChange<AgentJoin> {
+  const wasAnswered = draft.answered;
+  const previousAgentUserId = draft.activeAgentUserId;
+  const isTransferTarget = draft.pendingTransferToUserId === agentUserId;
+
+  // Someone already has this call and it is not being handed to this agent:
+  // they answered a ring that lost the race, or a transfer that was
+  // cancelled as they picked up. Taking the call over would leave two agents
+  // on it and end it for everyone when this one hangs up.
+  if (
+    wasAnswered &&
+    !isTransferTarget &&
+    previousAgentUserId !== undefined &&
+    previousAgentUserId !== agentUserId
+  ) {
+    return { result: { kind: 'intruder' } };
+  }
+
+  const transfer =
+    isTransferTarget && previousAgentUserId
+      ? {
+          fromUserId: draft.transferInitiatedBy ?? previousAgentUserId,
+          toUserId: agentUserId,
+          answeredLegUuid: legUuid,
+          initiatedBy: draft.transferInitiatedBy,
+          releasedLegUuids: Object.keys(draft.agentLegs).filter(
+            (other) => other !== legUuid,
+          ),
+        }
+      : null;
+
+  draft.agentLegUuid = legUuid;
+  draft.activeAgentUserId = agentUserId;
+  draft.pendingAgentLegUuids = draft.pendingAgentLegUuids.filter(
+    (pending) => pending !== legUuid,
+  );
+  if (transfer) {
+    // Cleared in the same write that makes the teammate the agent, so a
+    // webhook delivered twice completes the transfer once, and a decline or
+    // a cancel arriving now finds nothing left to undo. The released legs
+    // stay until Twilio reports them gone: the agent handing over is on the
+    // call, and not to be offered another, until theirs has left.
+    draft.pendingTransferToUserId = undefined;
+    draft.transferInitiatedBy = undefined;
+    draft.transferOriginLegUuid = undefined;
+  }
+
+  const firstAnswer = !wasAnswered && draft.direction === 'inbound';
+  if (firstAnswer) {
+    draft.answered = true;
+  }
+
+  return {
+    result: {
+      kind: 'joined',
+      firstAnswer,
+      losingLegUuids: firstAnswer
+        ? Object.keys(draft.agentLegs).filter((other) => other !== legUuid)
+        : [],
+      transfer,
+    },
+  };
+}
+
+type LegEndPlan =
+  /** The call no longer tracks the leg: its end was handled already. */
+  | { kind: 'ignored' }
+  /** The leg is forgotten and the call goes on as it was. */
+  | { kind: 'forgotten' }
+  /** The call is over. `final` is what it was left as, for the report. */
+  | { kind: 'ended'; final: CallState; hangUpLegUuids: string[] }
+  /** A fixed-order ring moves on to whoever is next. */
+  | { kind: 'ring-next' }
+  /** Nobody is left to answer. */
+  | { kind: 'voicemail'; reason: VoicemailReason }
+  /** The teammate a transfer rang is gone without answering. */
+  | {
+      kind: 'transfer-fell-through';
+      targetUserId: string;
+      reason: TransferFailureReason;
+    };
+
+/**
+ * A leg is gone: forget it, and decide what becomes of the call. Changes
+ * `draft` to match; an `ended` plan removes the state.
+ */
+function decideLegEnded(
+  draft: CallState,
+  participant: CallParticipant,
+  legUuid: string,
+  status: CallEndStatus,
+): CallStateChange<LegEndPlan> {
+  if (!legUuidsOf(draft).includes(legUuid)) {
+    return { result: { kind: 'ignored' } };
+  }
+
+  // While a hangup is in progress, legs drop one by one; the last one ends it.
+  if (draft.ending) {
+    removeLeg(draft, legUuid);
+    return hasActiveLegs(draft)
+      ? { result: { kind: 'forgotten' } }
+      : {
+          result: { kind: 'ended', final: draft, hangUpLegUuids: [] },
+          remove: true,
+        };
+  }
+
+  // The caller hanging up ends the call as it stood, their leg included.
+  if (participant.participantType === 'caller') {
+    return {
+      result: {
+        kind: 'ended',
+        final: draft,
+        hangUpLegUuids: legUuidsOf(draft).filter((other) => other !== legUuid),
+      },
+      remove: true,
+    };
+  }
+
+  const wasActiveAgent = draft.agentLegUuid === legUuid;
+  removeLeg(draft, legUuid);
+  const everyOtherLeg = legUuidsOf(draft);
+
+  switch (participant.participantType) {
+    case 'external':
+      if (draft.direction === 'outbound') {
+        return {
+          result: {
+            kind: 'ended',
+            final: draft,
+            hangUpLegUuids: everyOtherLeg,
+          },
+          remove: true,
+        };
+      }
+      if (!draft.answered && draft.callerLegUuid) {
+        return {
+          result: { kind: 'voicemail', reason: 'closed-hours-external' },
+        };
+      }
+      return {
+        result: { kind: 'ended', final: draft, hangUpLegUuids: [] },
+        remove: true,
+      };
+
+    case 'agent': {
+      if (!draft.answered) {
+        // The agent who dialed out is gone before the number answered, and
+        // nobody else is on an outbound call: the ring is stopped rather
+        // than answered into an empty conference.
+        if (draft.direction === 'outbound') {
+          return {
+            result: {
+              kind: 'ended',
+              final: draft,
+              hangUpLegUuids: everyOtherLeg,
+            },
+            remove: true,
+          };
+        }
+        if (draft.ringStrategy === 'FIXED_ORDER') {
+          draft.currentQueueIndex = (draft.currentQueueIndex ?? 0) + 1;
+          return { result: { kind: 'ring-next' } };
+        }
+        return draft.pendingAgentLegUuids.length > 0
+          ? { result: { kind: 'forgotten' } }
+          : { result: { kind: 'voicemail', reason: 'routing-timeout' } };
+      }
+
+      if (wasActiveAgent && !draft.pendingTransferToUserId) {
+        return {
+          result: {
+            kind: 'ended',
+            final: draft,
+            hangUpLegUuids: everyOtherLeg,
+          },
+          remove: true,
+        };
+      }
+
+      // The teammate's leg ended without an answer. A second ring of theirs
+      // that is still out (the same transfer asked for twice) keeps it alive.
+      const agentUserId = participant.participantId;
+      const transferFellThrough =
+        draft.pendingTransferToUserId === agentUserId &&
+        !Object.values(draft.agentLegs).includes(agentUserId);
+      return transferFellThrough
+        ? {
+            result: {
+              kind: 'transfer-fell-through',
+              targetUserId: agentUserId,
+              reason: transferFailureReasonOf(status),
+            },
+          }
+        : { result: { kind: 'forgotten' } };
+    }
   }
 }
 

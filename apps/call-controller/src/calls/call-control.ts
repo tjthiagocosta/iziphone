@@ -4,6 +4,7 @@ import {
   callLine,
   type IncomingCall,
   type TransferFailureReason,
+  type UnavailableReason,
 } from '@repo/dto';
 import type { CallState, LegMetadata } from './call-state.js';
 
@@ -28,6 +29,8 @@ export const REFUSAL_MESSAGES: Record<CallControlRefusal, string> = {
   'no-transfer-pending': 'No transfer is ringing for this call',
   'transfer-to-self': 'A call cannot be transferred to yourself',
   'target-on-call': 'That teammate is already on this call',
+  'target-busy': 'That teammate is on another call',
+  'target-dnd': 'That teammate does not want to be disturbed',
   'target-offline': 'That teammate is not online',
   'call-gone': 'The call has already ended',
   'provider-error': 'The phone provider did not accept the request',
@@ -199,6 +202,20 @@ export function planTransferFailure(state: CallState): TransferFailurePlan {
   return state.direction === 'inbound' && state.callerLegUuid
     ? 'voicemail'
     : 'end-call';
+}
+
+/** Why a teammate who could not be offered a transfer was refused. */
+export function transferRefusalOf(
+  reason: UnavailableReason,
+): CallControlRefusal {
+  switch (reason) {
+    case 'busy':
+      return 'target-busy';
+    case 'dnd':
+      return 'target-dnd';
+    case 'offline':
+      return 'target-offline';
+  }
 }
 
 /**

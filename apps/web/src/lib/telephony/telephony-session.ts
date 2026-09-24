@@ -815,6 +815,10 @@ function transferRefusalNotice(error: unknown, targetName: string): string {
       return `${targetName} is not online`;
     case 'target-on-call':
       return `${targetName} is already on this call`;
+    case 'target-busy':
+      return `${targetName} is on another call`;
+    case 'target-dnd':
+      return `${targetName} does not want to be disturbed`;
     default:
       return messageOf(error, 'The call could not be transferred');
   }

@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
+  AVAILABILITY_LOOKUP_MAX_USERS,
+  AvailabilityLookupQuerySchema,
   CallControlRefusalSchema,
+  DoNotDisturbSchema,
   HoldCallSchema,
   OutboundGrantRefusalSchema,
   OutboundGrantRequestSchema,
@@ -190,5 +193,42 @@ describe('call control responses', () => {
       true,
     );
     expect(CallControlRefusalSchema.safeParse('busy').success).toBe(false);
+  });
+
+  test('names why a teammate cannot be handed a call', () => {
+    expect(CallControlRefusalSchema.safeParse('target-busy').success).toBe(
+      true,
+    );
+    expect(CallControlRefusalSchema.safeParse('target-dnd').success).toBe(true);
+  });
+});
+
+describe('availability', () => {
+  test('a lookup takes a comma-separated list of user ids, once each', () => {
+    expect(
+      AvailabilityLookupQuerySchema.parse({ userIds: 'user-1, user-2,user-1' }),
+    ).toEqual({ userIds: ['user-1', 'user-2'] });
+  });
+
+  test('a lookup refuses no ids at all and too many at once', () => {
+    expect(
+      AvailabilityLookupQuerySchema.safeParse({ userIds: ' , ' }).success,
+    ).toBe(false);
+    const tooMany = Array.from(
+      { length: AVAILABILITY_LOOKUP_MAX_USERS + 1 },
+      (_, index) => `user-${index}`,
+    ).join(',');
+    expect(
+      AvailabilityLookupQuerySchema.safeParse({ userIds: tooMany }).success,
+    ).toBe(false);
+  });
+
+  test('do not disturb is switched with a boolean only', () => {
+    expect(DoNotDisturbSchema.parse({ doNotDisturb: true })).toEqual({
+      doNotDisturb: true,
+    });
+    expect(DoNotDisturbSchema.safeParse({ doNotDisturb: 'on' }).success).toBe(
+      false,
+    );
   });
 });

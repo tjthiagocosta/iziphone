@@ -1,3 +1,4 @@
+import type { IncomingCall } from '@repo/dto';
 import type { CachedRouting, CachedRoutingSettings } from '@repo/events';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { e164 } from '../test/e164.js';
@@ -5,7 +6,7 @@ import { createFakeLogger } from '../test/fake-logger.js';
 import { createFakeTelephony } from '../test/fake-telephony.js';
 import { testControllerConfig } from '../test/route-test-helpers.js';
 import type { CallEventPublisher } from './call-events.js';
-import { CallFlow } from './call-flow.js';
+import { CallFlow, type CallOffer } from './call-flow.js';
 
 const caller = '+15555550101';
 const businessNumber = '+15555550102';
@@ -48,6 +49,72 @@ const directLine: CachedRouting = {
   cachedAt: '2026-09-08T12:00:00.000Z',
 };
 
+/**
+ * The realtime layer as the flow sees it: who is online, who turned on do
+ * not disturb and which calls claim whom, decided the way the controller's
+ * availability rule decides it.
+ */
+function createFakeRealtime(online: Set<string>) {
+  const doNotDisturb = new Set<string>();
+  const claims = new Map<string, Set<string>>();
+  const claimsOn = (userId: string) => {
+    const calls = claims.get(userId) ?? new Set<string>();
+    claims.set(userId, calls);
+    return calls;
+  };
+
+  const realtime = {
+    offerCall: vi.fn(
+      async (userIds: string[], call: IncomingCall): Promise<CallOffer> => {
+        const offer: CallOffer = { offered: [], refused: [] };
+        for (const userId of new Set(userIds)) {
+          const otherCalls = [...claimsOn(userId)].filter(
+            (claimed) => claimed !== call.conversationUuid,
+          );
+          const reason = !online.has(userId)
+            ? 'offline'
+            : doNotDisturb.has(userId)
+              ? 'dnd'
+              : otherCalls.length > 0
+                ? 'busy'
+                : null;
+          if (reason) {
+            offer.refused.push({ userId, reason });
+          } else {
+            claimsOn(userId).add(call.conversationUuid);
+            offer.offered.push(userId);
+          }
+        }
+        return offer;
+      },
+    ),
+    occupy: vi.fn(async (conversationUuid: string, userIds: string[]) => {
+      for (const userId of userIds) claimsOn(userId).add(conversationUuid);
+    }),
+    release: vi.fn(async (conversationUuid: string, userIds: string[]) => {
+      for (const userId of userIds) claimsOn(userId).delete(conversationUuid);
+    }),
+    // A renewal claims its users whether or not they still hold a claim.
+    renew: vi.fn(async (conversationUuid: string, userIds: string[]) => {
+      for (const userId of userIds) claimsOn(userId).add(conversationUuid);
+    }),
+    trackCallParticipants: vi.fn(async () => undefined),
+    notifyTransferOutcome: vi.fn(async () => undefined),
+  };
+
+  return {
+    realtime,
+    doNotDisturb,
+    /** The calls claiming a user right now. */
+    claimsOf: (userId: string) => [...claimsOn(userId)],
+    /** Another call takes the user, as a call on another line would. */
+    occupyElsewhere: (userId: string, conversationUuid = 'CAelsewhere') =>
+      claimsOn(userId).add(conversationUuid),
+    /** Every claim runs out, as when nothing renewed them for a lifetime. */
+    lapseClaims: () => claims.clear(),
+  };
+}
+
 function buildFlow(
   options: { routing?: CachedRouting | null; online?: string[] } = {},
 ) {
@@ -65,13 +132,8 @@ function buildFlow(
     callRecordingReady: vi.fn(async () => undefined),
     callTranscriptionReady: vi.fn(async () => undefined),
   } satisfies CallEventPublisher;
-  const realtime = {
-    notifyIncomingCall: vi.fn(async (userIds: string[]) =>
-      userIds.filter((userId) => online.has(userId)),
-    ),
-    trackCallParticipants: vi.fn(async () => undefined),
-    notifyTransferOutcome: vi.fn(async () => undefined),
-  };
+  const { realtime, doNotDisturb, claimsOf, occupyElsewhere, lapseClaims } =
+    createFakeRealtime(online);
   const routing = {
     lookupByPhone: vi.fn(async () =>
       options.routing === undefined ? department : options.routing,
@@ -86,7 +148,19 @@ function buildFlow(
     log,
   });
 
-  return { flow, events, realtime, routing, online, log, ...fake };
+  return {
+    flow,
+    events,
+    realtime,
+    routing,
+    online,
+    doNotDisturb,
+    claimsOf,
+    occupyElsewhere,
+    lapseClaims,
+    log,
+    ...fake,
+  };
 }
 
 /** Let background work started by a webhook handler settle. */
@@ -211,7 +285,7 @@ describe('CallFlow', () => {
       });
 
       expect(twiml).toContain('<Conference');
-      expect(realtime.notifyIncomingCall).toHaveBeenCalledWith(
+      expect(realtime.offerCall).toHaveBeenCalledWith(
         ['user-1', 'user-2'],
         expect.objectContaining({
           conversationUuid: 'CAcall1',
@@ -960,6 +1034,26 @@ describe('CallFlow', () => {
       });
     });
 
+    test('a decline from a member the call already let go changes nothing', async () => {
+      const { flow, twilio, telephony, claimsOf } = await offeredCall();
+      await flow.declineOfferedCall('CAcall1', 'user-2');
+
+      // Their other tab declines too, before and after Twilio reports the leg.
+      await flow.declineOfferedCall('CAcall1', 'user-2');
+      await legEnded(flow, 'CAleg2');
+      await flow.declineOfferedCall('CAcall1', 'user-2');
+
+      expect([...new Set(twilio.hangups())]).toEqual(['CAleg2']);
+      expect(twilio.redirects()).toHaveLength(0);
+      expect(claimsOf('user-2')).toEqual([]);
+      expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        voicemail: false,
+        agentLegs: { CAleg1: 'user-1' },
+        pendingAgentLegUuids: ['CAleg1'],
+      });
+    });
+
     test('sends the caller to voicemail once every offered member has declined', async () => {
       const { flow, events, twilio, telephony } = await offeredCall();
 
@@ -1313,7 +1407,7 @@ describe('CallFlow', () => {
     test('holds the other party and rings the teammate, who sees the caller and who is transferring', async () => {
       const { events, realtime, twilio, telephony } = await transferringCall();
 
-      expect(realtime.notifyIncomingCall).toHaveBeenLastCalledWith(['user-2'], {
+      expect(realtime.offerCall).toHaveBeenLastCalledWith(['user-2'], {
         conversationUuid: 'CAcall1',
         from: caller,
         to: businessNumber,
@@ -1400,8 +1494,17 @@ describe('CallFlow', () => {
         ok: true,
         held: true,
       });
-      // The agent's released leg is no longer the call's, so the call can be
-      // handed straight back to them.
+      // The agent's leg is on its way out but still up, so the call goes back
+      // to them only once Twilio reports it gone.
+      await expect(flow.transferCall(teammate, 'user-1')).resolves.toEqual({
+        ok: false,
+        refusal: 'target-on-call',
+      });
+      await flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'completed',
+      });
       await expect(flow.transferCall(teammate, 'user-1')).resolves.toEqual({
         ok: true,
         conversationUuid: 'CAcall1',
@@ -1702,7 +1805,7 @@ describe('CallFlow', () => {
       const { flow, online, realtime, twilio, telephony } =
         await answeredCall();
       online.add('user-2');
-      realtime.notifyIncomingCall.mockRejectedValueOnce(
+      realtime.offerCall.mockRejectedValueOnce(
         new Error('Redis is unavailable'),
       );
 
@@ -1950,7 +2053,7 @@ describe('CallFlow', () => {
       test('shows the teammate the number that was dialed, and holds it', async () => {
         const { realtime, twilio } = await transferringOutboundCall();
 
-        expect(realtime.notifyIncomingCall).toHaveBeenLastCalledWith(
+        expect(realtime.offerCall).toHaveBeenLastCalledWith(
           ['user-2'],
           expect.objectContaining({
             conversationUuid: 'CAagent1',
@@ -2294,6 +2397,23 @@ describe('CallFlow', () => {
       );
     });
 
+    test('stops ringing the number when the agent hangs up before it answers', async () => {
+      const { flow, events, twilio, telephony, claimsOf } = buildFlow();
+      await dialOut(flow);
+      await settle();
+
+      await flow.handleCallStatus({
+        conversationUuid: 'CAagent1',
+        legUuid: 'CAagent1',
+        status: 'completed',
+      });
+
+      expect(twilio.hangups()).toEqual(['CAleg1']);
+      expect(events.callEnded).toHaveBeenCalledTimes(1);
+      expect(claimsOf('user-1')).toEqual([]);
+      await expect(telephony.getCallState('CAagent1')).resolves.toBeNull();
+    });
+
     test('fails the call when the number cannot be dialed', async () => {
       const { flow, events, twilio } = buildFlow();
       twilio.failWith(customer, new Error('Twilio rejected the dial'));
@@ -2305,6 +2425,625 @@ describe('CallFlow', () => {
       expect(events.callEnded).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'failed' }),
       );
+    });
+  });
+
+  describe('availability', () => {
+    const inbound = { callSid: 'CAcall1', from: caller, to: businessNumber };
+    const fixedOrder: CachedRouting = {
+      ...department,
+      settings: { ...settings, openHoursRoutingType: 'FIXED_ORDER' },
+    };
+
+    test('a department ring leaves out members who are busy or not to be disturbed', async () => {
+      const context = buildFlow({ online: ['user-1', 'user-2', 'user-3'] });
+      context.routing.lookupByPhone.mockResolvedValue({
+        ...department,
+        userIds: ['user-1', 'user-2', 'user-3'],
+      });
+      context.occupyElsewhere('user-1');
+      context.doNotDisturb.add('user-3');
+
+      const twiml = await context.flow.acceptInboundCall(inbound);
+
+      expect(twiml).toContain('<Conference');
+      expect(context.twilio.created.map((leg) => leg.to)).toEqual([
+        expect.stringMatching(/^client:user-2\?/),
+      ]);
+      expect(context.claimsOf('user-2')).toEqual(['CAcall1']);
+      expect(context.claimsOf('user-1')).toEqual(['CAelsewhere']);
+      expect(context.claimsOf('user-3')).toEqual([]);
+    });
+
+    test('a department whose members are all taken answers with its fallback at once', async () => {
+      const { flow, events, twilio, occupyElsewhere, doNotDisturb } = buildFlow(
+        { online: ['user-1', 'user-2'] },
+      );
+      occupyElsewhere('user-1');
+      doNotDisturb.add('user-2');
+
+      const twiml = await flow.acceptInboundCall(inbound);
+
+      expect(twiml).toContain('Nobody is available right now');
+      expect(twiml).toContain('<Record');
+      expect(twilio.created).toEqual([]);
+      expect(events.callMissed).toHaveBeenCalledTimes(1);
+    });
+
+    test('a fixed order passes over a busy member to the next one', async () => {
+      const { flow, twilio, telephony, occupyElsewhere } = buildFlow({
+        routing: fixedOrder,
+        online: ['user-1', 'user-2'],
+      });
+      occupyElsewhere('user-1');
+
+      await flow.acceptInboundCall(inbound);
+
+      expect(twilio.created.map((leg) => leg.to)).toEqual([
+        expect.stringMatching(/^client:user-2\?/),
+      ]);
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        currentQueueIndex: 1,
+      });
+    });
+
+    test('a fixed order with everybody taken answers with its fallback at once', async () => {
+      const { flow, twilio, occupyElsewhere, doNotDisturb } = buildFlow({
+        routing: fixedOrder,
+        online: ['user-1', 'user-2'],
+      });
+      occupyElsewhere('user-1');
+      doNotDisturb.add('user-2');
+
+      const twiml = await flow.acceptInboundCall(inbound);
+
+      expect(twiml).toContain('<Record');
+      expect(twilio.created).toEqual([]);
+    });
+
+    test.each(['busy', 'dnd'] as const)(
+      'a direct call to a user who is %s goes to voicemail without ringing',
+      async (reason) => {
+        const context = buildFlow({ routing: directLine, online: ['user-1'] });
+        if (reason === 'busy') {
+          context.occupyElsewhere('user-1');
+        } else {
+          context.doNotDisturb.add('user-1');
+        }
+
+        const twiml = await context.flow.acceptInboundCall(inbound);
+
+        expect(twiml).toContain('The person you are calling is unavailable');
+        expect(context.twilio.created).toEqual([]);
+        expect(context.events.callMissed).toHaveBeenCalledTimes(1);
+        await expect(
+          context.telephony.getCallState('CAcall1'),
+        ).resolves.toMatchObject({ voicemail: true });
+      },
+    );
+
+    test.each([
+      ['busy', 'target-busy'],
+      ['dnd', 'target-dnd'],
+    ] as const)(
+      'refuses a transfer to a teammate who is %s, without holding or ringing anybody',
+      async (reason, refusal) => {
+        const context = await answeredCall();
+        context.online.add('user-2');
+        if (reason === 'busy') {
+          // Already talking on another call: the transfer used to ring them
+          // anyway, and their Answer did nothing.
+          context.occupyElsewhere('user-2');
+        } else {
+          context.doNotDisturb.add('user-2');
+        }
+
+        await expect(
+          context.flow.transferCall(agent, 'user-2'),
+        ).resolves.toEqual({ ok: false, refusal });
+
+        expect(context.twilio.holds()).toEqual([]);
+        expect(context.twilio.created).toHaveLength(1);
+        expect(context.realtime.notifyTransferOutcome).not.toHaveBeenCalled();
+        const state = await context.telephony.getCallState('CAcall1');
+        expect(state?.pendingTransferToUserId).toBeUndefined();
+        expect(state?.transferOriginLegUuid).toBeUndefined();
+        // The call is the agent's to control again.
+        await expect(context.flow.holdCall(agent, true)).resolves.toMatchObject(
+          {
+            ok: true,
+          },
+        );
+      },
+    );
+
+    test('an agent on do not disturb may still dial out, and is claimed from the dial', async () => {
+      const { flow, realtime, twilio, doNotDisturb, claimsOf } = buildFlow();
+      doNotDisturb.add('user-1');
+
+      await dialOut(flow);
+      await settle();
+
+      expect(realtime.occupy).toHaveBeenCalledWith('CAagent1', ['user-1']);
+      expect(claimsOf('user-1')).toEqual(['CAagent1']);
+      expect(twilio.created).toEqual([
+        expect.objectContaining({ to: customer }),
+      ]);
+    });
+
+    describe('claims', () => {
+      test('the members who lost a ring are let go when somebody answers', async () => {
+        const { flow, claimsOf } = buildFlow();
+        await flow.acceptInboundCall(inbound);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+        expect(claimsOf('user-2')).toEqual(['CAcall1']);
+
+        await flow.handleConferenceEvent({
+          conversationUuid: 'CAcall1',
+          event: 'participant-join',
+          legUuid: 'CAleg2',
+          participantLabel: 'agent|user-2|nonce',
+        });
+
+        expect(claimsOf('user-1')).toEqual([]);
+        expect(claimsOf('user-2')).toEqual(['CAcall1']);
+      });
+
+      test('a member who declines is let go at once, before Twilio reports the leg', async () => {
+        const { flow, claimsOf } = buildFlow();
+        await flow.acceptInboundCall(inbound);
+
+        await flow.declineOfferedCall('CAcall1', 'user-2');
+
+        expect(claimsOf('user-2')).toEqual([]);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      });
+
+      test('every member is let go when the ring times out', async () => {
+        const { flow, claimsOf } = buildFlow();
+        await flow.acceptInboundCall(inbound);
+
+        for (const legUuid of ['CAleg1', 'CAleg2']) {
+          await flow.handleCallStatus({
+            conversationUuid: 'CAcall1',
+            legUuid,
+            status: 'no-answer',
+          });
+        }
+
+        expect(claimsOf('user-1')).toEqual([]);
+        expect(claimsOf('user-2')).toEqual([]);
+      });
+
+      test('a member Twilio could not ring is let go, and the order moves on', async () => {
+        const { flow, twilio, claimsOf } = buildFlow({ routing: fixedOrder });
+        const target = new URLSearchParams({
+          conversationUuid: 'CAcall1',
+          participantType: 'agent',
+          participantId: 'user-1',
+        });
+        twilio.failWith(
+          `client:user-1?${target.toString()}`,
+          new Error('Twilio rejected the dial'),
+        );
+
+        await flow.acceptInboundCall(inbound);
+
+        expect(claimsOf('user-1')).toEqual([]);
+        expect(claimsOf('user-2')).toEqual(['CAcall1']);
+      });
+
+      test('the agent is let go when the call ends', async () => {
+        const { flow, claimsOf } = await answeredCall();
+
+        await flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAleg1',
+          status: 'completed',
+        });
+
+        expect(claimsOf('user-1')).toEqual([]);
+      });
+
+      test('an outbound call that could not be dialed lets its agent go', async () => {
+        const { flow, twilio, claimsOf } = buildFlow();
+        twilio.failWith(customer, new Error('Twilio rejected the dial'));
+
+        await dialOut(flow);
+        await settle();
+
+        expect(claimsOf('user-1')).toEqual([]);
+      });
+
+      test('a transfer claims both agents while it rings, and the agent who handed it over until their leg is gone', async () => {
+        const { flow, claimsOf, twilio, telephony } = await transferringCall();
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+        expect(claimsOf('user-2')).toEqual(['CAcall1']);
+
+        await flow.handleConferenceEvent({
+          conversationUuid: 'CAcall1',
+          event: 'participant-join',
+          legUuid: 'CAleg2',
+          participantLabel: 'agent|user-2|nonce',
+        });
+
+        // Their leg is being hung up, and their softphone is still on it.
+        expect(twilio.hangups()).toEqual(['CAleg1']);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+        expect(claimsOf('user-2')).toEqual(['CAcall1']);
+
+        await flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAleg1',
+          status: 'completed',
+        });
+
+        expect(claimsOf('user-1')).toEqual([]);
+        expect(claimsOf('user-2')).toEqual(['CAcall1']);
+        // Their leg leaving is not the call ending.
+        await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+          agentLegUuid: 'CAleg2',
+          activeAgentUserId: 'user-2',
+        });
+      });
+
+      test('an unanswered transfer lets the teammate go and leaves the caller with the agent', async () => {
+        const { flow, claimsOf, telephony } = await transferringCall();
+
+        await flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAleg2',
+          status: 'no-answer',
+        });
+
+        expect(claimsOf('user-2')).toEqual([]);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+        await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+          held: false,
+          agentLegUuid: 'CAleg1',
+        });
+      });
+
+      test('keeps renewing the claims of every call still going', async () => {
+        const { flow, realtime, telephony, sets } = await answeredCall();
+        await telephony.createCallState({
+          conversationUuid: 'CAgone',
+          conversationName: 'call-CAgone',
+          direction: 'inbound',
+          routingType: 'DEPARTMENT',
+          from: caller,
+          to: businessNumber,
+          agentLegs: {},
+          pendingAgentLegUuids: [],
+          answered: false,
+          voicemail: false,
+          ending: false,
+          createdAt: '2026-09-23T12:00:00.000Z',
+        });
+        // Its state expired without anybody removing it.
+        await telephony.updateCallState('CAgone', () => ({
+          result: undefined,
+          remove: true,
+        }));
+        sets.get('telephony:calls')?.add('CAgone');
+
+        await flow.renewClaims();
+
+        expect(realtime.renew).toHaveBeenCalledExactlyOnceWith('CAcall1', [
+          'user-1',
+        ]);
+        await expect(telephony.liveCallIds()).resolves.toEqual(['CAcall1']);
+      });
+
+      test('a renewal claims again the agent of a call whose claim ran out', async () => {
+        const { flow, claimsOf, lapseClaims } = await answeredCall();
+        lapseClaims();
+
+        await flow.renewClaims();
+
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      });
+
+      test('a member who declined is free once their leg is reported gone, even if a renewal claimed them again first', async () => {
+        const { flow, claimsOf } = buildFlow();
+        await flow.acceptInboundCall(inbound);
+        await flow.declineOfferedCall('CAcall1', 'user-2');
+
+        // A decline writes no state, so the call still rings them until
+        // Twilio reports the leg, and a renewal in that moment claims them.
+        await flow.renewClaims();
+        expect(claimsOf('user-2')).toEqual(['CAcall1']);
+
+        await flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAleg2',
+          status: 'completed',
+        });
+
+        expect(claimsOf('user-2')).toEqual([]);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      });
+
+      test('a renewal that crosses a change letting somebody go lets them go again', async () => {
+        const { flow, realtime, claimsOf, occupyElsewhere } =
+          await transferringCall();
+        realtime.renew.mockImplementationOnce(
+          async (conversationUuid, userIds) => {
+            // The teammate turns the transfer down between the renewal's read
+            // and its write.
+            await flow.declineOfferedCall('CAcall1', 'user-2');
+            for (const userId of userIds) {
+              occupyElsewhere(userId, conversationUuid);
+            }
+          },
+        );
+
+        await flow.renewClaims();
+
+        expect(realtime.renew).toHaveBeenCalledExactlyOnceWith('CAcall1', [
+          'user-1',
+          'user-2',
+        ]);
+        expect(claimsOf('user-2')).toEqual([]);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      });
+
+      test('a reconciling round asks Twilio about every leg and leaves a call whose legs are all up alone', async () => {
+        const { flow, twilio, events, realtime, claimsOf } =
+          await answeredCall();
+
+        await flow.renewClaims({ reconcile: true });
+
+        expect([...twilio.fetched].sort()).toEqual(['CAcall1', 'CAleg1']);
+        expect(twilio.hangups()).toEqual([]);
+        expect(events.callEnded).not.toHaveBeenCalled();
+        expect(realtime.renew).toHaveBeenCalledExactlyOnceWith('CAcall1', [
+          'user-1',
+        ]);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      });
+
+      test('a reconciling round ends a call whose end Twilio never reported, and lets its agent go', async () => {
+        const { flow, twilio, events, realtime, telephony, claimsOf } =
+          await answeredCall();
+        twilio.reportLeg('CAcall1', 'completed');
+
+        await flow.renewClaims({ reconcile: true });
+
+        expect(twilio.hangups()).toEqual(['CAleg1']);
+        expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            conversationUuid: 'CAcall1',
+            status: 'completed',
+          }),
+        );
+        // Renewed first, then let go once Twilio said the call was over.
+        expect(realtime.renew).toHaveBeenCalledExactlyOnceWith('CAcall1', [
+          'user-1',
+        ]);
+        expect(claimsOf('user-1')).toEqual([]);
+        await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
+        await expect(telephony.liveCallIds()).resolves.toEqual([]);
+      });
+
+      test('a leg Twilio no longer knows is taken as gone', async () => {
+        const { flow, twilio, events, telephony, claimsOf } =
+          await answeredCall();
+        twilio.forgetLeg('CAleg1');
+
+        await flow.renewClaims({ reconcile: true });
+
+        expect(twilio.hangups()).toEqual(['CAcall1']);
+        expect(events.callEnded).toHaveBeenCalledTimes(1);
+        expect(claimsOf('user-1')).toEqual([]);
+        await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
+      });
+
+      test('a Twilio that fails while reconciling does not keep the call from being claimed again', async () => {
+        const { flow, twilio, log, claimsOf, lapseClaims } =
+          await answeredCall();
+        // The round at start, after an outage longer than a claim lasts,
+        // with Twilio unreachable.
+        lapseClaims();
+        twilio.failWith(
+          'CAcall1',
+          Object.assign(new Error('Service Unavailable'), { status: 503 }),
+        );
+
+        await flow.renewClaims({ reconcile: true });
+
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+        expect(log.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ conversationUuid: 'CAcall1' }),
+          'Failed to reconcile a call with Twilio',
+        );
+      });
+
+      test('every call is renewed before Twilio is asked about any', async () => {
+        const { flow, online, realtime, twilio } = await answeredCall();
+        online.add('user-2');
+        await flow.acceptInboundCall({
+          callSid: 'CAcall2',
+          from: '+15555550103',
+          to: businessNumber,
+        });
+        const askedBeforeRenewal: number[] = [];
+        realtime.renew.mockImplementation(async () => {
+          askedBeforeRenewal.push(twilio.fetched.length);
+        });
+
+        await flow.renewClaims({ reconcile: true });
+
+        expect(askedBeforeRenewal).toEqual([0, 0]);
+        expect(twilio.fetched.length).toBeGreaterThan(0);
+      });
+
+      test('an ending call does not claim back a member whose ring lost before their leg is reported', async () => {
+        const { flow, telephony, realtime, claimsOf } = buildFlow();
+        await flow.acceptInboundCall(inbound);
+        await flow.handleConferenceEvent({
+          conversationUuid: 'CAcall1',
+          event: 'participant-join',
+          legUuid: 'CAleg1',
+          participantLabel: 'agent|user-1|nonce',
+        });
+        expect(claimsOf('user-2')).toEqual([]);
+        // user-1 hangs up before Twilio reports user-2's lost ring gone.
+        await telephony.requestConversationHangup('CAcall1', 'user-1');
+
+        await flow.renewClaims();
+
+        expect(realtime.renew).toHaveBeenCalledExactlyOnceWith('CAcall1', [
+          'user-1',
+        ]);
+        expect(claimsOf('user-2')).toEqual([]);
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      });
+
+      test('a round that does not reconcile asks Twilio nothing', async () => {
+        const { flow, twilio, events, claimsOf } = await answeredCall();
+        twilio.reportLeg('CAcall1', 'completed');
+
+        await flow.renewClaims();
+
+        expect(twilio.fetched).toEqual([]);
+        expect(events.callEnded).not.toHaveBeenCalled();
+        expect(claimsOf('user-1')).toEqual(['CAcall1']);
+      });
+
+      test('one call that cannot be renewed does not keep the others from it', async () => {
+        const { flow, online, realtime, log } = await answeredCall();
+        online.add('user-2');
+        await flow.acceptInboundCall({
+          callSid: 'CAcall2',
+          from: '+15555550103',
+          to: businessNumber,
+        });
+        realtime.renew.mockRejectedValueOnce(new Error('Redis is away'));
+
+        await flow.renewClaims();
+
+        expect(realtime.renew).toHaveBeenCalledTimes(2);
+        expect(log.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ conversationUuid: 'CAcall1' }),
+          'Failed to renew the claims of a call',
+        );
+      });
+    });
+  });
+
+  describe('changes that land together', () => {
+    test('two holds landing at once tell the timeline once', async () => {
+      const { flow, events, telephony, beforeNextCallStateWrite } =
+        await answeredCall();
+      beforeNextCallStateWrite(async () => {
+        await flow.holdCall(agent, true);
+      });
+
+      await expect(flow.holdCall(agent, true)).resolves.toMatchObject({
+        ok: true,
+        held: true,
+      });
+
+      expect(events.callHeld).toHaveBeenCalledTimes(1);
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        held: true,
+      });
+    });
+
+    test('of two transfers asked for at once, only one goes through', async () => {
+      const {
+        flow,
+        online,
+        twilio,
+        telephony,
+        claimsOf,
+        beforeNextCallStateWrite,
+      } = await answeredCall();
+      online.add('user-2');
+      online.add('user-3');
+      let first: unknown;
+      beforeNextCallStateWrite(async () => {
+        first = await flow.transferCall(agent, 'user-3');
+      });
+
+      await expect(flow.transferCall(agent, 'user-2')).resolves.toEqual({
+        ok: false,
+        refusal: 'transfer-pending',
+      });
+
+      expect(first).toMatchObject({ ok: true, targetUserId: 'user-3' });
+      expect(twilio.created.map((leg) => leg.to)).toEqual([
+        expect.stringMatching(/^client:user-1\?/),
+        expect.stringMatching(/^client:user-3\?/),
+      ]);
+      expect(claimsOf('user-2')).toEqual([]);
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        pendingTransferToUserId: 'user-3',
+      });
+    });
+
+    test('a decline landing while the hold is recorded leaves the caller with the agent, not on hold', async () => {
+      const {
+        flow,
+        online,
+        events,
+        twilio,
+        telephony,
+        beforeNextCallStateWrite,
+      } = await answeredCall();
+      online.add('user-2');
+      twilio.whileHolding(async () => {
+        twilio.whileHolding(async () => undefined);
+        beforeNextCallStateWrite(() =>
+          flow.declineOfferedCall('CAcall1', 'user-2'),
+        );
+      });
+
+      await expect(flow.transferCall(agent, 'user-2')).resolves.toEqual({
+        ok: false,
+        refusal: 'no-transfer-pending',
+      });
+
+      const state = await telephony.getCallState('CAcall1');
+      expect(state).toMatchObject({ held: false, agentLegUuid: 'CAleg1' });
+      expect(state?.pendingTransferToUserId).toBeUndefined();
+      expect(state?.transferInitiatedBy).toBeUndefined();
+      expect(twilio.holds().at(-1)).toBe(false);
+      // The timeline hears of the hold that landed after the decline, and of
+      // the resume that took it back.
+      expect(events.callHeld).toHaveBeenCalledTimes(1);
+      expect(events.callResumed).toHaveBeenCalledTimes(1);
+    });
+
+    test('a decline landing while the ring is registered does not bring the transfer back', async () => {
+      const {
+        flow,
+        online,
+        twilio,
+        telephony,
+        claimsOf,
+        beforeNextCallStateWrite,
+      } = await answeredCall();
+      online.add('user-2');
+      twilio.whileCreating(async () => {
+        twilio.whileCreating(async () => undefined);
+        beforeNextCallStateWrite(() =>
+          flow.declineOfferedCall('CAcall1', 'user-2'),
+        );
+      });
+
+      await expect(flow.transferCall(agent, 'user-2')).resolves.toEqual({
+        ok: false,
+        refusal: 'no-transfer-pending',
+      });
+
+      expect(twilio.hangups()).toEqual(['CAleg2']);
+      expect(claimsOf('user-2')).toEqual([]);
+      const state = await telephony.getCallState('CAcall1');
+      expect(state).toMatchObject({ held: false, agentLegUuid: 'CAleg1' });
+      expect(state?.pendingTransferToUserId).toBeUndefined();
+      expect(state?.transferOriginLegUuid).toBeUndefined();
     });
   });
 

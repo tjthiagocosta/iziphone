@@ -1,15 +1,21 @@
 import {
+  AVAILABILITY_LOOKUP_MAX_USERS,
+  AvailabilityLookupResponseSchema,
+  type DoNotDisturb,
   type HoldCall,
   type OutboundGrantRequest,
   OutboundGrantResponseSchema,
+  type OwnAvailabilityResponse,
+  OwnAvailabilityResponseSchema,
   type TransferCall,
+  type UserAvailability,
   VoiceHangupResponseSchema,
   VoiceHoldResponseSchema,
   VoiceTokenResponseSchema,
   VoiceTransferCancelResponseSchema,
   VoiceTransferResponseSchema,
 } from '@repo/dto';
-import { requestCallController } from './client';
+import { requestCallController, withQuery } from './client';
 
 /** A Twilio access token that registers this browser as the user's device. */
 export async function fetchVoiceToken(realtimeToken: string): Promise<string> {
@@ -111,5 +117,57 @@ export async function requestTransferCancel(
     `/api/voice/calls/${encodeURIComponent(legSid)}/transfer/cancel`,
     realtimeToken,
     { method: 'POST', schema: VoiceTransferCancelResponseSchema },
+  );
+}
+
+/*
+ * Availability is the controller's to decide; the softphone only shows it.
+ * The transfer picker asks about teammates, and the status menu about the
+ * user and their do not disturb.
+ */
+
+/** Where each of these teammates stands now, in as few requests as fit. */
+export async function fetchAvailability(
+  realtimeToken: string,
+  userIds: readonly string[],
+): Promise<UserAvailability[]> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < userIds.length; i += AVAILABILITY_LOOKUP_MAX_USERS) {
+    chunks.push(userIds.slice(i, i + AVAILABILITY_LOOKUP_MAX_USERS));
+  }
+
+  const answers = await Promise.all(
+    chunks.map((chunk) =>
+      requestCallController(
+        withQuery('/api/voice/availability', { userIds: chunk.join(',') }),
+        realtimeToken,
+        { schema: AvailabilityLookupResponseSchema },
+      ),
+    ),
+  );
+  return answers.flatMap(({ users }) => users);
+}
+
+export function fetchOwnAvailability(
+  realtimeToken: string,
+): Promise<OwnAvailabilityResponse> {
+  return requestCallController('/api/voice/availability/me', realtimeToken, {
+    schema: OwnAvailabilityResponseSchema,
+  });
+}
+
+/** Turns do not disturb on or off on every device of the user. */
+export function requestDoNotDisturb(
+  realtimeToken: string,
+  doNotDisturb: boolean,
+): Promise<OwnAvailabilityResponse> {
+  return requestCallController(
+    '/api/voice/availability/me/do-not-disturb',
+    realtimeToken,
+    {
+      method: 'PUT',
+      body: { doNotDisturb } satisfies DoNotDisturb,
+      schema: OwnAvailabilityResponseSchema,
+    },
   );
 }

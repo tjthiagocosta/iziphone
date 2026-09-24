@@ -9,13 +9,18 @@ import {
 } from '../test/fake-telephony.js';
 import { type CallState, conversationNameFor } from './call-state.js';
 import type { OutboundCallGrant } from './outbound-grant.js';
-import { TelephonyService } from './telephony.service.js';
+import {
+  CALL_STATE_WRITE_ATTEMPTS,
+  CallStateConflictError,
+  TelephonyService,
+} from './telephony.service.js';
 
 /** The line the test calls are on: the number the inbound caller dialed. */
 const line = '+15555550102';
 
 function inboundState(overrides: Partial<CallState> = {}): CallState {
   return {
+    version: 1,
     conversationUuid: 'CAcall1',
     conversationName: conversationNameFor('CAcall1'),
     direction: 'inbound',
@@ -81,12 +86,169 @@ describe('TelephonyService', () => {
     });
 
     test('still stores call state', async () => {
-      await telephony.saveCallState(inboundState());
+      await telephony.createCallState(inboundState());
       await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
         conversationUuid: 'CAcall1',
       });
-      await telephony.deleteCallState('CAcall1');
+      await telephony.updateCallState('CAcall1', () => ({
+        result: undefined,
+        remove: true,
+      }));
       await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
+    });
+  });
+
+  describe('changing a call state', () => {
+    const hold = (draft: CallState) => {
+      draft.held = true;
+      return { result: 'held' };
+    };
+
+    test('writes the change as the next version', async () => {
+      const { telephony } = createFakeTelephony();
+      await telephony.createCallState(inboundState());
+
+      const update = await telephony.updateCallState('CAcall1', hold);
+
+      expect(update?.result).toBe('held');
+      expect(update?.before).toMatchObject({ version: 1 });
+      expect(update?.after).toMatchObject({ version: 2, held: true });
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        version: 2,
+        held: true,
+      });
+    });
+
+    test('writes nothing when the decision changes nothing', async () => {
+      const { telephony } = createFakeTelephony();
+      await telephony.createCallState(inboundState({ held: true }));
+
+      const update = await telephony.updateCallState('CAcall1', hold);
+
+      expect(update?.after).toBe(update?.before);
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        version: 1,
+      });
+    });
+
+    test('decides nothing for a call that has no state', async () => {
+      const { telephony } = createFakeTelephony();
+      const decide = vi.fn(hold);
+
+      await expect(
+        telephony.updateCallState('CAcall1', decide),
+      ).resolves.toBeNull();
+      expect(decide).not.toHaveBeenCalled();
+    });
+
+    test('decides again on what another write left, when one landed first', async () => {
+      const { telephony, beforeNextCallStateWrite } = createFakeTelephony();
+      await telephony.createCallState(inboundState({ answered: true }));
+      beforeNextCallStateWrite(async () => {
+        await telephony.updateCallState('CAcall1', (draft) => {
+          draft.ending = true;
+          return { result: undefined };
+        });
+      });
+
+      const update = await telephony.updateCallState('CAcall1', (draft) => {
+        if (draft.ending) {
+          return { result: 'too late' };
+        }
+        draft.held = true;
+        return { result: 'held' };
+      });
+
+      expect(update?.result).toBe('too late');
+      const state = await telephony.getCallState('CAcall1');
+      expect(state).toMatchObject({ version: 2, ending: true });
+      expect(state?.held).toBeUndefined();
+    });
+
+    test('gives up, writing nothing, when the call changes under every attempt', async () => {
+      const { telephony, beforeNextCallStateWrite } = createFakeTelephony();
+      await telephony.createCallState(inboundState());
+      const interfere = async () => {
+        await telephony.updateCallState('CAcall1', (draft) => {
+          draft.currentQueueIndex = (draft.currentQueueIndex ?? 0) + 1;
+          return { result: undefined };
+        });
+        beforeNextCallStateWrite(interfere);
+      };
+      beforeNextCallStateWrite(interfere);
+      const decide = vi.fn(hold);
+
+      await expect(
+        telephony.updateCallState('CAcall1', decide),
+      ).rejects.toBeInstanceOf(CallStateConflictError);
+
+      expect(decide).toHaveBeenCalledTimes(CALL_STATE_WRITE_ATTEMPTS);
+      const state = await telephony.getCallState('CAcall1');
+      expect(state?.held).toBeUndefined();
+      expect(state?.currentQueueIndex).toBe(CALL_STATE_WRITE_ATTEMPTS);
+    });
+
+    test('every one of nine rings of a department reported gone at once lands', async () => {
+      const { telephony } = createFakeTelephony();
+      const legs = Array.from({ length: 9 }, (_, index) => `CAagent${index}`);
+      await telephony.createCallState(
+        inboundState({
+          agentLegs: Object.fromEntries(
+            legs.map((legUuid, index) => [legUuid, `user-${index}`]),
+          ),
+          pendingAgentLegUuids: legs,
+        }),
+      );
+
+      const updates = await Promise.all(
+        legs.map((legUuid) =>
+          telephony.updateCallState('CAcall1', (draft) => {
+            draft.pendingAgentLegUuids = draft.pendingAgentLegUuids.filter(
+              (pending) => pending !== legUuid,
+            );
+            return { result: legUuid };
+          }),
+        ),
+      );
+
+      expect(updates.map((update) => update?.result)).toEqual(legs);
+      await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
+        version: 10,
+        pendingAgentLegUuids: [],
+      });
+    });
+
+    test('resolves to null when the call ended between the read and the write', async () => {
+      const { telephony, beforeNextCallStateWrite } = createFakeTelephony();
+      await telephony.createCallState(inboundState());
+      beforeNextCallStateWrite(async () => {
+        await telephony.updateCallState('CAcall1', () => ({
+          result: undefined,
+          remove: true,
+        }));
+      });
+
+      await expect(
+        telephony.updateCallState('CAcall1', hold),
+      ).resolves.toBeNull();
+      await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
+    });
+
+    test('keeps the calls that have a state in a set until they are removed', async () => {
+      const { telephony } = createFakeTelephony();
+      await telephony.createCallState(inboundState());
+      await telephony.createCallState(
+        inboundState({ conversationUuid: 'CAcall2', callerLegUuid: 'CAcall2' }),
+      );
+
+      await telephony.updateCallState('CAcall1', () => ({
+        result: undefined,
+        remove: true,
+      }));
+      await expect(telephony.liveCallIds()).resolves.toEqual(['CAcall2']);
+
+      await telephony.forgetLiveCall('CAcall2');
+      await expect(telephony.liveCallIds()).resolves.toEqual([]);
     });
   });
 
@@ -117,7 +279,7 @@ describe('TelephonyService', () => {
 
   test('rings an agent into the conference and remembers the leg', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState({ ringDuration: 25 }));
+    await telephony.createCallState(inboundState({ ringDuration: 25 }));
 
     const legUuid = await telephony.createAgentLeg('CAcall1', 'user-1', {
       fromNumber: '+15555550102',
@@ -146,7 +308,7 @@ describe('TelephonyService', () => {
 
   test('hangs a freshly created leg up again when the call ended meanwhile', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState());
+    await telephony.createCallState(inboundState());
     twilio.whileCreating(async () => {
       await telephony.requestConversationHangup('CAcall1', 'user-9');
     });
@@ -161,7 +323,7 @@ describe('TelephonyService', () => {
 
   test('rings several agents at once and records every leg', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState());
+    await telephony.createCallState(inboundState());
     twilio.failWith(
       'client:user-3?conversationUuid=CAcall1&participantType=agent&participantId=user-3',
       new Error('busy'),
@@ -185,7 +347,7 @@ describe('TelephonyService', () => {
 
   test('does not ring anyone once the call is ending', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState({ ending: true }));
+    await telephony.createCallState(inboundState({ ending: true }));
 
     await expect(
       telephony.ringAgents('CAcall1', ['user-1'], { fromNumber: line }),
@@ -195,7 +357,7 @@ describe('TelephonyService', () => {
 
   test('refuses to ring while the call is ending', async () => {
     const { telephony } = createFakeTelephony();
-    await telephony.saveCallState(inboundState({ ending: true }));
+    await telephony.createCallState(inboundState({ ending: true }));
 
     await expect(
       telephony.createAgentLeg('CAcall1', 'user-1', { fromNumber: line }),
@@ -204,7 +366,7 @@ describe('TelephonyService', () => {
 
   test('dials an external number in E.164 and refuses anything else', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState());
+    await telephony.createCallState(inboundState());
 
     await telephony.createExternalLeg('CAcall1', '(555) 555-0199', {
       fromNumber: '+15555550102',
@@ -227,7 +389,7 @@ describe('TelephonyService', () => {
 
   test('never dials a leg whose caller id is not a number: there is no deployment number to fall back to', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState());
+    await telephony.createCallState(inboundState());
 
     await expect(
       telephony.createExternalLeg('CAcall1', '+15555550199', {
@@ -242,7 +404,7 @@ describe('TelephonyService', () => {
 
   test('requesting a hangup marks the call as ending and hangs up every leg', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(
+    await telephony.createCallState(
       inboundState({
         agentLegUuid: 'CAagent1',
         agentLegs: { CAagent1: 'user-1', CAagent2: 'user-2' },
@@ -259,7 +421,8 @@ describe('TelephonyService', () => {
     expect(state).toMatchObject({
       ending: true,
       endingRequestedBy: 'user-1',
-      pendingAgentLegUuids: [],
+      // Still a ring that never joined, until Twilio reports it gone.
+      pendingAgentLegUuids: ['CAagent2'],
       pendingTransferToUserId: undefined,
     });
     expect(twilio.hangups().sort()).toEqual([
@@ -280,7 +443,7 @@ describe('TelephonyService', () => {
 
   test('holds the caller of an inbound call in its conference', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState({ answered: true }));
+    await telephony.createCallState(inboundState({ answered: true }));
 
     const held = await telephony.holdConversation('CAcall1', true);
 
@@ -303,7 +466,7 @@ describe('TelephonyService', () => {
 
   test('resumes without hold audio, and holds the number dialed on an outbound call', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(
+    await telephony.createCallState(
       inboundState({
         direction: 'outbound',
         callerLegUuid: undefined,
@@ -331,7 +494,7 @@ describe('TelephonyService', () => {
       null,
     );
 
-    await telephony.saveCallState(inboundState({ answered: true }));
+    await telephony.createCallState(inboundState({ answered: true }));
     twilio.failHoldWith({ status: 404 });
     await expect(telephony.holdConversation('CAcall1', true)).resolves.toBe(
       null,
@@ -345,7 +508,7 @@ describe('TelephonyService', () => {
 
   test('a hold answers null when the conference of the call is already over', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(inboundState({ answered: true }));
+    await telephony.createCallState(inboundState({ answered: true }));
     twilio.endConference();
 
     await expect(telephony.holdConversation('CAcall1', true)).resolves.toBe(
@@ -356,7 +519,7 @@ describe('TelephonyService', () => {
 
   test('a transfer rings the teammate only while it is still pending for them', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(
+    await telephony.createCallState(
       inboundState({
         answered: true,
         agentLegUuid: 'CAagent1',
@@ -370,7 +533,7 @@ describe('TelephonyService', () => {
     ).resolves.toBeNull();
     expect(twilio.created).toEqual([]);
 
-    await telephony.saveCallState(
+    await telephony.createCallState(
       inboundState({
         answered: true,
         agentLegUuid: 'CAagent1',
@@ -404,7 +567,7 @@ describe('TelephonyService', () => {
 
   test('a transfer of an outbound call rings the teammate from our line, not from the number that was dialed', async () => {
     const { telephony, twilio } = createFakeTelephony();
-    await telephony.saveCallState(
+    await telephony.createCallState(
       inboundState({
         direction: 'outbound',
         routingType: 'OUTBOUND',

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { callLine, normalizePhoneNumber } from '@repo/dto';
-import { OUTBOUND_GRANT } from '@repo/events';
+import { OUTBOUND_GRANT, TELEPHONY } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
 import twilio from 'twilio';
@@ -31,15 +31,10 @@ import {
  * Twilio and Redis for one call. Twilio is the phone network: legs are
  * created, joined into a conference, put on hold and hung up here. Redis
  * holds the call state and leg metadata while the call lasts, and the grant
- * an outbound call is placed on until the call starts.
- *
- *   telephony:call:{conversationUuid}  -> CallState
- *   telephony:leg:{legUuid}            -> LegMetadata
- *   voice:outbound-grant:{token}       -> OutboundCallGrant
+ * an outbound call is placed on until the call starts, under the `TELEPHONY`
+ * and `OUTBOUND_GRANT` keys of `@repo/events`.
  */
 
-const CALL_STATE_PREFIX = 'telephony:call:';
-const LEG_STATE_PREFIX = 'telephony:leg:';
 const STATE_TTL_SECONDS = 4 * 60 * 60;
 const DEFAULT_RING_SECONDS = 30;
 const INTERNAL_API_TIMEOUT_MS = 3000;
@@ -68,7 +63,83 @@ export type TwilioClient = Pick<
   'api' | 'calls' | 'conferences'
 >;
 
-export type TelephonyRedis = Pick<Redis, 'get' | 'set' | 'del' | 'getdel'>;
+export type TelephonyRedis = Pick<
+  Redis,
+  'get' | 'set' | 'del' | 'getdel' | 'eval' | 'sadd' | 'srem' | 'smembers'
+>;
+
+/**
+ * How many times a change to a call is decided before it gives up. Each
+ * attempt that loses was beaten by a write that did land, so running out
+ * takes ten writes to one call landing during one change. The most that
+ * arrive together come from a department ring: when one member answers,
+ * everybody else's leg is hung up at once and each reports its end. The
+ * pause between attempts spreads those out, so that each settles in a few.
+ */
+export const CALL_STATE_WRITE_ATTEMPTS = 10;
+
+/**
+ * The pause before a change that lost is decided again, in ms, grown by the
+ * attempt: writers that collided would otherwise read and collide again in
+ * step. A random part of it sets them apart.
+ */
+const CALL_STATE_RETRY_PAUSE_MS = 5;
+
+/**
+ * Writes a call's state only if it is still at the version the change was
+ * decided on, or forgets the call. Answers 1 when it wrote, 0 when another
+ * write got there first, and -1 when the call is gone. A state stored before
+ * versions existed counts as version 0.
+ *
+ * KEYS: the call's state, the set of live calls.
+ * ARGV: the version read, the new state (empty to forget the call), its
+ * expiry in seconds, the conversation id.
+ */
+export const WRITE_CALL_STATE_SCRIPT = `
+local stored = redis.call('GET', KEYS[1])
+if not stored then return -1 end
+if (cjson.decode(stored).version or 0) ~= tonumber(ARGV[1]) then return 0 end
+if ARGV[2] == '' then
+  redis.call('DEL', KEYS[1])
+  redis.call('SREM', KEYS[2], ARGV[4])
+else
+  redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+end
+return 1
+`;
+
+/**
+ * A call kept changing under a write that tried `CALL_STATE_WRITE_ATTEMPTS`
+ * times, and nothing of the change was written. A webhook that meets it
+ * answers 500, and Twilio does not send a status callback again, so what it
+ * reported is lost until the claim renewal next asks Twilio about the call's
+ * legs (`CallFlow.renewClaims`). A softphone request that meets it fails and
+ * can be made again.
+ */
+export class CallStateConflictError extends Error {
+  constructor(readonly conversationUuid: string) {
+    super(
+      `Call ${conversationUuid} changed under every one of ${CALL_STATE_WRITE_ATTEMPTS} attempts to update it`,
+    );
+    this.name = 'CallStateConflictError';
+  }
+}
+
+/** What a change to a call decided, handed back by its decision function. */
+export interface CallStateChange<R> {
+  /** What the caller acts on once the change has been written. */
+  result: R;
+  /** Forget the call instead of saving the draft. */
+  remove?: boolean;
+}
+
+export interface CallStateUpdate<R> {
+  result: R;
+  /** The state the change was decided on. */
+  before: CallState;
+  /** The state stored now: `before` when nothing changed, null once removed. */
+  after: CallState | null;
+}
 
 export interface TelephonyDependencies {
   redis: TelephonyRedis;
@@ -182,28 +253,104 @@ export class TelephonyService {
 
   async getCallState(conversationUuid: string): Promise<CallState | null> {
     const payload = await this.deps.redis.get(
-      `${CALL_STATE_PREFIX}${conversationUuid}`,
+      `${TELEPHONY.CALL_KEY_PREFIX}${conversationUuid}`,
     );
-    // This service is the only writer, so the shape is trusted.
-    return payload ? (JSON.parse(payload) as CallState) : null;
+    if (!payload) {
+      return null;
+    }
+    // This service is the only writer, so the shape is trusted. A call that
+    // was already going when versions were introduced has none yet.
+    const state = JSON.parse(payload) as CallState;
+    return { ...state, version: state.version ?? 0 };
   }
 
-  async saveCallState(state: CallState): Promise<void> {
+  /** Store the first state of a new call. Resolves to it, at version 1. */
+  async createCallState(state: Omit<CallState, 'version'>): Promise<CallState> {
+    const created: CallState = { ...state, version: 1 };
     await this.deps.redis.set(
-      `${CALL_STATE_PREFIX}${state.conversationUuid}`,
-      JSON.stringify(state),
+      `${TELEPHONY.CALL_KEY_PREFIX}${created.conversationUuid}`,
+      JSON.stringify(created),
       'EX',
       STATE_TTL_SECONDS,
     );
+    await this.deps.redis.sadd(
+      TELEPHONY.LIVE_CALLS_KEY,
+      created.conversationUuid,
+    );
+    return created;
   }
 
-  async deleteCallState(conversationUuid: string): Promise<void> {
-    await this.deps.redis.del(`${CALL_STATE_PREFIX}${conversationUuid}`);
+  /**
+   * Change a call's state from what it is now. `decide` gets a copy of the
+   * current state to change in place and says what it decided; the draft is
+   * written only if it differs, and only if no other write landed since it
+   * was read. When one did, the state is read again and `decide` runs again
+   * on it, so it must do nothing but decide: effects belong after this
+   * resolves, on its result. Resolves to null when there is no such call.
+   * Throws `CallStateConflictError` once the attempts run out.
+   */
+  async updateCallState<R>(
+    conversationUuid: string,
+    decide: (draft: CallState) => CallStateChange<R>,
+  ): Promise<CallStateUpdate<R> | null> {
+    for (let attempt = 1; attempt <= CALL_STATE_WRITE_ATTEMPTS; attempt += 1) {
+      const before = await this.getCallState(conversationUuid);
+      if (!before) {
+        return null;
+      }
+
+      const draft = structuredClone(before);
+      const { result, remove = false } = decide(draft);
+      const unchanged =
+        !remove &&
+        JSON.stringify({ ...draft, version: before.version }) ===
+          JSON.stringify(before);
+      if (unchanged) {
+        return { result, before, after: before };
+      }
+
+      const after: CallState | null = remove
+        ? null
+        : { ...draft, version: before.version + 1 };
+      const written = await this.deps.redis.eval(
+        WRITE_CALL_STATE_SCRIPT,
+        2,
+        `${TELEPHONY.CALL_KEY_PREFIX}${conversationUuid}`,
+        TELEPHONY.LIVE_CALLS_KEY,
+        before.version,
+        after ? JSON.stringify(after) : '',
+        STATE_TTL_SECONDS,
+        conversationUuid,
+      );
+      if (written === 1) {
+        return { result, before, after };
+      }
+      if (written === -1) {
+        return null;
+      }
+      if (attempt < CALL_STATE_WRITE_ATTEMPTS) {
+        const pause =
+          CALL_STATE_RETRY_PAUSE_MS * attempt * (0.5 + Math.random());
+        await new Promise((resolve) => setTimeout(resolve, pause));
+      }
+    }
+
+    throw new CallStateConflictError(conversationUuid);
+  }
+
+  /** Every call that has a state, for the claim renewal. */
+  async liveCallIds(): Promise<string[]> {
+    return this.deps.redis.smembers(TELEPHONY.LIVE_CALLS_KEY);
+  }
+
+  /** Take a call whose state has expired out of the live set. */
+  async forgetLiveCall(conversationUuid: string): Promise<void> {
+    await this.deps.redis.srem(TELEPHONY.LIVE_CALLS_KEY, conversationUuid);
   }
 
   async setLegMetadata(legUuid: string, metadata: LegMetadata): Promise<void> {
     await this.deps.redis.set(
-      `${LEG_STATE_PREFIX}${legUuid}`,
+      `${TELEPHONY.LEG_KEY_PREFIX}${legUuid}`,
       JSON.stringify(metadata),
       'EX',
       STATE_TTL_SECONDS,
@@ -211,14 +358,16 @@ export class TelephonyService {
   }
 
   async getLegMetadata(legUuid: string): Promise<LegMetadata | null> {
-    const payload = await this.deps.redis.get(`${LEG_STATE_PREFIX}${legUuid}`);
+    const payload = await this.deps.redis.get(
+      `${TELEPHONY.LEG_KEY_PREFIX}${legUuid}`,
+    );
     return payload ? (JSON.parse(payload) as LegMetadata) : null;
   }
 
   async deleteLegMetadata(legUuids: string[]): Promise<void> {
     if (legUuids.length > 0) {
       await this.deps.redis.del(
-        ...legUuids.map((legUuid) => `${LEG_STATE_PREFIX}${legUuid}`),
+        ...legUuids.map((legUuid) => `${TELEPHONY.LEG_KEY_PREFIX}${legUuid}`),
       );
     }
   }
@@ -262,13 +411,10 @@ export class TelephonyService {
     conversationUuid: string,
     conferenceSid: string,
   ): Promise<void> {
-    const state = await this.getCallState(conversationUuid);
-    if (!state || state.conferenceSid === conferenceSid) {
-      return;
-    }
-
-    state.conferenceSid = conferenceSid;
-    await this.saveCallState(state);
+    await this.updateCallState(conversationUuid, (draft) => {
+      draft.conferenceSid = conferenceSid;
+      return { result: undefined };
+    });
   }
 
   // Legs ---------------------------------------------------------------------
@@ -366,22 +512,25 @@ export class TelephonyService {
       return;
     }
 
-    const latest = await this.getCallState(conversationUuid);
-    if (!latest || latest.ending) {
-      await Promise.all(legs.map((leg) => this.safeHangup(leg.legUuid)));
-      return;
-    }
+    const update = await this.updateCallState(conversationUuid, (draft) => {
+      if (draft.ending) {
+        return { result: false };
+      }
+      for (const leg of legs) {
+        draft.agentLegs[leg.legUuid] = leg.userId;
+      }
+      draft.pendingAgentLegUuids = [
+        ...new Set([
+          ...draft.pendingAgentLegUuids,
+          ...legs.map((leg) => leg.legUuid),
+        ]),
+      ];
+      return { result: true };
+    });
 
-    for (const leg of legs) {
-      latest.agentLegs[leg.legUuid] = leg.userId;
+    if (!update?.result) {
+      await Promise.all(legs.map((leg) => this.safeHangup(leg.legUuid)));
     }
-    latest.pendingAgentLegUuids = [
-      ...new Set([
-        ...latest.pendingAgentLegUuids,
-        ...legs.map((leg) => leg.legUuid),
-      ]),
-    ];
-    await this.saveCallState(latest);
   }
 
   /** Dial an outside number into the conference. Resolves to the new leg id. */
@@ -418,14 +567,16 @@ export class TelephonyService {
 
     await this.setLegMetadata(legUuid, { conversationUuid, ...participant });
 
-    const latest = await this.getCallState(conversationUuid);
-    if (!latest || latest.ending) {
+    const update = await this.updateCallState(conversationUuid, (draft) => {
+      if (draft.ending) {
+        return { result: false };
+      }
+      draft.externalLegUuid = legUuid;
+      return { result: true };
+    });
+    if (!update?.result) {
       await this.safeHangup(legUuid);
-      return legUuid;
     }
-
-    latest.externalLegUuid = legUuid;
-    await this.saveCallState(latest);
 
     return legUuid;
   }
@@ -450,25 +601,27 @@ export class TelephonyService {
     conversationUuid: string,
     initiatedBy?: string,
   ): Promise<CallState | null> {
-    const state = await this.getCallState(conversationUuid);
-    if (!state) {
+    const update = await this.updateCallState(conversationUuid, (draft) => {
+      if (!draft.ending) {
+        draft.ending = true;
+        draft.endingRequestedAt = new Date().toISOString();
+        draft.endingRequestedBy = initiatedBy;
+        // The rings stay pending: a leg that never joined is still not on
+        // the call while it is hung up, so a ring that lost to the answer
+        // does not count as occupying its member again.
+        draft.pendingTransferToUserId = undefined;
+        draft.transferInitiatedBy = undefined;
+        draft.transferOriginLegUuid = undefined;
+      }
+      return { result: undefined };
+    });
+    if (!update) {
       return null;
-    }
-
-    if (!state.ending) {
-      state.ending = true;
-      state.endingRequestedAt = new Date().toISOString();
-      state.endingRequestedBy = initiatedBy;
-      state.pendingAgentLegUuids = [];
-      state.pendingTransferToUserId = undefined;
-      state.transferInitiatedBy = undefined;
-      state.transferOriginLegUuid = undefined;
-      await this.saveCallState(state);
     }
 
     await this.hangupConversation(conversationUuid);
 
-    return state;
+    return update.after;
   }
 
   /**
@@ -539,6 +692,31 @@ export class TelephonyService {
       fromNumber: callLine(state),
       ringingTimer: state.ringDuration,
     });
+  }
+
+  /**
+   * What Twilio says a leg is doing now, for a call whose status callbacks
+   * may have been lost: its `CallStatus`, and how long it lasted once it is
+   * over. A leg Twilio does not know cannot still be on the call, and is
+   * reported `completed`.
+   */
+  async fetchLegStatus(
+    legUuid: string,
+  ): Promise<{ status: string; duration?: number }> {
+    const { client } = this.requireVoice();
+
+    try {
+      const leg = await client.calls(legUuid).fetch();
+      const duration = Number.parseInt(leg.duration ?? '', 10);
+      return Number.isNaN(duration)
+        ? { status: leg.status }
+        : { status: leg.status, duration };
+    } catch (error) {
+      if (responseStatus(error) === 404) {
+        return { status: 'completed' };
+      }
+      throw error;
+    }
   }
 
   /** Hang up one leg. Tolerates legs that are already gone; retries throttling. */
@@ -891,8 +1069,7 @@ export class TelephonyService {
       return null;
     }
 
-    state.conferenceSid = conferenceSid;
-    await this.saveCallState(state);
+    await this.ensureConferenceReference(state.conversationUuid, conferenceSid);
 
     return conferenceSid;
   }

@@ -1,12 +1,19 @@
 import type { Server as HttpServer } from 'node:http';
-import type { CallTransferOutcome, IncomingCall } from '@repo/dto';
+import type {
+  CallTransferOutcome,
+  IncomingCall,
+  OwnAvailabilityResponse,
+  UserAvailability,
+} from '@repo/dto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
+import type { CallOffer } from '../calls/index.js';
+import { AvailabilityService } from './availability.service.js';
+import { AvailabilityStore } from './availability-store.js';
 import {
   type CallEndedBroadcaster,
   startCallEndedBroadcaster,
 } from './call-ended-broadcaster.js';
-import { notifyIncomingCall } from './incoming-call-notifier.js';
 import {
   type MessageActivityRelay,
   startMessageActivityRelay,
@@ -18,12 +25,32 @@ import { createSocketServer } from './socket-server.js';
 
 /*
  * The softphone side of the service: Socket.IO connections from browsers,
- * who is online, and pushing calls to them.
+ * who is online, who can take a call, and pushing calls to them.
  */
 
 export interface Realtime {
-  /** Offer a call to the users who are online; resolves to the ids reached. */
-  notifyIncomingCall(userIds: string[], call: IncomingCall): Promise<string[]>;
+  /**
+   * Offer a call to those of these users who can take it, claiming each one
+   * for it first; resolves to who was offered it and why the others were not.
+   */
+  offerCall(userIds: string[], call: IncomingCall): Promise<CallOffer>;
+  /** Claim users for a call they placed, whatever their availability. */
+  occupy(conversationUuid: string, userIds: string[]): Promise<void>;
+  /** Let go of users a call no longer occupies. */
+  release(conversationUuid: string, userIds: string[]): Promise<void>;
+  /**
+   * Keep a live call's claims on these users from running out, and claim
+   * again any that already did.
+   */
+  renew(conversationUuid: string, userIds: string[]): Promise<void>;
+  /** Where each of these users stands now. */
+  availabilityOf(userIds: string[]): Promise<UserAvailability[]>;
+  ownAvailability(userId: string): Promise<OwnAvailabilityResponse>;
+  /** Turn do not disturb on or off for all of the user's softphones. */
+  setDoNotDisturb(
+    userId: string,
+    on: boolean,
+  ): Promise<OwnAvailabilityResponse>;
   /** Remember users who must hear that the call ended without being offered it. */
   trackCallParticipants(
     conversationUuid: string,
@@ -58,6 +85,12 @@ export function createRealtime(deps: RealtimeDependencies): Realtime {
     deps.redis,
     deps.corsOrigins,
   );
+  const availability = new AvailabilityService({
+    store: new AvailabilityStore(deps.redis),
+    presence,
+    io: server.io,
+    log: deps.log,
+  });
   let broadcaster: CallEndedBroadcaster | null = null;
   let messageActivity: MessageActivityRelay | null = null;
 
@@ -68,12 +101,20 @@ export function createRealtime(deps: RealtimeDependencies): Realtime {
     authSecret: deps.authSecret,
     log: deps.log,
     onCallRejected: deps.onCallRejected,
+    onConnectionChanged: (userId) => availability.connectionChanged(userId),
   });
 
   return {
-    notifyIncomingCall(userIds, call) {
-      return notifyIncomingCall({ io: server.io, presence }, userIds, call);
-    },
+    offerCall: (userIds, call) => availability.offerCall(userIds, call),
+    occupy: (conversationUuid, userIds) =>
+      availability.occupy(conversationUuid, userIds),
+    release: (conversationUuid, userIds) =>
+      availability.release(conversationUuid, userIds),
+    renew: (conversationUuid, userIds) =>
+      availability.renew(conversationUuid, userIds),
+    availabilityOf: (userIds) => availability.availabilityOf(userIds),
+    ownAvailability: (userId) => availability.ownAvailability(userId),
+    setDoNotDisturb: (userId, on) => availability.setDoNotDisturb(userId, on),
 
     trackCallParticipants(conversationUuid, userIds) {
       return presence.addCallParticipants(conversationUuid, userIds);

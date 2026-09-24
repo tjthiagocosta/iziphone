@@ -11,6 +11,25 @@ green "Online - Ready to receive calls", yellow "Connecting...", grey "Offline -
 Cannot receive calls". Green needs both the phone and the realtime connection,
 so a grey or yellow dot means no call can be placed or received yet.
 
+## Do not disturb
+
+Click the dot to switch **Do not disturb** on or off. While it is on, the dot is
+red and no call is offered to you: a call to your own number goes to your
+voicemail without ringing, a department call rings your teammates and not you,
+and a teammate cannot transfer a call to you. You can still place calls.
+
+It applies to every tab and device you are signed in on, and it stays on until
+you switch it off, however many calls you make in between.
+
+## When you are busy
+
+While you are on a call, nobody else can reach you: you are not sent a second
+call. A call to your own number goes to your voicemail without ringing, and a
+department call rings the teammates who are free. This starts as soon as you
+dial out or start ringing for a call, and lasts until that call is over. It
+includes the time the call is on hold, and the time you are handing it to a
+teammate. There is no call waiting.
+
 ## Placing a call
 
 The phone icon in the navbar ("Make a call") opens the dialer: a field to type a
@@ -66,9 +85,16 @@ take says so rather than leaving you guessing.
 
 ## Transferring
 
-Transfer opens a searchable list of teammates. Pick one and the call goes on
-hold while they are rung; your bar says "Transferring to {name}..." and offers
-**Cancel**, which takes the call back.
+Transfer opens a searchable list of teammates. Teammates who are on a call, in
+do not disturb or offline are greyed out with the reason next to their name,
+and cannot be picked; the list checks again every few seconds while it is open.
+If somebody's status changed just as you picked them, the transfer is refused
+and the bar says why.
+
+Pick one and the call goes on hold while they are rung; your bar says
+"Transferring to {name}..." and offers **Cancel**, which takes the call back.
+You count as on a call until your side of it has hung up, so no other call
+reaches you in the moment the teammate takes over.
 
 The teammate sees an ordinary incoming call marked "Transferred by" you. If it
 does not land — they decline, do not answer, or cannot be reached — the bar

@@ -1061,6 +1061,16 @@ describe('TelephonySession', () => {
         'Morgan Reyes is already on this call',
       ],
       [
+        'target-busy',
+        'That teammate is on another call',
+        'Morgan Reyes is on another call',
+      ],
+      [
+        'target-dnd',
+        'That teammate does not want to be disturbed',
+        'Morgan Reyes does not want to be disturbed',
+      ],
+      [
         'not-connected',
         'The call is not connected',
         'The call is not connected',

@@ -4,6 +4,7 @@ import {
   EntityIdSchema,
   PhoneNumberInputSchema,
 } from '../common/primitives.js';
+import { UserAvailabilitySchema } from '../socket/payloads.js';
 
 /*
  * What the softphone and the call controller say to each other directly: a
@@ -98,10 +99,55 @@ export const CallControlRefusalSchema = z.enum([
   'no-transfer-pending',
   'transfer-to-self',
   'target-on-call',
+  /** The teammate is on, or being offered, another call. */
+  'target-busy',
+  /** The teammate turned do not disturb on. */
+  'target-dnd',
   'target-offline',
   'call-gone',
   'provider-error',
 ]);
+
+/** Most teammates one availability request may ask about. */
+export const AVAILABILITY_LOOKUP_MAX_USERS = 200;
+
+/**
+ * Which teammates to report on, as a comma-separated list of user ids, the
+ * way the transfer picker asks before it lets anybody be chosen.
+ */
+export const AvailabilityLookupQuerySchema = z.object({
+  userIds: z
+    .string()
+    .transform((list) => [
+      ...new Set(
+        list
+          .split(',')
+          .map((userId) => userId.trim())
+          .filter(Boolean),
+      ),
+    ])
+    .pipe(z.array(EntityIdSchema).min(1).max(AVAILABILITY_LOOKUP_MAX_USERS)),
+});
+
+export const AvailabilityLookupResponseSchema = z.object({
+  users: z.array(UserAvailabilitySchema),
+});
+
+/** Turns the asking user's do not disturb on or off, on all their devices. */
+export const DoNotDisturbSchema = z.object({
+  doNotDisturb: z.boolean(),
+});
+
+/**
+ * The asking user's own availability. Do not disturb is given apart from the
+ * state because `offline` outranks it, and the softphone asks for this in
+ * the same moment its socket registers: the controller may not count the
+ * socket yet, and the state read then says offline whatever the switch is.
+ */
+export const OwnAvailabilityResponseSchema = z.object({
+  availability: UserAvailabilitySchema,
+  doNotDisturb: z.boolean(),
+});
 
 export type VoiceTokenResponse = z.infer<typeof VoiceTokenResponseSchema>;
 export type OutboundGrantRequest = z.infer<typeof OutboundGrantRequestSchema>;
@@ -116,3 +162,13 @@ export type VoiceTransferCancelResponse = z.infer<
   typeof VoiceTransferCancelResponseSchema
 >;
 export type CallControlRefusal = z.infer<typeof CallControlRefusalSchema>;
+export type AvailabilityLookupQuery = z.infer<
+  typeof AvailabilityLookupQuerySchema
+>;
+export type AvailabilityLookupResponse = z.infer<
+  typeof AvailabilityLookupResponseSchema
+>;
+export type DoNotDisturb = z.infer<typeof DoNotDisturbSchema>;
+export type OwnAvailabilityResponse = z.infer<
+  typeof OwnAvailabilityResponseSchema
+>;

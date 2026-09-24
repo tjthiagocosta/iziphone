@@ -4,9 +4,11 @@ import Fastify from 'fastify';
 import {
   type CallCommandSubscriber,
   CallFlow,
+  type ClaimRenewal,
   createCallEventPublisher,
   createTelephonyService,
   startCallCommandSubscriber,
+  startClaimRenewal,
   voiceRoutes,
   voiceWebhookRoutes,
 } from './calls/index.js';
@@ -80,6 +82,7 @@ export async function buildApp(config: ControllerConfig) {
     log: fastify.log,
   });
   let commands: CallCommandSubscriber | null = null;
+  let claimRenewal: ClaimRenewal | null = null;
 
   fastify.addHook('onReady', async () => {
     await realtime.start();
@@ -88,15 +91,21 @@ export async function buildApp(config: ControllerConfig) {
       telephony,
       log: fastify.log,
     });
+    claimRenewal = startClaimRenewal({ flow, log: fastify.log });
   });
 
   fastify.addHook('onClose', async () => {
+    claimRenewal?.stop();
     await commands?.close();
     await realtime.close();
   });
 
   await fastify.register(healthRoutes, { telephony });
-  await fastify.register(voiceRoutes, { telephony, flow });
+  await fastify.register(voiceRoutes, {
+    telephony,
+    flow,
+    availability: realtime,
+  });
   await fastify.register(voiceWebhookRoutes, { flow, telephony });
 
   return fastify;
