@@ -312,6 +312,127 @@ describe('MessageSendService', () => {
     expect(harness.messageCreate).not.toHaveBeenCalled();
   });
 
+  test('should refuse a reply on a line nobody holds any more without suggesting a new conversation', async () => {
+    // Given up after the sender was looked up: there is no owner whose
+    // conversation a new message could start, so the refusal says so.
+    harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
+      buildConversation({
+        sourcePhoneNumber: {
+          ...buildConversation().sourcePhoneNumber,
+          userId: null,
+          departmentId: null,
+        },
+      }),
+    );
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      conversationId: 'conversation-1',
+      body: 'Hello there',
+      idempotencyKey: 'sms-line-given-up',
+    });
+
+    expect(result).toEqual({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+      detail: 'This number is no longer assigned to anyone; nothing was sent',
+    });
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+  });
+
+  test('should answer a retried reply that was already sent, though the line changed hands since', async () => {
+    harness.setStoredMessage(
+      buildStoredMessage({
+        status: 'ACCEPTED',
+        sentAt: new Date('2026-04-02T12:00:05.000Z'),
+      }),
+    );
+    harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
+      buildConversation({
+        sourcePhoneNumber: {
+          ...buildConversation().sourcePhoneNumber,
+          userId: 'user-2',
+          departmentId: null,
+        },
+      }),
+    );
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      conversationId: 'conversation-1',
+      body: 'Hello there',
+      idempotencyKey: 'sms-retried-reply',
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'deduplicated',
+      conversationId: 'conversation-1',
+      message: { status: 'ACCEPTED' },
+    });
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+    expect(harness.transport.sendSms).not.toHaveBeenCalled();
+  });
+
+  test('should answer a retried new message from the thread its first attempt was filed in', async () => {
+    // The first attempt went to another of the reader's threads with this
+    // contact on this line, the one its owner had before a handover.
+    harness.setStoredMessage(
+      buildStoredMessage({
+        conversationId: 'conversation-before-handover',
+        status: 'ACCEPTED',
+        sentAt: new Date('2026-04-02T12:00:05.000Z'),
+      }),
+      'sms-retried-new-message',
+    );
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      to: CONTACT_NUMBER,
+      body: 'Hello there',
+      idempotencyKey: 'sms-retried-new-message',
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'deduplicated',
+      conversationId: 'conversation-before-handover',
+      message: { status: 'ACCEPTED' },
+    });
+    expect(harness.conversationService.findOrCreateFor).not.toHaveBeenCalled();
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+    expect(harness.transport.sendSms).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    {
+      other: 'contact',
+      to: '+15555550145',
+      idempotencyKey: 'sms-retried-new-message',
+    },
+    { other: 'draft', to: CONTACT_NUMBER, idempotencyKey: 'sms-another-draft' },
+  ])(
+    'should send a new message whose key was only used with another $other',
+    async ({ to, idempotencyKey }) => {
+      harness.setStoredMessage(
+        buildStoredMessage({
+          conversationId: 'conversation-before-handover',
+          status: 'ACCEPTED',
+          sentAt: new Date('2026-04-02T12:00:05.000Z'),
+        }),
+        'sms-retried-new-message',
+      );
+
+      const result = await harness.service.sendSms('user-1', {
+        fromPhoneNumberId: 'phone-1',
+        to,
+        body: 'Hello there',
+        idempotencyKey,
+      });
+
+      expect(result.outcome).toBe('sent');
+      expect(harness.transport.sendSms).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test('should judge a new message by who holds the line when it is filed', async () => {
     // The same race on a new message: the sender was looked up as the line's
     // owner, and by the time the send transaction reads the line it belongs
@@ -349,9 +470,12 @@ describe('MessageSendService', () => {
         idempotencyKey: 'sms-new-line-gone-meanwhile',
       });
 
-      expect(result).toMatchObject({
+      // Nobody took the line over, so the refusal does not say it changed
+      // hands.
+      expect(result).toEqual({
         outcome: 'refused',
         reason: 'line_reassigned',
+        detail: 'This number is no longer assigned to anyone; nothing was sent',
       });
       expect(
         harness.conversationService.findOrCreateFor,
@@ -656,19 +780,18 @@ describe('MessageSendService', () => {
   });
 
   test('should reload the existing message when a duplicate token races on create', async () => {
-    harness.setStoredMessage(
-      buildStoredMessage({
-        status: 'ACCEPTED',
-        sentAt: new Date('2026-04-02T12:00:05.000Z'),
-      }),
-    );
-
-    let findUniqueCallCount = 0;
-    harness.messageFindUnique.mockImplementation(async () => {
-      findUniqueCallCount += 1;
-      return findUniqueCallCount === 1 ? null : harness.storedMessage();
+    // Another request with the same key files its message after this one
+    // looked for it and before this one's insert.
+    harness.messageCreate.mockImplementationOnce(async () => {
+      harness.setStoredMessage(
+        buildStoredMessage({
+          status: 'ACCEPTED',
+          sentAt: new Date('2026-04-02T12:00:05.000Z'),
+        }),
+        'sms-9',
+      );
+      throw { code: 'P2002' };
     });
-    harness.messageCreate.mockRejectedValueOnce({ code: 'P2002' });
 
     const result = await harness.service.sendSms('user-1', {
       fromPhoneNumberId: 'phone-1',
@@ -707,6 +830,7 @@ describe('MessageSendService', () => {
 
 function createHarness() {
   let storedMessage: ReturnType<typeof buildStoredMessage> | null = null;
+  let storedClientReference: string | null = null;
 
   const senderService = {
     getAllowedSmsSender: vi.fn(async () => buildSender({ mmsEnabled: false })),
@@ -767,6 +891,7 @@ function createHarness() {
     return storedMessage;
   });
   const messageCreate = vi.fn(async ({ data }) => {
+    storedClientReference = data.clientReference;
     storedMessage = buildStoredMessage({
       conversationId: data.conversationId,
       status: data.status,
@@ -807,6 +932,22 @@ function createHarness() {
     return storedMessage;
   });
   const messageConversationUpdate = vi.fn(async () => ({}));
+  // The harness keeps one message, in a thread of user-1's with the contact it
+  // went to on `phone-1`, under the key it was sent with. Only a lookup that
+  // names each of those finds that thread.
+  const messageConversationFindFirst = vi.fn(
+    async ({ where }: { where: EarlierMessageLookup }) => {
+      const message = storedMessage;
+      const found =
+        message !== null &&
+        where.OR.some((scope) => scope.userId === 'user-1') &&
+        where.sourcePhoneNumberId === 'phone-1' &&
+        where.contact.phoneNumber === message.to &&
+        where.messages.some.clientReference === storedClientReference;
+
+      return found ? { id: message.conversationId } : null;
+    },
+  );
   const messageSuppressionFindFirst = vi.fn(async () => null);
   // The lines as the send transaction reads them; by default each is held by
   // the owner its sender was loaded with.
@@ -828,10 +969,14 @@ function createHarness() {
       update: messageUpdate,
     },
     messageConversation: {
+      findFirst: messageConversationFindFirst,
       update: messageConversationUpdate,
     },
     messageSuppression: {
       findFirst: messageSuppressionFindFirst,
+    },
+    userDepartment: {
+      findMany: vi.fn(async () => []),
     },
   };
   const db = {
@@ -864,17 +1009,31 @@ function createHarness() {
     messageCreate,
     messageUpdate,
     messageSuppressionFindFirst,
+    messageConversationFindFirst,
     phoneNumberFindFirst,
     /** Changes how the send transaction will find `phone-1`. */
     setLine: (line: LineRow | null) => {
       lines.set('phone-1', line);
     },
     storedMessage: () => storedMessage,
-    setStoredMessage: (message: ReturnType<typeof buildStoredMessage>) => {
+    /** Stores a message as if an earlier request had sent it with `clientReference`. */
+    setStoredMessage: (
+      message: ReturnType<typeof buildStoredMessage>,
+      clientReference: string | null = null,
+    ) => {
       storedMessage = message;
+      storedClientReference = clientReference;
     },
   };
 }
+
+/** The shape of the send's search for a new message it may already have filed. */
+type EarlierMessageLookup = {
+  OR: Array<{ userId?: string; departmentId?: { in: string[] } }>;
+  sourcePhoneNumberId: string;
+  contact: { phoneNumber: string };
+  messages: { some: { clientReference: string } };
+};
 
 type LineRow = {
   id: string;

@@ -238,12 +238,29 @@ describe('a line that changes hands', () => {
     world.assignLineMidSend(null, 'RESERVED');
     const started = await world.startMessage(DANA, 'Hello');
 
-    expect(started).toMatchObject({
+    expect(started).toEqual({
       outcome: 'refused',
       reason: 'line_reassigned',
+      detail: 'This number is no longer assigned to anyone; nothing was sent',
     });
     expect(world.sent).toHaveLength(0);
     expect(world.conversationCount()).toBe(0);
+  });
+
+  test('to nobody while a reply is being sent refuses it without pointing at a new conversation', async () => {
+    const world = createWorld({ userId: ALEX });
+    await world.receive('Hi Alex');
+    const [alexThread] = await world.inbox(ALEX);
+
+    // Nobody holds the line, so there is no owner a new conversation could
+    // be started under either.
+    world.assignLineMidSend(null, 'RESERVED');
+    expect(await world.reply(ALEX, alexThread?.id, 'Still here')).toEqual({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+      detail: 'This number is no longer assigned to anyone; nothing was sent',
+    });
+    expect(world.sent).toHaveLength(0);
   });
 
   test('while a text is being filed keeps it with the owner it arrived under', async () => {
@@ -316,6 +333,81 @@ describe('a line that changes hands', () => {
       'Is anyone there?',
     ]);
     expect(world.conversationCount()).toBe(2);
+  });
+});
+
+/*
+ * A send whose response was lost is sent again from the same draft, with the
+ * same idempotency key. A handover in between moves new messages to another
+ * thread, and the retry still has to find what its first attempt stored.
+ */
+describe('a send retried after the line changed hands', () => {
+  test('answers a new message with the one its first attempt stored, and sends nothing twice', async () => {
+    // Casey held the line personally and is also in Sales, which holds it now.
+    const world = createWorld({ userId: CASEY });
+    const first = await world.startMessage(CASEY, 'Hello', 'draft-lost');
+    const firstThread = first.outcome === 'sent' ? first.conversationId : null;
+
+    world.assignLine({ departmentId: SALES });
+    const retry = await world.startMessage(CASEY, 'Hello', 'draft-lost');
+
+    expect(retry).toMatchObject({
+      outcome: 'deduplicated',
+      conversationId: firstThread,
+    });
+    expect(world.sent).toEqual(['Hello']);
+    expect(world.conversationCount()).toBe(1);
+
+    // A new draft is a new message, and it goes to Sales' own thread.
+    const next = await world.startMessage(CASEY, 'Hello from Sales');
+    expect(next).toMatchObject({ outcome: 'sent' });
+    expect(next.outcome === 'sent' && next.conversationId).not.toBe(
+      firstThread,
+    );
+    expect(world.sent).toEqual(['Hello', 'Hello from Sales']);
+  });
+
+  test('never answers with a message from a thread the writer cannot see', async () => {
+    // Two drafts can carry the same key. Alex's thread is not Blair's to be
+    // told about, and Blair's message is theirs to send.
+    const world = createWorld({ userId: ALEX });
+    await world.startMessage(ALEX, 'From Alex', 'draft-shared');
+
+    world.assignLine({ userId: BLAIR });
+    const blair = await world.startMessage(BLAIR, 'From Blair', 'draft-shared');
+
+    expect(blair).toMatchObject({ outcome: 'sent' });
+    expect(world.sent).toEqual(['From Alex', 'From Blair']);
+    expect(
+      await world.thread(
+        BLAIR,
+        blair.outcome === 'sent' ? blair.conversationId : null,
+      ),
+    ).toEqual(['From Blair']);
+  });
+
+  test('answers a reply that was already sent instead of refusing it', async () => {
+    const world = createWorld({ departmentId: SALES });
+    await world.receive('Question');
+    const [salesThread] = await world.inbox(CASEY);
+    await world.reply(CASEY, salesThread?.id, 'Answer', 'draft-lost');
+
+    world.assignLine({ departmentId: SUPPORT });
+
+    expect(
+      await world.reply(CASEY, salesThread?.id, 'Answer', 'draft-lost'),
+    ).toMatchObject({
+      outcome: 'deduplicated',
+      conversationId: salesThread?.id,
+    });
+    expect(world.sent).toEqual(['Answer']);
+
+    // Acknowledging the stored reply opens nothing: a new one in the old
+    // thread is still refused.
+    expect(
+      await world.reply(CASEY, salesThread?.id, 'One more thing'),
+    ).toMatchObject({ outcome: 'refused', reason: 'line_reassigned' });
+    expect(world.sent).toEqual(['Answer']);
   });
 });
 
@@ -461,23 +553,30 @@ function createWorld(initialOwner: Owner) {
       );
       return page ? page.messages.map((message) => message.body) : null;
     },
+    /** A reply from a new draft, or from `draft` again to retry it. */
     reply: (
       userId: string,
       conversationId: string | undefined | null,
       body: string,
+      draft = `draft-${++draftSequence}`,
     ) =>
       send.sendSms(userId, {
         fromPhoneNumberId: LINE_ID,
         conversationId: conversationId ?? 'missing',
         body,
-        idempotencyKey: `draft-${++draftSequence}`,
+        idempotencyKey: draft,
       }),
-    startMessage: (userId: string, body: string) =>
+    /** A new message from a new draft, or from `draft` again to retry it. */
+    startMessage: (
+      userId: string,
+      body: string,
+      draft = `draft-${++draftSequence}`,
+    ) =>
       send.sendSms(userId, {
         fromPhoneNumberId: LINE_ID,
         to: CUSTOMER,
         body,
-        idempotencyKey: `draft-${++draftSequence}`,
+        idempotencyKey: draft,
       }),
   };
 }
@@ -545,6 +644,13 @@ function createDatabase() {
     userDepartment: {
       department: (row) => ['department', byId('department', row.departmentId)],
       user: (row) => ['user', byId('user', row.userId)],
+    },
+    messageConversation: {
+      contact: (row) => ['contact', byId('contact', row.contactId)],
+      messages: (row) => [
+        'message',
+        tables.message.filter((m) => m.conversationId === row.id),
+      ],
     },
   };
 
@@ -750,6 +856,12 @@ function createDatabase() {
       findUnique: async ({ where }: { where: { id: string } }) => {
         const row = byId('messageConversation', where.id);
         return row && conversationView(row);
+      },
+      findFirst: async ({ where }: { where: Where }) => {
+        const row = tables.messageConversation.find((candidate) =>
+          matches('messageConversation', candidate, where),
+        );
+        return row ? { ...row } : null;
       },
       findMany: async ({ where }: { where: Where }) =>
         tables.messageConversation

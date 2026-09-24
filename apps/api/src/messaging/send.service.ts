@@ -1,16 +1,21 @@
 import type { Prisma, PrismaClient } from '@repo/db';
 import {
   canReceiveMessages,
+  isSameMessageOwner,
   type Message,
   normalizePhoneNumber,
   type SendMms,
   type SendSms,
 } from '@repo/dto';
-import type { MessageConversationService } from './conversation.service.js';
+import type {
+  MessageConversationSendRecord,
+  MessageConversationService,
+} from './conversation.service.js';
 import {
+  buildConversationScope,
   isLineOwnersThread,
-  isSameOwner,
   lineOwnerOf,
+  loadDepartmentIds,
 } from './conversation-scope.js';
 import type { MessagingLogger } from './logger.js';
 import {
@@ -39,6 +44,10 @@ import {
  */
 const IDEMPOTENCY_SETTLE_ATTEMPTS = 5;
 const IDEMPOTENCY_SETTLE_DELAY_MS = 25;
+
+/** The refusal for a send on a line that nobody held by the time it was sent. */
+const LINE_UNASSIGNED =
+  'This number is no longer assigned to anyone; nothing was sent';
 
 export interface MessageSendServiceOptions {
   db: PrismaClient;
@@ -116,6 +125,12 @@ type Preparation =
       conversationId: string;
       message: MessageRecord;
     };
+
+/** The thread a send writes into, or why it writes nothing. */
+type Resolution =
+  | { kind: 'refused'; reason: SendRefusalReason; detail: string }
+  | { kind: 'deduplicated'; conversationId: string; message: MessageRecord }
+  | { kind: 'resolved'; conversation: MessageConversationSendRecord };
 
 export class MessageSendService {
   private readonly db: PrismaClient;
@@ -387,36 +402,19 @@ export class MessageSendService {
     try {
       return await this.db.$transaction(
         async (tx: Prisma.TransactionClient) => {
-          const conversation = await this.resolveConversation(
+          const resolution = await this.resolveConversation(
             tx,
             userId,
             target,
             outbound.sender,
           );
 
-          if ('reason' in conversation) {
-            return {
-              kind: 'refused',
-              reason: conversation.reason,
-              detail: conversation.detail,
-            } satisfies Preparation;
+          if (resolution.kind !== 'resolved') {
+            return resolution;
           }
 
+          const { conversation } = resolution;
           resolvedConversationId = conversation.id;
-
-          const existingMessage = await this.waitForSettledIdempotentMessage(
-            tx,
-            conversation.id,
-            target.idempotencyKey,
-          );
-
-          if (existingMessage) {
-            return {
-              kind: 'deduplicated',
-              conversationId: conversation.id,
-              message: existingMessage,
-            } satisfies Preparation;
-          }
 
           const suppression = await tx.messageSuppression.findFirst({
             where: {
@@ -495,12 +493,21 @@ export class MessageSendService {
     }
   }
 
+  /**
+   * A retry carries its draft's idempotency key, and an earlier attempt that
+   * stored a message under it is answered before this transaction judges the
+   * line: it may have changed hands since that message was sent, and a
+   * refusal would report a failure for a message the contact has, inviting
+   * the writer to send it again. A writer who may no longer send from the
+   * line at all, or read the thread, was refused before this, and sends
+   * nothing either way.
+   */
   private async resolveConversation(
     tx: Prisma.TransactionClient,
     userId: string,
     target: SendTarget,
     sender: AllowedSender,
-  ) {
+  ): Promise<Resolution> {
     if (target.conversationId) {
       const conversation =
         await this.conversationService.getAccessibleRecordForUser(
@@ -521,6 +528,22 @@ export class MessageSendService {
           'sender_mismatch',
           'Conversation sender does not match fromPhoneNumberId',
         );
+      }
+
+      const earlierAttempt = await this.waitForSettledIdempotentMessage(
+        tx,
+        conversation.id,
+        target.idempotencyKey,
+      );
+
+      if (earlierAttempt) {
+        return deduplicated(earlierAttempt);
+      }
+
+      // Given up between the sender check and this read: nobody holds the
+      // line, so no conversation, new or old, can be written from it.
+      if (!lineOwnerOf(conversation.sourcePhoneNumber)) {
+        return refusal('line_reassigned', LINE_UNASSIGNED);
       }
 
       /*
@@ -553,7 +576,7 @@ export class MessageSendService {
         );
       }
 
-      return conversation;
+      return { kind: 'resolved', conversation };
     }
 
     const destination = normalizePhoneNumber(target.to ?? '');
@@ -563,6 +586,17 @@ export class MessageSendService {
         'invalid_destination',
         'Phone number must be a valid E.164 or 10-digit North American number',
       );
+    }
+
+    const earlierAttempt = await this.findEarlierNewMessage(
+      tx,
+      userId,
+      { contactPhoneNumber: destination, lineId: sender.id },
+      target.idempotencyKey,
+    );
+
+    if (earlierAttempt) {
+      return deduplicated(earlierAttempt);
     }
 
     /*
@@ -577,16 +611,57 @@ export class MessageSendService {
       select: { id: true, userId: true, departmentId: true },
     });
     const holder = line && lineOwnerOf(line);
-    const writer = lineOwnerOf(sender);
 
-    if (!line || !holder || !writer || !isSameOwner(holder, writer)) {
+    if (!line || !holder) {
+      return refusal('line_reassigned', LINE_UNASSIGNED);
+    }
+
+    if (!isSameMessageOwner(holder, lineOwnerOf(sender))) {
       return refusal(
         'line_reassigned',
         'This number changed hands while the message was being sent; nothing was sent',
       );
     }
 
-    return this.conversationService.findOrCreateFor(destination, line, tx);
+    return {
+      kind: 'resolved',
+      conversation: await this.conversationService.findOrCreateFor(
+        destination,
+        line,
+        tx,
+      ),
+    };
+  }
+
+  /**
+   * A message an earlier attempt of this new message stored, in whichever of
+   * the reader's threads with this contact on this line it was filed. New
+   * messages go to the thread of the line's current owner, so after a
+   * handover the retry of a message whose response was lost would be filed in
+   * a thread its first attempt never reached, and sent a second time. Only
+   * threads the reader can see are searched, so a key that somebody else's
+   * draft also used never answers with their message.
+   */
+  private async findEarlierNewMessage(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    pair: { contactPhoneNumber: string; lineId: string },
+    idempotencyKey: string,
+  ): Promise<MessageRecord | null> {
+    const departmentIds = await loadDepartmentIds(tx, userId);
+    const thread = await tx.messageConversation.findFirst({
+      where: {
+        ...buildConversationScope(userId, departmentIds),
+        sourcePhoneNumberId: pair.lineId,
+        contact: { phoneNumber: pair.contactPhoneNumber },
+        messages: { some: { clientReference: idempotencyKey } },
+      },
+      select: { id: true },
+    });
+
+    return thread
+      ? this.waitForSettledIdempotentMessage(tx, thread.id, idempotencyKey)
+      : null;
   }
 
   private async createOutboundMessage(
@@ -705,8 +780,16 @@ function refused(reason: SendRefusalReason, detail: string): MessageSendResult {
   return { outcome: 'refused', reason, detail };
 }
 
-function refusal(reason: SendRefusalReason, detail: string) {
-  return { reason, detail };
+function refusal(reason: SendRefusalReason, detail: string): Resolution {
+  return { kind: 'refused', reason, detail };
+}
+
+function deduplicated(message: MessageRecord): Resolution {
+  return {
+    kind: 'deduplicated',
+    conversationId: message.conversationId,
+    message,
+  };
 }
 
 function isUniqueConstraintError(error: unknown) {

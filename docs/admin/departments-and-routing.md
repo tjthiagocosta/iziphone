@@ -46,7 +46,12 @@ not move its conversations with it:
   holds it.
 
 Call history works the same way: each call is kept against the user or
-department it reached at the time, and stays visible to them.
+department it reached at the time, and stays visible to them. A thread lists
+the calls with its contact on its number that the reader can see, though, not
+only its owner's. Supervisors and administrators see every call, so they find
+the previous owner's calls with that contact in the new owner's thread, though
+not the previous owner's texts. So does somebody who can see both owners'
+threads.
 
 The reasons are in
 [0011. A line's history stays with the owner it was written under](../decisions/0011-a-lines-history-stays-with-the-owner-it-was-written-under.md).

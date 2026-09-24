@@ -4,7 +4,6 @@ import {
   buildConversationScope,
   canAccessConversation,
   isLineOwnersThread,
-  isSameOwner,
   lineOwnerOf,
   loadConversationAudience,
   loadDepartmentIds,
@@ -14,45 +13,17 @@ import {
 describe('lineOwnerOf', () => {
   test('names the user or the department that holds the line', () => {
     expect(lineOwnerOf({ userId: 'user-1', departmentId: null })).toEqual({
-      kind: 'user',
-      userId: 'user-1',
+      type: 'user',
+      id: 'user-1',
     });
     expect(lineOwnerOf({ userId: null, departmentId: 'dept-1' })).toEqual({
-      kind: 'department',
-      departmentId: 'dept-1',
+      type: 'department',
+      id: 'dept-1',
     });
   });
 
   test('has no owner for a line nobody holds', () => {
     expect(lineOwnerOf({ userId: null, departmentId: null })).toBeNull();
-  });
-});
-
-describe('isSameOwner', () => {
-  const alex = { kind: 'user', userId: 'user-alex' } as const;
-  const sales = { kind: 'department', departmentId: 'dept-sales' } as const;
-
-  test('matches the same user and the same department', () => {
-    expect(isSameOwner(alex, { kind: 'user', userId: 'user-alex' })).toBe(true);
-    expect(
-      isSameOwner(sales, { kind: 'department', departmentId: 'dept-sales' }),
-    ).toBe(true);
-  });
-
-  test('tells different owners apart, a user from a department included', () => {
-    expect(isSameOwner(alex, { kind: 'user', userId: 'user-blair' })).toBe(
-      false,
-    );
-    expect(
-      isSameOwner(sales, { kind: 'department', departmentId: 'dept-support' }),
-    ).toBe(false);
-    // The same id on both sides still names two different owners.
-    expect(
-      isSameOwner(
-        { kind: 'user', userId: 'shared-id' },
-        { kind: 'department', departmentId: 'shared-id' },
-      ),
-    ).toBe(false);
   });
 });
 

@@ -1,5 +1,6 @@
 import {
   canReceiveMessages,
+  isSameMessageOwner,
   type MessageConversation,
   type MessageSender,
 } from '@repo/dto';
@@ -58,8 +59,10 @@ export function sendEligibility(
   // Somebody who can read one and still sends on the line, a member of both
   // departments, writes to the contact from the new owner's thread instead.
   if (
-    conversation.owner?.type !== sender.ownerType ||
-    conversation.owner.id !== sender.ownerId
+    !isSameMessageOwner(conversation.owner, {
+      type: sender.ownerType,
+      id: sender.ownerId,
+    })
   ) {
     return {
       canSend: false,

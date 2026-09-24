@@ -309,24 +309,24 @@ export class MessageConversationService {
      */
     return dbClient.messageConversation.upsert({
       where:
-        owner.kind === 'user'
+        owner.type === 'user'
           ? {
               contactId_sourcePhoneNumberId_userId: {
                 ...pair,
-                userId: owner.userId,
+                userId: owner.id,
               },
             }
           : {
               contactId_sourcePhoneNumberId_departmentId: {
                 ...pair,
-                departmentId: owner.departmentId,
+                departmentId: owner.id,
               },
             },
       update: {},
       create: {
         ...pair,
-        userId: owner.kind === 'user' ? owner.userId : null,
-        departmentId: owner.kind === 'department' ? owner.departmentId : null,
+        userId: owner.type === 'user' ? owner.id : null,
+        departmentId: owner.type === 'department' ? owner.id : null,
       },
       select: sendRecordSelect,
     });

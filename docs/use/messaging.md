@@ -31,7 +31,14 @@ but can no longer send from it; the new owner starts with none of them, and
 anything the contact sends afterwards goes to the new owner. A message you are
 sending at the moment the number changes hands is not sent, and the error says
 so: "This number changed hands while the message was being sent; nothing was
-sent".
+sent". If the number is taken from everybody at that moment, the error says
+"This number is no longer assigned to anyone; nothing was sent".
+
+Sending again after an error, with the same text still in the box, never sends
+it twice. If the first attempt did go out and you can still send from the
+number, it is shown in the thread it was filed in, even when the number has
+changed hands in between. If you can no longer send from the number, the retry
+is refused and nothing more is sent.
 
 ## When a message arrives
 

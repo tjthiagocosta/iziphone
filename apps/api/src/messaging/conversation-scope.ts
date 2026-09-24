@@ -1,45 +1,30 @@
 import type { Prisma, PrismaClient } from '@repo/db';
-import type { MessageOwner } from '@repo/dto';
+import {
+  isSameMessageOwner,
+  type MessageOwner,
+  type MessageOwnerRef,
+} from '@repo/dto';
 
 /**
- * Whom a line works for: a user or a department. Every read below is decided
- * by a conversation's copy of this, taken when the conversation was created.
- */
-export type LineOwner =
-  | { kind: 'user'; userId: string }
-  | { kind: 'department'; departmentId: string };
-
-/**
- * The owner of a line as it stands now, or null for a line nobody holds; given
- * a conversation, the owner it copied from its line. An administrator cannot
- * give a number to a user and a department at once; the user is read first,
- * here and so everywhere an owner is compared or shown.
+ * Whom a line works for, a user or a department, as it stands now, or null for
+ * a line nobody holds; given a conversation, the owner it copied from its line
+ * when it was created, which decides every read below. An administrator
+ * cannot give a number to a user and a department at once; the user is read
+ * first, here and so everywhere an owner is compared or shown.
  */
 export function lineOwnerOf(line: {
   userId: string | null;
   departmentId: string | null;
-}): LineOwner | null {
+}): MessageOwnerRef | null {
   if (line.userId) {
-    return { kind: 'user', userId: line.userId };
+    return { type: 'user', id: line.userId };
   }
 
   if (line.departmentId) {
-    return { kind: 'department', departmentId: line.departmentId };
+    return { type: 'department', id: line.departmentId };
   }
 
   return null;
-}
-
-/** Whether two owners are the same user or the same department. */
-export function isSameOwner(left: LineOwner, right: LineOwner): boolean {
-  switch (left.kind) {
-    case 'user':
-      return right.kind === 'user' && right.userId === left.userId;
-    case 'department':
-      return (
-        right.kind === 'department' && right.departmentId === left.departmentId
-      );
-  }
 }
 
 /**
@@ -52,14 +37,7 @@ export function isLineOwnersThread(
   conversation: { userId: string | null; departmentId: string | null },
   line: { userId: string | null; departmentId: string | null },
 ): boolean {
-  const lineOwner = lineOwnerOf(line);
-  const threadOwner = lineOwnerOf(conversation);
-
-  return (
-    lineOwner !== null &&
-    threadOwner !== null &&
-    isSameOwner(lineOwner, threadOwner)
-  );
+  return isSameMessageOwner(lineOwnerOf(conversation), lineOwnerOf(line));
 }
 
 /**
@@ -77,12 +55,12 @@ export function toMessageOwner(row: {
 }): MessageOwner | null {
   const owner = lineOwnerOf(row);
 
-  switch (owner?.kind) {
+  switch (owner?.type) {
     case 'user':
       return row.user
         ? {
             type: 'user',
-            id: owner.userId,
+            id: owner.id,
             name: row.user.name || row.user.email,
           }
         : null;
@@ -90,7 +68,7 @@ export function toMessageOwner(row: {
       return row.department
         ? {
             type: 'department',
-            id: owner.departmentId,
+            id: owner.id,
             name: row.department.name,
           }
         : null;

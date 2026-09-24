@@ -7,8 +7,13 @@ import { dayKey, formatDayLabel } from '../relative-time';
  * the line's owner at the time, so a call belongs to it when it was on the same
  * line with the same contact — a call with that contact on another
  * department's number belongs to that department's thread instead, and never
- * appears here. Calls are matched on the numbers only, so a reader who can see
- * two owners' threads on one line sees both owners' calls in each.
+ * appears here. Calls are matched on the numbers only, from the calls the
+ * reader may see, so a thread shows every call with its contact on its line
+ * that the reader can see, not only its owner's. A supervisor or an
+ * administrator sees every call, so the new owner's thread shows them the
+ * previous owner's calls with that contact too, though not that owner's
+ * messages; a reader who can see two owners' threads sees both owners' calls
+ * in each.
  */
 export type TimelineEntry =
   | { kind: 'message'; key: string; at: number; message: Message }
