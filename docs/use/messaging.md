@@ -37,7 +37,9 @@ sent". If the number is taken from everybody at that moment, the error says
 Sending again after an error, with the same text still in the box, never sends
 it twice. If the first attempt did go out and you can still send from the
 number, it is shown in the thread it was filed in, even when the number has
-changed hands in between. If you can no longer send from the number, the retry
+changed hands in between, as long as you can still read that thread; if you
+were taken out of the department it belongs to in the meantime, the retry is
+sent as a new message. If you can no longer send from the number, the retry
 is refused and nothing more is sent. The exception is a message that failed:
 it stays in its thread, marked as failed with the reason, and sending the text
 again after that sends it as a new message.

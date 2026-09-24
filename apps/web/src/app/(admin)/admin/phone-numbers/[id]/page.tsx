@@ -38,11 +38,21 @@ export default function PhoneNumberDetailPage() {
   const phoneNumberId = params.id as string;
 
   const { phoneNumber, isLoading, refetch } = usePhoneNumber(phoneNumberId);
-  const { update, release, isLoading: isMutating } = usePhoneNumberMutations();
+  const {
+    update,
+    release,
+    isLoading: isMutating,
+    error: mutationError,
+  } = usePhoneNumberMutations();
 
   const [label, setLabel] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
   const [showReleaseConfirm, setShowReleaseConfirm] = useState(false);
+  // The hook's error is shown next to the button that caused it: the page
+  // scrolls, and a reason at its top can be out of sight of either button.
+  const [failedAction, setFailedAction] = useState<'save' | 'release' | null>(
+    null,
+  );
 
   // Assignment state
   const [assignmentType, setAssignmentType] = useState<
@@ -129,7 +139,7 @@ export default function PhoneNumberDetailPage() {
       setHasChanges(false);
       refetch();
     } catch {
-      // Error handled by hook
+      setFailedAction('save');
     }
   };
 
@@ -138,7 +148,9 @@ export default function PhoneNumberDetailPage() {
       await release(phoneNumberId);
       router.push('/admin/phone-numbers');
     } catch {
-      // Error handled by hook
+      // The hook keeps the reason; the dialog would cover it.
+      setShowReleaseConfirm(false);
+      setFailedAction('release');
     }
   };
 
@@ -396,6 +408,11 @@ export default function PhoneNumberDetailPage() {
               >
                 {isMutating ? 'Saving...' : 'Save Changes'}
               </Button>
+              {mutationError && failedAction === 'save' && (
+                <p role="alert" className="text-sm text-destructive">
+                  {mutationError.message}
+                </p>
+              )}
             </CardContent>
           </Card>
 
@@ -416,6 +433,11 @@ export default function PhoneNumberDetailPage() {
               >
                 Release Number
               </Button>
+              {mutationError && failedAction === 'release' && (
+                <p role="alert" className="mt-2 text-sm text-destructive">
+                  {mutationError.message}
+                </p>
+              )}
             </CardContent>
           </Card>
         </div>

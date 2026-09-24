@@ -499,8 +499,11 @@ export class MessageSendService {
    * line: it may have changed hands since that message was sent, and a
    * refusal would report a failure for a message the contact has, inviting
    * the writer to send it again. A writer who may no longer send from the
-   * line at all, or read the thread, was refused before this, and sends
-   * nothing either way.
+   * line at all was refused before this, and sends nothing either way. The
+   * search covers only the threads the writer can read now: a writer taken
+   * out of the department that owns the earlier thread in between does not
+   * find it, and a new message is sent, because a message carries no author
+   * to match it by across threads the writer cannot see.
    */
   private async resolveConversation(
     tx: Prisma.TransactionClient,
