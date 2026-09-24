@@ -132,4 +132,14 @@ describe('sendFailureFrom', () => {
   test('passes the API message through for the reader', () => {
     expect(sendFailureFrom(422, 'Undeliverable').message).toBe('Undeliverable');
   });
+
+  test('keeps the key of a draft already sent in a conversation out of sight', () => {
+    const reason =
+      'This message was already sent from this number, in a conversation you can no longer see; it was not sent again';
+
+    expect(sendFailureFrom(400, reason)).toEqual({
+      persisted: false,
+      message: reason,
+    });
+  });
 });

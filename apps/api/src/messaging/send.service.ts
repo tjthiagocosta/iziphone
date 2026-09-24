@@ -49,6 +49,13 @@ const IDEMPOTENCY_SETTLE_DELAY_MS = 25;
 const LINE_UNASSIGNED =
   'This number is no longer assigned to anyone; nothing was sent';
 
+/**
+ * The refusal for a retried draft whose first attempt went out in a
+ * conversation the writer can no longer see. The composer shows it as it is.
+ */
+const DRAFT_ALREADY_SENT =
+  'This message was already sent from this number, in a conversation you can no longer see; it was not sent again';
+
 export interface MessageSendServiceOptions {
   db: PrismaClient;
   transport: Pick<MessagingTransport, 'sendSms' | 'sendMms'>;
@@ -73,6 +80,7 @@ export type SendRefusalReason =
   | 'conversation_not_found'
   | 'sender_mismatch'
   | 'line_reassigned'
+  | 'draft_already_sent'
   | 'invalid_destination'
   | 'undeliverable_destination'
   | 'attachment_unavailable';
@@ -499,11 +507,10 @@ export class MessageSendService {
    * line: it may have changed hands since that message was sent, and a
    * refusal would report a failure for a message the contact has, inviting
    * the writer to send it again. A writer who may no longer send from the
-   * line at all was refused before this, and sends nothing either way. The
-   * search covers only the threads the writer can read now: a writer taken
-   * out of the department that owns the earlier thread in between does not
-   * find it, and a new message is sent, because a message carries no author
-   * to match it by across threads the writer cannot see.
+   * line at all was refused before this, and sends nothing either way. A new
+   * message's earlier attempt can also sit in a thread the writer can no
+   * longer read, after they were taken out of the department it belongs to;
+   * that retry is refused without showing anything from the thread.
    */
   private async resolveConversation(
     tx: Prisma.TransactionClient,
@@ -591,7 +598,7 @@ export class MessageSendService {
       );
     }
 
-    const earlierAttempt = await this.findEarlierNewMessage(
+    const earlierAttempt = await this.answerEarlierNewMessage(
       tx,
       userId,
       { contactPhoneNumber: destination, lineId: sender.id },
@@ -599,7 +606,7 @@ export class MessageSendService {
     );
 
     if (earlierAttempt) {
-      return deduplicated(earlierAttempt);
+      return earlierAttempt;
     }
 
     /*
@@ -637,34 +644,83 @@ export class MessageSendService {
   }
 
   /**
-   * A message an earlier attempt of this new message stored, in whichever of
-   * the reader's threads with this contact on this line it was filed. New
+   * The answer to a new message whose key an earlier attempt already stored
+   * in a thread with this contact on this line, or null when none did. New
    * messages go to the thread of the line's current owner, so after a
    * handover the retry of a message whose response was lost would be filed in
-   * a thread its first attempt never reached, and sent a second time. Only
-   * threads the reader can see are searched, so a key that somebody else's
-   * draft also used never answers with their message.
+   * a thread its first attempt never reached, and sent a second time.
+   *
+   * Every thread on the pair is searched. One the writer can read answers
+   * with the stored message. One they cannot read refuses the retry and
+   * shows nothing from it: a message carries no author, but keys are made
+   * per draft, so the attempt is the writer's own unless somebody reused a
+   * key on purpose, and then all they learn is that the key was used and
+   * whether that attempt failed. An attempt there that failed is not
+   * refused, since the writer cannot see the failure and the draft would
+   * otherwise stay stuck on its key; the retry is sent as a new message, as
+   * any failed message sent again is. That leaves the key in two threads, so
+   * the refusal stands while any attempt under it did not fail, and one still
+   * being sent counts as sent.
    */
-  private async findEarlierNewMessage(
+  private async answerEarlierNewMessage(
     tx: Prisma.TransactionClient,
     userId: string,
     pair: { contactPhoneNumber: string; lineId: string },
     idempotencyKey: string,
-  ): Promise<MessageRecord | null> {
+  ): Promise<Resolution | null> {
+    const onThePair = {
+      sourcePhoneNumberId: pair.lineId,
+      contact: { phoneNumber: pair.contactPhoneNumber },
+    } satisfies Prisma.MessageConversationWhereInput;
+    const holdingTheKey = {
+      ...onThePair,
+      messages: { some: { clientReference: idempotencyKey } },
+    } satisfies Prisma.MessageConversationWhereInput;
+
+    const anyThread = await tx.messageConversation.findFirst({
+      where: holdingTheKey,
+      select: { id: true },
+    });
+
+    if (!anyThread) {
+      return null;
+    }
+
     const departmentIds = await loadDepartmentIds(tx, userId);
-    const thread = await tx.messageConversation.findFirst({
+    const readableThread = await tx.messageConversation.findFirst({
       where: {
         ...buildConversationScope(userId, departmentIds),
-        sourcePhoneNumberId: pair.lineId,
-        contact: { phoneNumber: pair.contactPhoneNumber },
-        messages: { some: { clientReference: idempotencyKey } },
+        ...holdingTheKey,
       },
       select: { id: true },
     });
 
-    return thread
-      ? this.waitForSettledIdempotentMessage(tx, thread.id, idempotencyKey)
-      : null;
+    if (!readableThread) {
+      const notFailed = await tx.messageConversation.findFirst({
+        where: {
+          ...onThePair,
+          messages: {
+            some: {
+              clientReference: idempotencyKey,
+              status: { notIn: ['FAILED', 'REJECTED'] },
+            },
+          },
+        },
+        select: { id: true },
+      });
+
+      return notFailed
+        ? refusal('draft_already_sent', DRAFT_ALREADY_SENT)
+        : null;
+    }
+
+    const message = await this.waitForSettledIdempotentMessage(
+      tx,
+      readableThread.id,
+      idempotencyKey,
+    );
+
+    return message ? deduplicated(message) : null;
   }
 
   private async createOutboundMessage(

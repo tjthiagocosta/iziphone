@@ -17,7 +17,10 @@ export interface SendFailure {
  * 409 (the contact opted out), 422 (the provider rejected it) and 502 (the
  * provider could not be reached) each answer with a stored, failed message.
  * The refusals — an unknown conversation or sender, a destination the
- * provider will not take — store nothing, so the draft is all there is.
+ * provider will not take — store nothing, so the draft is all there is. A
+ * draft that already went out in a conversation the writer can no longer see
+ * is refused the same way (400, with the reason as its message): it keeps its
+ * key, so pressing Send again is refused again instead of sending it twice.
  */
 export function sendFailureFrom(status: number, message: string): SendFailure {
   return {

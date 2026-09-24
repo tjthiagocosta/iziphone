@@ -394,23 +394,82 @@ describe('a send retried after the line changed hands', () => {
     expect(world.sent).toEqual(['Hello']);
   });
 
+  test('refuses a retry whose first attempt went out in a thread the writer can no longer see', async () => {
+    // Casey wrote as Sales. The line then moved to Support, which Casey is
+    // also in, and Casey was taken out of Sales before retrying.
+    const world = createWorld({ departmentId: SALES });
+    await world.startMessage(CASEY, 'Hello', 'draft-lost');
+
+    world.assignLine({ departmentId: SUPPORT });
+    world.leaveDepartment(CASEY, SALES);
+    const retry = await world.startMessage(CASEY, 'Hello', 'draft-lost');
+
+    expect(retry).toEqual({
+      outcome: 'refused',
+      reason: 'draft_already_sent',
+      detail:
+        'This message was already sent from this number, in a conversation you can no longer see; it was not sent again',
+    });
+    expect(world.sent).toEqual(['Hello']);
+    expect(world.conversationCount()).toBe(1);
+  });
+
+  test('sends a retry whose first attempt failed in a thread the writer can no longer see', async () => {
+    // The same moves, but the first attempt failed and its answer was lost.
+    // Casey cannot see that failure, so a refusal would leave the draft stuck
+    // on its key; it goes out as a new message instead.
+    const world = createWorld({ departmentId: SALES });
+    world.failNextSend();
+    await world.startMessage(CASEY, 'Hello', 'draft-failed');
+
+    world.assignLine({ departmentId: SUPPORT });
+    world.leaveDepartment(CASEY, SALES);
+    const retry = await world.startMessage(CASEY, 'Hello', 'draft-failed');
+
+    expect(retry).toMatchObject({ outcome: 'sent' });
+    expect(world.sent).toEqual(['Hello']);
+    expect(world.conversationCount()).toBe(2);
+  });
+
+  test('refuses a retry once any attempt under its key went out, even beside a failed one', async () => {
+    // As above, then the line moved to Casey alone and Casey left Support
+    // before a third try: the key now sits in two threads Casey cannot see,
+    // Sales' failed attempt first and Support's sent one after it.
+    const world = createWorld({ departmentId: SALES });
+    world.failNextSend();
+    await world.startMessage(CASEY, 'Hello', 'draft-twice');
+    world.assignLine({ departmentId: SUPPORT });
+    world.leaveDepartment(CASEY, SALES);
+    await world.startMessage(CASEY, 'Hello', 'draft-twice');
+
+    world.assignLine({ userId: CASEY });
+    world.leaveDepartment(CASEY, SUPPORT);
+    const retry = await world.startMessage(CASEY, 'Hello', 'draft-twice');
+
+    expect(retry).toMatchObject({
+      outcome: 'refused',
+      reason: 'draft_already_sent',
+    });
+    expect(world.sent).toEqual(['Hello']);
+  });
+
   test('never answers with a message from a thread the writer cannot see', async () => {
-    // Two drafts can carry the same key. Alex's thread is not Blair's to be
-    // told about, and Blair's message is theirs to send.
+    // A key reused on purpose from Alex's draft. Blair learns only that it
+    // was used: nothing of Alex's thread, and nothing is sent.
     const world = createWorld({ userId: ALEX });
     await world.startMessage(ALEX, 'From Alex', 'draft-shared');
 
     world.assignLine({ userId: BLAIR });
     const blair = await world.startMessage(BLAIR, 'From Blair', 'draft-shared');
 
-    expect(blair).toMatchObject({ outcome: 'sent' });
-    expect(world.sent).toEqual(['From Alex', 'From Blair']);
-    expect(
-      await world.thread(
-        BLAIR,
-        blair.outcome === 'sent' ? blair.conversationId : null,
-      ),
-    ).toEqual(['From Blair']);
+    expect(blair).toEqual({
+      outcome: 'refused',
+      reason: 'draft_already_sent',
+      detail:
+        'This message was already sent from this number, in a conversation you can no longer see; it was not sent again',
+    });
+    expect(world.sent).toEqual(['From Alex']);
+    expect(await world.inbox(BLAIR)).toEqual([]);
   });
 
   test('answers a reply that was already sent instead of refusing it', async () => {
@@ -541,6 +600,8 @@ function createWorld(initialOwner: Owner) {
     },
     assignLine: (owner: Owner, status: 'ACTIVE' | 'RESERVED' = 'ACTIVE') =>
       db.setLineOwner(LINE_ID, owner, status),
+    leaveDepartment: (userId: string, departmentId: string) =>
+      db.removeMembership(userId, departmentId),
     /**
      * Reassigns the line once the next send has checked its sender, just
      * before its transaction starts: the widest gap an administrator's change
@@ -748,6 +809,8 @@ function createDatabase() {
             return operand === null ? value !== null : value !== operand;
           case 'in':
             return (operand as unknown[]).includes(value);
+          case 'notIn':
+            return !(operand as unknown[]).includes(value);
           case 'gt':
             return (value as number) > (operand as number);
           default:
@@ -1049,6 +1112,16 @@ function createDatabase() {
       });
       for (const departmentId of departmentIds) {
         tables.userDepartment.push({ userId: id, departmentId });
+      }
+    },
+    removeMembership(userId: string, departmentId: string) {
+      const index = tables.userDepartment.findIndex(
+        (membership) =>
+          membership.userId === userId &&
+          membership.departmentId === departmentId,
+      );
+      if (index >= 0) {
+        tables.userDepartment.splice(index, 1);
       }
     },
     addDepartment(id: string) {

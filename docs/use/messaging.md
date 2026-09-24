@@ -34,15 +34,23 @@ so: "This number changed hands while the message was being sent; nothing was
 sent". If the number is taken from everybody at that moment, the error says
 "This number is no longer assigned to anyone; nothing was sent".
 
-Sending again after an error, with the same text still in the box, never sends
-it twice. If the first attempt did go out and you can still send from the
-number, it is shown in the thread it was filed in, even when the number has
-changed hands in between, as long as you can still read that thread; if you
+Sending again after an error, with the same text still in the box, does not
+send it twice, except after a failure the provider could not answer for (see
+below). If the first attempt did go out and you can still send from the number,
+it is shown in the thread it was filed in, even when the number has changed
+hands in between. If that thread is one you can no longer read, because you
 were taken out of the department it belongs to in the meantime, the retry is
-sent as a new message. If you can no longer send from the number, the retry
-is refused and nothing more is sent. The exception is a message that failed:
-it stays in its thread, marked as failed with the reason, and sending the text
-again after that sends it as a new message.
+refused: "This message was already sent from this number, in a conversation you
+can no longer see; it was not sent again". If you can no longer send from the
+number at all, the retry is refused and nothing more is sent.
+
+A message that failed is different: it stays in its thread, marked as failed
+with the reason, and sending the text again after that sends it as a new
+message. That holds even when the failed attempt sits in a thread you can no
+longer read: you are not shown the failure, and the retry goes out as a new
+message instead of being refused. When the failure is that the provider could
+not be reached or did not answer, the first attempt may have gone out all the
+same, and the contact then gets the text twice.
 
 ## When a message arrives
 
