@@ -38,6 +38,12 @@ import {
 const STATE_TTL_SECONDS = 4 * 60 * 60;
 const DEFAULT_RING_SECONDS = 30;
 const INTERNAL_API_TIMEOUT_MS = 3000;
+/**
+ * How long a reconciliation waits for Twilio to say how one leg is doing.
+ * Twilio's own client waits 30 seconds, which across every leg of every live
+ * call is how a reconciliation came to last for minutes.
+ */
+export const LEG_STATUS_TIMEOUT_MS = 5000;
 /** Twilio refuses longer TwiML passed inline on a call update (error 32018). */
 const INLINE_TWIML_MAX_LENGTH = 4000;
 
@@ -65,7 +71,15 @@ export type TwilioClient = Pick<
 
 export type TelephonyRedis = Pick<
   Redis,
-  'get' | 'set' | 'del' | 'getdel' | 'eval' | 'sadd' | 'srem' | 'smembers'
+  | 'get'
+  | 'set'
+  | 'del'
+  | 'getdel'
+  | 'eval'
+  | 'sadd'
+  | 'srem'
+  | 'smembers'
+  | 'scan'
 >;
 
 /**
@@ -109,12 +123,25 @@ return 1
 `;
 
 /**
+ * Gives the reconcile lock up only when it is still the given holder's: one
+ * that lapsed may already be another instance's.
+ *
+ * KEYS: the lock. ARGV: the holder.
+ */
+export const RELEASE_RECONCILE_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
+
+/**
  * A call kept changing under a write that tried `CALL_STATE_WRITE_ATTEMPTS`
  * times, and nothing of the change was written. A webhook that meets it
  * answers 500, and Twilio does not send a status callback again, so what it
- * reported is lost until the claim renewal next asks Twilio about the call's
- * legs (`CallFlow.renewClaims`). A softphone request that meets it fails and
- * can be made again.
+ * reported is lost until the controller next asks Twilio about the call's
+ * legs (`CallFlow.reconcileWithTwilio`). A softphone request that meets it
+ * fails and can be made again.
  */
 export class CallStateConflictError extends Error {
   constructor(readonly conversationUuid: string) {
@@ -348,6 +375,63 @@ export class TelephonyService {
     await this.deps.redis.srem(TELEPHONY.LIVE_CALLS_KEY, conversationUuid);
   }
 
+  /**
+   * Put every call that has a state into the live set, for the calls it is
+   * missing: those that began before the set existed, and any whose state
+   * was written but not added. Resolves to how many were added. A call that
+   * ends between the scan and the add is put back, and taken out again by
+   * the next renewal, which finds its state gone.
+   */
+  async restoreLiveCalls(): Promise<number> {
+    const { redis } = this.deps;
+    const conversationUuids: string[] = [];
+    let cursor = '0';
+    do {
+      const [next, keys] = await redis.scan(
+        cursor,
+        'MATCH',
+        `${TELEPHONY.CALL_KEY_PREFIX}*`,
+        'COUNT',
+        100,
+      );
+      cursor = next;
+      conversationUuids.push(
+        ...keys.map((key) => key.slice(TELEPHONY.CALL_KEY_PREFIX.length)),
+      );
+    } while (cursor !== '0');
+
+    return conversationUuids.length > 0
+      ? redis.sadd(TELEPHONY.LIVE_CALLS_KEY, ...conversationUuids)
+      : 0;
+  }
+
+  /**
+   * Take the lock that lets one controller instance ask Twilio about every
+   * live call, for `ttlMs`, unless another holder has it. Resolves to
+   * whether `holder` has it now. It is not given up when the reconciliation
+   * ends: while it lasts, it says the calls were reconciled a moment ago.
+   */
+  async takeReconcileLock(holder: string, ttlMs: number): Promise<boolean> {
+    const taken = await this.deps.redis.set(
+      TELEPHONY.RECONCILE_LOCK_KEY,
+      holder,
+      'PX',
+      ttlMs,
+      'NX',
+    );
+    return taken === 'OK';
+  }
+
+  /** Give the reconcile lock up, if `holder` still has it. */
+  async releaseReconcileLock(holder: string): Promise<void> {
+    await this.deps.redis.eval(
+      RELEASE_RECONCILE_LOCK_SCRIPT,
+      1,
+      TELEPHONY.RECONCILE_LOCK_KEY,
+      holder,
+    );
+  }
+
   async setLegMetadata(legUuid: string, metadata: LegMetadata): Promise<void> {
     await this.deps.redis.set(
       `${TELEPHONY.LEG_KEY_PREFIX}${legUuid}`,
@@ -419,12 +503,16 @@ export class TelephonyService {
 
   // Legs ---------------------------------------------------------------------
 
-  /** Ring a user's softphone into the conference. Resolves to the new leg id. */
+  /**
+   * Ring a user's softphone into the conference. Resolves to the new leg id,
+   * or to null when the call ended, or began to, while the leg was being
+   * dialed: the leg is hung up again and the call never records it.
+   */
   async createAgentLeg(
     conversationUuid: string,
     userId: string,
     options: RingOptions,
-  ): Promise<string> {
+  ): Promise<string | null> {
     const state = await this.requireCallState(conversationUuid);
     if (state.ending) {
       throw new Error(
@@ -433,15 +521,17 @@ export class TelephonyService {
     }
 
     const leg = await this.dialAgent(state, userId, options);
-    await this.registerAgentLegs(conversationUuid, [leg]);
+    const recorded = await this.registerAgentLegs(conversationUuid, [leg]);
 
-    return leg.legUuid;
+    return recorded ? leg.legUuid : null;
   }
 
   /**
    * Ring several users at once. The legs are recorded in one state write, so
-   * simultaneous rings cannot overwrite each other. Users whose leg could not
-   * be created are logged and left out of the result.
+   * simultaneous rings cannot overwrite each other. Resolves to the legs the
+   * call recorded: users whose leg could not be created are logged and left
+   * out, and nobody is in it when the call ended, or began to, while they
+   * were being dialed.
    */
   async ringAgents(
     conversationUuid: string,
@@ -468,9 +558,9 @@ export class TelephonyService {
       }
     });
 
-    await this.registerAgentLegs(conversationUuid, legs);
+    const recorded = await this.registerAgentLegs(conversationUuid, legs);
 
-    return legs;
+    return recorded ? legs : [];
   }
 
   private async dialAgent(
@@ -503,13 +593,16 @@ export class TelephonyService {
     return { userId, legUuid };
   }
 
-  /** Record dialed legs as ringing, or hang them up if the call ended meanwhile. */
+  /**
+   * Record dialed legs as ringing, or hang them up if the call ended
+   * meanwhile. Resolves to whether the call recorded them.
+   */
   private async registerAgentLegs(
     conversationUuid: string,
     legs: readonly AgentLeg[],
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (legs.length === 0) {
-      return;
+      return true;
     }
 
     const update = await this.updateCallState(conversationUuid, (draft) => {
@@ -530,7 +623,9 @@ export class TelephonyService {
 
     if (!update?.result) {
       await Promise.all(legs.map((leg) => this.safeHangup(leg.legUuid)));
+      return false;
     }
+    return true;
   }
 
   /** Dial an outside number into the conference. Resolves to the new leg id. */
@@ -591,37 +686,6 @@ export class TelephonyService {
     await Promise.all(
       legUuidsOf(state).map((legUuid) => this.safeHangup(legUuid)),
     );
-  }
-
-  /**
-   * Mark the call as ending before hanging up, so the webhooks that follow
-   * tear the call down instead of trying to re-route it.
-   */
-  async requestConversationHangup(
-    conversationUuid: string,
-    initiatedBy?: string,
-  ): Promise<CallState | null> {
-    const update = await this.updateCallState(conversationUuid, (draft) => {
-      if (!draft.ending) {
-        draft.ending = true;
-        draft.endingRequestedAt = new Date().toISOString();
-        draft.endingRequestedBy = initiatedBy;
-        // The rings stay pending: a leg that never joined is still not on
-        // the call while it is hung up, so a ring that lost to the answer
-        // does not count as occupying its member again.
-        draft.pendingTransferToUserId = undefined;
-        draft.transferInitiatedBy = undefined;
-        draft.transferOriginLegUuid = undefined;
-      }
-      return { result: undefined };
-    });
-    if (!update) {
-      return null;
-    }
-
-    await this.hangupConversation(conversationUuid);
-
-    return update.after;
   }
 
   /**
@@ -698,15 +762,29 @@ export class TelephonyService {
    * What Twilio says a leg is doing now, for a call whose status callbacks
    * may have been lost: its `CallStatus`, and how long it lasted once it is
    * over. A leg Twilio does not know cannot still be on the call, and is
-   * reported `completed`.
+   * reported `completed`. Rejects when Twilio has not answered within
+   * `LEG_STATUS_TIMEOUT_MS`; the request itself is left to end on its own.
    */
   async fetchLegStatus(
     legUuid: string,
   ): Promise<{ status: string; duration?: number }> {
     const { client } = this.requireVoice();
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Twilio did not say within ${LEG_STATUS_TIMEOUT_MS} ms how leg ${legUuid} is doing`,
+            ),
+          ),
+        LEG_STATUS_TIMEOUT_MS,
+      );
+    });
+
     try {
-      const leg = await client.calls(legUuid).fetch();
+      const leg = await Promise.race([client.calls(legUuid).fetch(), timedOut]);
       const duration = Number.parseInt(leg.duration ?? '', 10);
       return Number.isNaN(duration)
         ? { status: leg.status }
@@ -716,6 +794,8 @@ export class TelephonyService {
         return { status: 'completed' };
       }
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

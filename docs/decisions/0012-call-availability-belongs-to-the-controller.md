@@ -129,10 +129,17 @@ A claim is released:
 - for a member whose ring timed out;
 - for a user whose leg failed to dial;
 - for a teammate whose transfer did not land;
+- for a member whose ring the call never recorded, because the call ended, or
+  began to end, while they were being dialed;
 - for everybody still on the call when it ends.
 
 Every change to a call releases whoever the change stopped occupying, from the
-state before and after it, so no path has to remember to do it.
+state before and after it, so no path has to remember to do it. The API's
+request to end a call is such a change too. The one claim the state cannot
+see is an offer's on a member whose ring it has not recorded yet, since the
+offer claims before any leg exists. So whoever made the offer lets go of every
+member it claimed whose ring was never recorded, whatever the reason, a throw
+included.
 
 A claim expires, so that a release that never happens heals itself. The
 controller renews the claims of every call it still has state for once when it
@@ -140,6 +147,16 @@ starts and then every 30 seconds (`CLAIM_RENEW_INTERVAL_MS`). A claim not
 renewed for 90 seconds (`CLAIM_LIFETIME_MS`) no longer counts. After a lost
 release, a user is free again within 90 seconds of their call's state going
 away.
+
+The renewal walks the set of live calls (`telephony:calls`), which a call
+joins when its state is first written. A call whose state is missing from the
+set would never be renewed or reconciled: one already going when the
+controller was upgraded to a version that keeps the set, or one whose state
+was written and then not added. So the round at start first scans the
+call-state keys once and adds whatever is missing, and every round tries
+again until that scan succeeds. A user who places a call is claimed just
+before its state is written, so that no offer can land in between, and is let
+go again if the write fails.
 
 The call's state, not the claim, is what says who a live call occupies. A
 renewal claims the call's current occupants whether or not their claim still
@@ -156,17 +173,36 @@ Twilio does not send a status callback twice. A call whose last callback was
 lost (the controller was restarting, or the write gave up) keeps its state,
 and so keeps its people busy, until the state's TTL of four hours runs out.
 So every tenth renewal round (`RECONCILE_EVERY_ROUNDS`, about every five
-minutes), and the round at start, also asks Twilio for the status of every
-leg of every live call. It does so after every call has been renewed, and a
-failure for one call is logged and skips only that call's reconciliation, so
-a Twilio that is slow or unreachable never delays or skips a renewal. That
+minutes), and the round at start, also starts a reconciliation, which asks
+Twilio for the status of every leg of every live call.
+
+The reconciliation is a task of its own. The round starts it once every call
+has been renewed and does not wait for it, and no second one starts while one
+is running. The rounds go on renewing every 30 seconds whatever it is doing,
+so a Twilio that is slow or unreachable never delays or skips a renewal. That
 matters most on the round at start, which claims back whatever ran out while
-the controller was down. A leg Twilio reports over, or no longer knows, is
-handled exactly as its lost status callback would have been: a call nobody is
-left on ends and lets its users go, and a lost ring moves the ring on. A leg's
-own callback arriving after the reconciliation handled it finds the leg gone
-and changes nothing. The cost is one Twilio request per leg of every live call
-every five minutes.
+the controller was down. The reconciliation asks about four calls at a time
+(`RECONCILE_CONCURRENCY`) and gives up on a leg Twilio has not answered for
+within five seconds (`LEG_STATUS_TIMEOUT_MS`), so it ends even when Twilio does
+not answer. A failure for one call is logged and skips only that call, which
+the next reconciliation asks about again.
+
+A leg Twilio reports over, or no longer knows, is handled exactly as its lost
+status callback would have been: a call nobody is left on ends and lets its
+users go, and a lost ring moves the ring on. A leg's end can be reported more
+than once, by the conference, by its status callback and by a reconciliation,
+and two reports can each read the leg as still there. Only the report whose
+write takes the leg out of the call tells the API, so the timeline records it
+once.
+
+The controller may run as more than one instance, and each renews every call.
+Reconciling is not repeated per instance: a reconciliation first takes a
+Redis lock (`telephony:reconcile`, `SET NX PX`) and keeps it for nine rounds,
+one short of the time to the next, so that its holder finds it lapsed when
+that comes. An instance that finds it taken stays due and tries again every
+round until it lapses. An instance that stops gives the lock up, so the one
+that starts next reconciles at once. The cost is one Twilio request per leg of
+every live call every five minutes, however many instances run.
 
 ### What occupies a user
 
@@ -229,14 +265,19 @@ longest-idle routing.
   The double hold, the double transfer, and a leg registration or hold
   racing a decline each settle to one outcome.
 - A call whose end Twilio never reports keeps its people busy until the next
-  reconciliation, about five minutes at most, or at once after a restart. It
-  used to take the state's four-hour TTL, and before this decision a stale
-  state kept nobody from being called at all.
+  reconciliation, about five minutes at most, or at once after a restart. A
+  controller that died without giving the reconcile lock up delays the one
+  after the restart by up to four and a half minutes. It used to take the
+  state's four-hour TTL, and before this decision a stale state kept nobody
+  from being called at all.
 - An outage longer than a claim lasts no longer frees the users still on
   calls for the rest of those calls: the round at start claims them again.
 - Offering a call costs two Redis trips for everybody it considers (their
   records, their sockets), one claim per user in parallel and, when their
-  availability changed, an announcement.
+  availability changed, an announcement. The dial does not wait for the
+  announcement, which reads the users' state when it goes out.
+- A call already in progress when the controller is upgraded to this version
+  is found by the round at start and its users are claimed again.
 - A softphone registering or going away moves the revision and is announced
   to the user's other softphones. A presence entry that lapses without a
   disconnect (a controller that stopped with the socket still open) moves
@@ -245,6 +286,12 @@ longest-idle routing.
 - A claim that lapses without a release sends no event, so a softphone can
   show "busy" until the next change or reconnect. The controller has already
   let that user be offered calls.
+- `availableSince` is not refreshed when a claim lapses without a release or
+  when a presence entry lapses without a disconnect, because neither is
+  announced. A user freed that way keeps the moment of the last change that
+  was announced, or has none. A routing built on it must accept that or
+  announce those paths too. Keeping it costs one Redis call per announced
+  user on every announcement.
 - A decline writes no state (decision 0009), so the call still rings the
   member who declined until Twilio reports their leg gone, usually within a
   second. A renewal in that moment claims them again, and the leg's report

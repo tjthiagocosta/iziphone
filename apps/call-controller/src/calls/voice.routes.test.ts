@@ -37,9 +37,6 @@ function buildTelephony() {
     getLegMetadata: vi.fn<() => Promise<LegMetadata | null>>(async () => null),
     getCallState: vi.fn<() => Promise<CallState | null>>(async () => null),
     safeHangup: vi.fn(async () => undefined),
-    requestConversationHangup: vi.fn<() => Promise<CallState | null>>(
-      async () => null,
-    ),
   };
 }
 
@@ -65,6 +62,7 @@ function buildFlow() {
       conversationUuid: 'CAcall1',
     })),
     declineOfferedCall: vi.fn(async () => undefined),
+    endCall: vi.fn<() => Promise<CallState | null>>(async () => null),
   };
 }
 
@@ -347,7 +345,7 @@ describe('voiceRoutes', () => {
         participantId: '+15555550101',
       });
       telephony.getCallState.mockResolvedValue(activeCall);
-      telephony.requestConversationHangup.mockResolvedValue({
+      flow.endCall.mockResolvedValue({
         ...activeCall,
         ending: true,
       });
@@ -360,10 +358,7 @@ describe('voiceRoutes', () => {
         legUuid: 'CAcall1',
         conversationUuid: 'CAcall1',
       });
-      expect(telephony.requestConversationHangup).toHaveBeenCalledWith(
-        'CAcall1',
-        'user-1',
-      );
+      expect(flow.endCall).toHaveBeenCalledWith('CAcall1', 'user-1');
       expect(telephony.safeHangup).not.toHaveBeenCalled();
     });
 
@@ -394,7 +389,7 @@ describe('voiceRoutes', () => {
           conversationUuid: 'CAcall1',
         });
         expect(telephony.safeHangup).toHaveBeenCalledWith('CAleg1');
-        expect(telephony.requestConversationHangup).not.toHaveBeenCalled();
+        expect(flow.endCall).not.toHaveBeenCalled();
         expect(flow.declineOfferedCall).not.toHaveBeenCalled();
       });
 
@@ -421,7 +416,7 @@ describe('voiceRoutes', () => {
           'CAcall1',
           'user-2',
         );
-        expect(telephony.requestConversationHangup).not.toHaveBeenCalled();
+        expect(flow.endCall).not.toHaveBeenCalled();
         expect(telephony.safeHangup).not.toHaveBeenCalled();
       });
 
@@ -442,7 +437,7 @@ describe('voiceRoutes', () => {
 
         expect(response.statusCode).toBe(200);
         expect(telephony.safeHangup).toHaveBeenCalledWith('CAleg1');
-        expect(telephony.requestConversationHangup).not.toHaveBeenCalled();
+        expect(flow.endCall).not.toHaveBeenCalled();
       });
     });
   });

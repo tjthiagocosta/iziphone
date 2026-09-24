@@ -128,14 +128,21 @@ rule turns the three into available, busy, do not disturb or offline. An offer
 claims each user before dialing, so two calls cannot ring the same free person;
 claims are renewed at start and every 30 seconds for every call still going
 (`telephony:calls`), claimed again if they ran out while the call went on, and
-lapse after 90 seconds unrenewed. At start and about every five minutes the
-renewal also asks Twilio about every leg of those calls and handles a leg that
-is over as its lost status callback would have been, so a call whose end was
-never reported does not keep its people busy. A user's softphones hear
+lapse after 90 seconds unrenewed. The round at start also adds to that set any
+call whose state is missing from it, such as one already going when the
+controller was upgraded. At start and about every five minutes the renewal
+also starts a reconciliation, which it does not wait for, so a slow Twilio
+never holds a renewal up: it asks Twilio about every leg of those calls, four
+calls at a time and for at most five seconds a leg, and handles a leg that is
+over as its lost status callback would have been, so a call whose end was
+never reported does not keep its people busy. With several controller
+instances, a Redis lock (`telephony:reconcile`) has one of them do it per
+period. A user's softphones hear
 `user_availability` when theirs changes, including when one of them connects
 or goes away. Every change to a call's state is a conditional write on its
 `version`. The call-state keys (`telephony:call:*`, `telephony:calls`,
-`telephony:leg:*`) are declared in `@repo/events` with the other Redis keys.
+`telephony:leg:*`, `telephony:reconcile`) are declared in `@repo/events` with
+the other Redis keys.
 See [0012](../decisions/0012-call-availability-belongs-to-the-controller.md).
 
 **Browser softphone behavior.** The web app registers a Twilio Voice device on

@@ -67,7 +67,6 @@ export interface VoiceRouteOptions {
     | 'getLegMetadata'
     | 'getCallState'
     | 'safeHangup'
-    | 'requestConversationHangup'
   >;
   flow: Pick<
     CallFlow,
@@ -76,6 +75,7 @@ export interface VoiceRouteOptions {
     | 'transferCall'
     | 'cancelTransfer'
     | 'declineOfferedCall'
+    | 'endCall'
   >;
   availability: AvailabilityLookup;
 }
@@ -239,10 +239,7 @@ export const voiceRoutes: FastifyPluginAsync<VoiceRouteOptions> = async (
         } satisfies VoiceHangupResponse;
       }
 
-      const ending = await telephony.requestConversationHangup(
-        state.conversationUuid,
-        user.id,
-      );
+      const ending = await flow.endCall(state.conversationUuid, user.id);
 
       request.log.info(
         {

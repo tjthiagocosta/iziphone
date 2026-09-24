@@ -11,6 +11,9 @@ import {
 import type { PresenceService } from './presence.service.js';
 import type { TypedSocketServer } from './socket-server.js';
 
+/** Let the notices an offer sends without waiting go out. */
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
 function callFor(conversationUuid: string): IncomingCall {
   return { conversationUuid, from: '+15555550123', to: '+15555550100' };
 }
@@ -190,6 +193,7 @@ describe('AvailabilityService', () => {
         ['user-1', 'user-2', 'user-3'],
         callFor('CAcall1'),
       );
+      await settle();
 
       const reads = vi
         .mocked(redis.eval)
@@ -212,6 +216,7 @@ describe('AvailabilityService', () => {
       const { service, availabilityEvents } = buildService();
 
       await service.offerCall(['user-1'], callFor('CAcall1'));
+      await settle();
 
       expect(availabilityEvents()).toEqual([
         {
@@ -220,6 +225,22 @@ describe('AvailabilityService', () => {
           payload: { userId: 'user-1', state: 'busy', revision: 1 },
         },
       ]);
+    });
+
+    test('offers the call without waiting to tell the claimed users they are busy', async () => {
+      const { service, store, offers } = buildService();
+      // The notice gets stuck; the call must ring all the same.
+      vi.spyOn(store, 'recordEligibility').mockReturnValue(
+        new Promise(() => undefined),
+      );
+
+      const offer = await Promise.race([
+        service.offerCall(['user-1'], callFor('CAcall1')),
+        new Promise((resolve) => setTimeout(() => resolve('stuck'), 50)),
+      ]);
+
+      expect(offer).toEqual({ offered: ['user-1'], refused: [] });
+      expect(offers()).toHaveLength(1);
     });
   });
 
@@ -306,6 +327,7 @@ describe('AvailabilityService', () => {
     test('a renewal of claims that still count tells nobody anything', async () => {
       const { service, clock, availabilityEvents } = buildService();
       await service.offerCall(['user-1'], callFor('CAcall1'));
+      await settle();
       const told = availabilityEvents().length;
 
       clock.now += AVAILABILITY.CLAIM_RENEW_INTERVAL_MS;

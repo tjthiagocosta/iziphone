@@ -88,14 +88,14 @@ export async function buildApp(config: ControllerConfig) {
     await realtime.start();
     commands = await startCallCommandSubscriber({
       redis: fastify.redis,
-      telephony,
+      flow,
       log: fastify.log,
     });
-    claimRenewal = startClaimRenewal({ flow, log: fastify.log });
+    claimRenewal = startClaimRenewal({ flow, telephony, log: fastify.log });
   });
 
   fastify.addHook('onClose', async () => {
-    claimRenewal?.stop();
+    await claimRenewal?.stop();
     await commands?.close();
     await realtime.close();
   });

@@ -75,8 +75,18 @@ import type {
  *
  * A call claims the users it occupies (`occupantsOf`), so that no other call
  * is offered to them meanwhile. The realtime layer keeps the claims; every
- * change here lets go of the users it stopped occupying.
+ * change here lets go of the users it stopped occupying. An offer claims its
+ * users before their rings exist, and the state only counts a ring once it
+ * is recorded, so whoever offers lets go of those whose ring never was.
  */
+
+/**
+ * How many calls a reconciliation asks Twilio about at once, each with all
+ * of its legs: enough that a slow Twilio does not make it crawl, few enough
+ * that it leaves room under the account's limit on concurrent requests for
+ * the calls being set up meanwhile.
+ */
+export const RECONCILE_CONCURRENCY = 4;
 
 /** Who an offer reached, and why the others were left out. */
 export interface CallOffer {
@@ -132,7 +142,6 @@ export type CallFlowTelephony = Pick<
   | 'issueOutboundGrant'
   | 'takeOutboundGrant'
   | 'hangupConversation'
-  | 'requestConversationHangup'
   | 'holdConversation'
   | 'transferConversation'
   | 'safeHangup'
@@ -287,26 +296,33 @@ export class CallFlow {
 
     // Claimed without asking: an agent who is busy or on do not disturb may
     // still dial out, and nobody may offer them a call while they talk.
+    // Claimed before the state exists, so that no offer lands in between;
+    // without a state nothing would renew the claim or let it go.
     await realtime.occupy(callSid, [agentUserId]);
-    const state = await telephony.createCallState({
-      conversationUuid: callSid,
-      conversationName: conversationNameFor(callSid),
-      direction: 'outbound',
-      routingType: 'OUTBOUND',
-      from: grant.fromNumber,
-      to: grant.to,
-      departmentId: grant.departmentId,
-      departmentName: grant.departmentName,
-      targetUserId: agentUserId,
-      activeAgentUserId: agentUserId,
-      agentLegUuid: callSid,
-      agentLegs: { [callSid]: agentUserId },
-      pendingAgentLegUuids: [],
-      answered: false,
-      voicemail: false,
-      ending: false,
-      createdAt: new Date().toISOString(),
-    });
+    const state = await telephony
+      .createCallState({
+        conversationUuid: callSid,
+        conversationName: conversationNameFor(callSid),
+        direction: 'outbound',
+        routingType: 'OUTBOUND',
+        from: grant.fromNumber,
+        to: grant.to,
+        departmentId: grant.departmentId,
+        departmentName: grant.departmentName,
+        targetUserId: agentUserId,
+        activeAgentUserId: agentUserId,
+        agentLegUuid: callSid,
+        agentLegs: { [callSid]: agentUserId },
+        pendingAgentLegUuids: [],
+        answered: false,
+        voicemail: false,
+        ending: false,
+        createdAt: new Date().toISOString(),
+      })
+      .catch(async (error: unknown) => {
+        await this.letGo(callSid, [agentUserId]);
+        throw error;
+      });
     await telephony.setLegMetadata(callSid, {
       conversationUuid: callSid,
       ...agent,
@@ -554,12 +570,6 @@ export class CallFlow {
       return;
     }
 
-    await this.publishParticipantStatus(
-      state,
-      legUuid,
-      participant,
-      'completed',
-    );
     await this.onLegEnded(
       conversationUuid,
       participant,
@@ -593,32 +603,33 @@ export class CallFlow {
       return;
     }
 
+    if (!isTerminalStatus(status)) {
+      await this.publishParticipantStatus(
+        state,
+        legUuid,
+        participant,
+        status,
+        notice.duration,
+      );
+      return;
+    }
+
     // Twilio reports a leg's end twice (conference leave and call status);
     // a leg the call no longer tracks has already been handled. A transfer
     // stops tracking a ring its teammate lost earlier before it is gone, so
     // what is still known about such a leg is forgotten here.
-    if (isTerminalStatus(status) && !legUuidsOf(state).includes(legUuid)) {
+    if (!legUuidsOf(state).includes(legUuid)) {
       await telephony.deleteLegMetadata([legUuid]);
       return;
     }
 
-    await this.publishParticipantStatus(
-      state,
-      legUuid,
+    await this.onLegEnded(
+      conversationUuid,
       participant,
+      legUuid,
       status,
       notice.duration,
     );
-
-    if (isTerminalStatus(status)) {
-      await this.onLegEnded(
-        conversationUuid,
-        participant,
-        legUuid,
-        status,
-        notice.duration,
-      );
-    }
   }
 
   /**
@@ -626,17 +637,10 @@ export class CallFlow {
    * current occupants are renewed, and claimed again if their claim already
    * ran out. A call whose state is gone leaves the live set, and whatever it
    * still claimed runs out on its own. One call that fails does not keep the
-   * others from being renewed.
-   *
-   * With `reconcile`, Twilio is then asked about every leg of each call, and
-   * a leg it says is over is handled as its lost status callback would have
-   * been: a call nobody is left on ends, and lets its users go. Every call is
-   * renewed before Twilio is asked about any, so a Twilio that is slow or
-   * failing never leaves a user on a call unclaimed, least of all on the
-   * round at start, which claims back what ran out while this service was
-   * down.
+   * others from being renewed. Twilio is not asked anything, so nothing it
+   * does can hold a renewal up.
    */
-  async renewClaims({ reconcile = false } = {}): Promise<void> {
+  async renewClaims(): Promise<void> {
     const { telephony, log } = this.deps;
     const conversationUuids = await telephony.liveCallIds();
 
@@ -650,24 +654,44 @@ export class CallFlow {
         );
       }
     }
-
-    if (!reconcile) {
-      return;
-    }
-
-    for (const conversationUuid of conversationUuids) {
-      try {
-        await this.reconcileWithTwilio(conversationUuid);
-      } catch (error) {
-        log.warn(
-          { err: error, conversationUuid },
-          'Failed to reconcile a call with Twilio',
-        );
-      }
-    }
   }
 
-  private async reconcileWithTwilio(conversationUuid: string): Promise<void> {
+  /**
+   * Ask Twilio about every leg of every call still going, and handle a leg
+   * it says is over as its lost status callback would have been: a call
+   * nobody is left on ends, and lets its users go. `RECONCILE_CONCURRENCY`
+   * calls are asked about at a time, and a leg Twilio says nothing of within
+   * `LEG_STATUS_TIMEOUT_MS` is left for the next reconciliation, so a Twilio
+   * that is slow or unreachable makes this slow, never endless. One call
+   * that fails does not keep the others from being reconciled.
+   */
+  async reconcileWithTwilio(): Promise<void> {
+    const { telephony, log } = this.deps;
+    const waiting = await telephony.liveCallIds();
+
+    const reconcileWaitingCalls = async (): Promise<void> => {
+      for (
+        let conversationUuid = waiting.shift();
+        conversationUuid !== undefined;
+        conversationUuid = waiting.shift()
+      ) {
+        try {
+          await this.reconcileCall(conversationUuid);
+        } catch (error) {
+          log.warn(
+            { err: error, conversationUuid },
+            'Failed to reconcile a call with Twilio',
+          );
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: RECONCILE_CONCURRENCY }, reconcileWaitingCalls),
+    );
+  }
+
+  private async reconcileCall(conversationUuid: string): Promise<void> {
     const { telephony } = this.deps;
 
     const state = await telephony.getCallState(conversationUuid);
@@ -721,6 +745,40 @@ export class CallFlow {
   }
 
   // Call control -------------------------------------------------------------
+
+  /**
+   * End the call for everybody on it, as an agent or the API asks: every leg
+   * is hung up. The call is marked as ending first, so the webhooks that
+   * follow tear it down instead of routing it anywhere else, and a transfer
+   * still ringing is called off, which lets its teammate go. Resolves to the
+   * call as it is now, or to null when it is already gone.
+   */
+  async endCall(
+    conversationUuid: string,
+    initiatedBy?: string,
+  ): Promise<CallState | null> {
+    const update = await this.changeCall(conversationUuid, (draft) => {
+      if (!draft.ending) {
+        draft.ending = true;
+        draft.endingRequestedAt = new Date().toISOString();
+        draft.endingRequestedBy = initiatedBy;
+        // The rings stay pending: a leg that never joined is still not on
+        // the call while it is hung up, so a ring that lost to the answer
+        // does not count as occupying its member again.
+        draft.pendingTransferToUserId = undefined;
+        draft.transferInitiatedBy = undefined;
+        draft.transferOriginLegUuid = undefined;
+      }
+      return { result: undefined };
+    });
+    if (!update) {
+      return null;
+    }
+
+    await this.deps.telephony.hangupConversation(conversationUuid);
+
+    return update.after;
+  }
 
   /** The agent on the call holds the other party, or brings them back. */
   async holdCall(
@@ -814,12 +872,19 @@ export class CallFlow {
     // The call is marked from here on, and a marked call refuses holds and
     // further transfers and lets its agent leave without ending it. Whatever
     // throws below therefore takes the mark back before it answers.
+    //
+    // The offer claims the teammate before their leg exists. Once the call
+    // records the ring, its own changes let them go; until then nothing
+    // would, so a ring that is never recorded lets them go here.
+    let offered = false;
+    let ringRecorded = false;
     try {
       const offer = await realtime.offerCall(
         [targetUserId],
         transferOfferOf(marked.after, request.userId),
       );
-      if (offer.offered.length === 0) {
+      offered = offer.offered.length > 0;
+      if (!offered) {
         // Nothing was held and nobody was told, so nobody needs to hear of
         // it; the caller is still rescued if the agent left in the meantime.
         await this.failPendingTransfer(conversationUuid, targetUserId, null);
@@ -849,6 +914,7 @@ export class CallFlow {
         targetUserId,
         request.userId,
       );
+      ringRecorded = ringingLegUuid !== null;
 
       // The teammate may have declined, or the agent cancelled, while Twilio
       // was holding and ringing. Whoever did has already settled the
@@ -881,6 +947,10 @@ export class CallFlow {
         'unavailable',
       );
       return { ok: false, refusal: 'provider-error' };
+    } finally {
+      if (offered && !ringRecorded) {
+        await this.letGo(conversationUuid, [targetUserId]);
+      }
     }
 
     log.info(
@@ -1175,7 +1245,7 @@ export class CallFlow {
         await this.routeCallerToVoicemail(conversationUuid, 'routing-timeout');
         break;
       case 'end-call':
-        await telephony.requestConversationHangup(conversationUuid);
+        await this.endCall(conversationUuid);
         break;
     }
 
@@ -1225,7 +1295,13 @@ export class CallFlow {
     });
   }
 
-  /** A leg is gone: forget it, then act on what that means for the call. */
+  /**
+   * A leg is gone: forget it, tell the API, then act on what that means for
+   * the call. Twilio reports a leg's end more than once (conference leave,
+   * call status, and a reconciliation that finds it over), and two reports
+   * can each read the leg as still there. Only the one whose write took the
+   * leg out of the call tells the API, so the timeline has it once.
+   */
   private async onLegEnded(
     conversationUuid: string,
     participant: CallParticipant,
@@ -1240,12 +1316,19 @@ export class CallFlow {
       decideLegEnded(draft, participant, legUuid, status),
     );
     const plan = update?.result;
-    if (!plan) {
+    if (!update || !plan || plan.kind === 'ignored') {
       return;
     }
 
+    await this.publishParticipantStatus(
+      update.before,
+      legUuid,
+      participant,
+      status,
+      duration,
+    );
+
     switch (plan.kind) {
-      case 'ignored':
       case 'forgotten':
         return;
       case 'ended':
@@ -1275,7 +1358,10 @@ export class CallFlow {
 
   // Ringing ------------------------------------------------------------------
 
-  /** Ring everybody who can take the call. Resolves to the users rung. */
+  /**
+   * Ring everybody who can take the call. Resolves to the users whose ring
+   * the call recorded: nobody, when it ended while they were being dialed.
+   */
   private async ringAllAtOnce(
     state: CallState,
     userIds: string[],
@@ -1284,16 +1370,22 @@ export class CallFlow {
     const { conversationUuid } = state;
 
     const offer = await realtime.offerCall(userIds, incomingCallOf(state));
-    const legs = await telephony.ringAgents(conversationUuid, offer.offered, {
-      fromNumber: state.to,
-      ringingTimer: state.ringDuration,
-    });
-
-    const rung = legs.map((leg) => leg.userId);
-    await this.letGo(
-      conversationUuid,
-      offer.offered.filter((userId) => !rung.includes(userId)),
-    );
+    const rung: string[] = [];
+    try {
+      const legs = await telephony.ringAgents(conversationUuid, offer.offered, {
+        fromNumber: state.to,
+        ringingTimer: state.ringDuration,
+      });
+      rung.push(...legs.map((leg) => leg.userId));
+    } finally {
+      // The offer claimed them before any leg existed, and the call lets go
+      // only of whom it records: a member whose dial failed, or everybody
+      // when the call ended meanwhile, is let go here.
+      await this.letGo(
+        conversationUuid,
+        offer.offered.filter((userId) => !rung.includes(userId)),
+      );
+    }
     return rung;
   }
 
@@ -1336,19 +1428,28 @@ export class CallFlow {
         continue;
       }
 
+      // As in a ring of everybody at once, a member whose ring the call does
+      // not record is let go here. When the call ended meanwhile, the next
+      // turn finds it so and stops.
+      let recorded = false;
       try {
-        await this.ringAgent(turn.after, userId);
-        return true;
+        recorded = (await this.ringAgent(turn.after, userId)) !== null;
       } catch {
         // Already logged by ringAgent; move on to the next user.
-        await this.letGo(conversationUuid, [userId]);
       }
+      if (recorded) {
+        return true;
+      }
+      await this.letGo(conversationUuid, [userId]);
     }
 
     return false;
   }
 
-  private async ringAgent(state: CallState, userId: string): Promise<string> {
+  private async ringAgent(
+    state: CallState,
+    userId: string,
+  ): Promise<string | null> {
     try {
       return await this.deps.telephony.createAgentLeg(
         state.conversationUuid,
@@ -1398,22 +1499,31 @@ export class CallFlow {
 
   // Voicemail and teardown ---------------------------------------------------
 
-  /** Nobody can take the call before it was even offered: answer with voicemail. */
+  /**
+   * Nobody can take the call before it was even offered: answer with
+   * voicemail. A call that ended, or began to, while its ring was being set
+   * up is not reported missed: whoever ended it reports its end.
+   */
   private async voicemailInsteadOfRinging(
     state: CallState,
     reason: VoicemailReason,
   ): Promise<string> {
     const update = await this.changeCall(state.conversationUuid, (draft) => {
+      if (draft.ending) {
+        return { result: false };
+      }
       draft.voicemail = true;
-      return { result: undefined };
+      return { result: true };
     });
-    await this.deps.events.callMissed({
-      conversationUuid: state.conversationUuid,
-      from: state.from,
-      to: state.to,
-      departmentId: state.departmentId,
-      userId: state.targetUserId,
-    });
+    if (update?.result) {
+      await this.deps.events.callMissed({
+        conversationUuid: state.conversationUuid,
+        from: state.from,
+        to: state.to,
+        departmentId: state.departmentId,
+        userId: state.targetUserId,
+      });
+    }
 
     return this.deps.telephony.buildVoicemailTwiml(
       update?.after ?? state,

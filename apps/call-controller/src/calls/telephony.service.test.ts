@@ -1,4 +1,4 @@
-import { OUTBOUND_GRANT } from '@repo/events';
+import { OUTBOUND_GRANT, TELEPHONY } from '@repo/events';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { VOICEMAIL_REASONS } from '../routing/index.js';
 import { e164 } from '../test/e164.js';
@@ -12,6 +12,7 @@ import type { OutboundCallGrant } from './outbound-grant.js';
 import {
   CALL_STATE_WRITE_ATTEMPTS,
   CallStateConflictError,
+  LEG_STATUS_TIMEOUT_MS,
   TelephonyService,
 } from './telephony.service.js';
 
@@ -250,6 +251,86 @@ describe('TelephonyService', () => {
       await telephony.forgetLiveCall('CAcall2');
       await expect(telephony.liveCallIds()).resolves.toEqual([]);
     });
+
+    test('puts back in the set a call whose state is missing from it', async () => {
+      const { telephony, store } = createFakeTelephony();
+      await telephony.createCallState(inboundState());
+      // Written before the set existed, by the controller this one replaced.
+      store.set(
+        `${TELEPHONY.CALL_KEY_PREFIX}CAcall2`,
+        JSON.stringify(
+          inboundState({
+            conversationUuid: 'CAcall2',
+            callerLegUuid: 'CAcall2',
+          }),
+        ),
+      );
+
+      await expect(telephony.restoreLiveCalls()).resolves.toBe(1);
+      await expect(telephony.restoreLiveCalls()).resolves.toBe(0);
+
+      expect((await telephony.liveCallIds()).sort()).toEqual([
+        'CAcall1',
+        'CAcall2',
+      ]);
+    });
+  });
+
+  describe('the reconcile lock', () => {
+    test('has one holder at a time, for as long as it was taken', async () => {
+      const { telephony, ttls } = createFakeTelephony();
+
+      await expect(
+        telephony.takeReconcileLock('instance-1', 270_000),
+      ).resolves.toBe(true);
+      await expect(
+        telephony.takeReconcileLock('instance-2', 270_000),
+      ).resolves.toBe(false);
+
+      expect(ttls.get(TELEPHONY.RECONCILE_LOCK_KEY)).toBe(270);
+    });
+
+    test('is given up only by its holder', async () => {
+      const { telephony } = createFakeTelephony();
+      await telephony.takeReconcileLock('instance-1', 270_000);
+
+      await telephony.releaseReconcileLock('instance-2');
+      await expect(
+        telephony.takeReconcileLock('instance-2', 270_000),
+      ).resolves.toBe(false);
+
+      await telephony.releaseReconcileLock('instance-1');
+      await expect(
+        telephony.takeReconcileLock('instance-2', 270_000),
+      ).resolves.toBe(true);
+    });
+  });
+
+  describe('asking Twilio about a leg', () => {
+    test('gives up on a Twilio that does not answer in time', async () => {
+      vi.useFakeTimers();
+      try {
+        const { telephony, twilio } = createFakeTelephony();
+        twilio.stallLegFetches();
+
+        const status = telephony.fetchLegStatus('CAleg1');
+        const failure = expect(status).rejects.toThrow(/did not say within/);
+        await vi.advanceTimersByTimeAsync(LEG_STATUS_TIMEOUT_MS);
+
+        await failure;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('takes a leg Twilio does not know for one that is over', async () => {
+      const { telephony, twilio } = createFakeTelephony();
+      twilio.forgetLeg('CAleg1');
+
+      await expect(telephony.fetchLegStatus('CAleg1')).resolves.toEqual({
+        status: 'completed',
+      });
+    });
   });
 
   test('issues a Twilio access token for the softphone', () => {
@@ -306,19 +387,43 @@ describe('TelephonyService', () => {
     });
   });
 
-  test('hangs a freshly created leg up again when the call ended meanwhile', async () => {
+  test('hangs a freshly created leg up again when the call ended meanwhile, and says it rings nobody', async () => {
     const { telephony, twilio } = createFakeTelephony();
     await telephony.createCallState(inboundState());
     twilio.whileCreating(async () => {
-      await telephony.requestConversationHangup('CAcall1', 'user-9');
+      await telephony.updateCallState('CAcall1', (draft) => {
+        draft.ending = true;
+        return { result: undefined };
+      });
     });
 
-    await telephony.createAgentLeg('CAcall1', 'user-1', { fromNumber: line });
+    await expect(
+      telephony.createAgentLeg('CAcall1', 'user-1', { fromNumber: line }),
+    ).resolves.toBeNull();
 
     expect(twilio.hangups()).toContain('CAleg1');
     await expect(telephony.getCallState('CAcall1')).resolves.toMatchObject({
       agentLegs: {},
     });
+  });
+
+  test('reports no leg of a ring the call ended during, so that nobody counts on it', async () => {
+    const { telephony, twilio } = createFakeTelephony();
+    await telephony.createCallState(inboundState());
+    twilio.whileCreating(async () => {
+      await telephony.updateCallState('CAcall1', () => ({
+        result: undefined,
+        remove: true,
+      }));
+    });
+
+    await expect(
+      telephony.ringAgents('CAcall1', ['user-1', 'user-2'], {
+        fromNumber: line,
+      }),
+    ).resolves.toEqual([]);
+
+    expect(twilio.hangups().sort()).toEqual(['CAleg1', 'CAleg2']);
   });
 
   test('rings several agents at once and records every leg', async () => {
@@ -400,36 +505,6 @@ describe('TelephonyService', () => {
       telephony.createAgentLeg('CAcall1', 'user-2', { fromNumber: '' }),
     ).rejects.toThrow(/without the line it is on as caller id/);
     expect(twilio.created).toHaveLength(0);
-  });
-
-  test('requesting a hangup marks the call as ending and hangs up every leg', async () => {
-    const { telephony, twilio } = createFakeTelephony();
-    await telephony.createCallState(
-      inboundState({
-        agentLegUuid: 'CAagent1',
-        agentLegs: { CAagent1: 'user-1', CAagent2: 'user-2' },
-        pendingAgentLegUuids: ['CAagent2'],
-        pendingTransferToUserId: 'user-3',
-      }),
-    );
-
-    const state = await telephony.requestConversationHangup(
-      'CAcall1',
-      'user-1',
-    );
-
-    expect(state).toMatchObject({
-      ending: true,
-      endingRequestedBy: 'user-1',
-      // Still a ring that never joined, until Twilio reports it gone.
-      pendingAgentLegUuids: ['CAagent2'],
-      pendingTransferToUserId: undefined,
-    });
-    expect(twilio.hangups().sort()).toEqual([
-      'CAagent1',
-      'CAagent2',
-      'CAcall1',
-    ]);
   });
 
   test('a hangup tolerates legs Twilio no longer knows and retries throttling', async () => {

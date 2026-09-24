@@ -94,7 +94,10 @@ export class AvailabilityService {
       io.to(socketIds).emit('incoming_call', call);
     }
 
-    await this.announceAll(claimed);
+    // Not waited for: the call is dialed as soon as the claims stand, and
+    // telling the claimed users they are busy now is a notice, which reads
+    // their state when it goes out and deals with its own failure.
+    void this.announceAll(claimed);
     return offer;
   }
 

@@ -1,6 +1,7 @@
 import type { Redis } from 'ioredis';
 import { vi } from 'vitest';
 import {
+  RELEASE_RECONCILE_LOCK_SCRIPT,
   TelephonyService,
   type TwilioClient,
   WRITE_CALL_STATE_SCRIPT,
@@ -19,6 +20,8 @@ export function createFakeRedis() {
   const sets = new Map<string, Set<string>>();
   /** Seconds each key was written with, so a test can see what would expire. */
   const ttls = new Map<string, number | undefined>();
+  /** Keys a test made Redis fail to write. */
+  const unwritable = new Set<string>();
   let beforeCallStateWrite: (() => Promise<void>) | undefined;
 
   /** `WRITE_CALL_STATE_SCRIPT`, as Redis runs it: all at once. */
@@ -45,6 +48,12 @@ export function createFakeRedis() {
         numberOfKeys: number,
         ...rest: Array<string | number>
       ) => {
+        if (script === RELEASE_RECONCILE_LOCK_SCRIPT) {
+          const [key = '', holder] = rest.map(String);
+          if (store.get(key) !== holder) return 0;
+          store.delete(key);
+          return 1;
+        }
         if (script !== WRITE_CALL_STATE_SCRIPT) {
           throw new Error('The fake Redis does not know this script');
         }
@@ -75,11 +84,41 @@ export function createFakeRedis() {
       return removed;
     }),
     smembers: vi.fn(async (key: string) => [...(sets.get(key) ?? [])]),
+    /** One page holds every key; only a trailing `*` is understood. */
+    scan: vi.fn(
+      async (_cursor: string, _match: 'MATCH', pattern: string) =>
+        [
+          '0',
+          [...store.keys()].filter((key) =>
+            key.startsWith(pattern.replace(/\*$/, '')),
+          ),
+        ] as const,
+    ),
     get: vi.fn(async (key: string) => store.get(key) ?? null),
+    /** `SET key value [EX seconds | PX ms] [NX]`, without the expiry itself. */
     set: vi.fn(
-      async (key: string, value: string, _mode?: 'EX', seconds?: number) => {
+      async (
+        key: string,
+        value: string,
+        ...options: Array<string | number>
+      ) => {
+        if (unwritable.has(key)) {
+          throw new Error(`The fake Redis was told not to write ${key}`);
+        }
+        if (options.includes('NX') && store.has(key)) {
+          return null;
+        }
+        const ex = options.indexOf('EX');
+        const px = options.indexOf('PX');
         store.set(key, value);
-        ttls.set(key, seconds);
+        ttls.set(
+          key,
+          ex >= 0
+            ? Number(options[ex + 1])
+            : px >= 0
+              ? Number(options[px + 1]) / 1000
+              : undefined,
+        );
         return 'OK';
       },
     ),
@@ -99,6 +138,10 @@ export function createFakeRedis() {
     store,
     sets,
     ttls,
+    /** Make every write of this key fail, as when Redis goes away. */
+    failWritesTo(key: string) {
+      unwritable.add(key);
+    },
     /**
      * Run something (a decline, say) after the next change to a call state
      * has read the state and before it is written, once.
@@ -124,6 +167,7 @@ export function createFakeTwilioClient() {
   const legStatuses = new Map<string, string>();
   const unknownLegs = new Set<string>();
   const fetched: string[] = [];
+  let fetchesStalled = false;
   let beforeCreate: (() => Promise<void>) | undefined;
   let beforeHold: (() => Promise<void>) | undefined;
   let holdFailure: unknown;
@@ -146,6 +190,9 @@ export function createFakeTwilioClient() {
       },
       fetch: async () => {
         fetched.push(legUuid);
+        if (fetchesStalled) {
+          return new Promise<never>(() => undefined);
+        }
         const failure = failures.get(legUuid);
         if (failure) throw failure;
         if (unknownLegs.has(legUuid)) {
@@ -233,6 +280,10 @@ export function createFakeTwilioClient() {
     },
     /** The legs Twilio was asked about, in order. */
     fetched,
+    /** Twilio never answers when asked about a leg, from now on. */
+    stallLegFetches() {
+      fetchesStalled = true;
+    },
     /** Make the next operation on a leg id or dial target throw. */
     failWith(target: string, error: unknown) {
       failures.set(target, error);
@@ -246,7 +297,7 @@ export function createFakeTwilioClient() {
 }
 
 export function createFakeTelephony() {
-  const { redis, store, sets, ttls, beforeNextCallStateWrite } =
+  const { redis, store, sets, ttls, failWritesTo, beforeNextCallStateWrite } =
     createFakeRedis();
   const twilio = createFakeTwilioClient();
   const config = testControllerConfig.twilio;
@@ -268,6 +319,7 @@ export function createFakeTelephony() {
     store,
     sets,
     ttls,
+    failWritesTo,
     telephonyLog,
     beforeNextCallStateWrite,
   };

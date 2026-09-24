@@ -42,6 +42,13 @@ safe:
   was stricter, so no existing row can break the new ones, and existing rows
   need no backfill: each already names the owner it belongs to.
 
+Calls in progress survive an upgrade of the call controller: their state is in
+Redis, and the controller that starts finds every call's state, including one
+it did not track yet, claims its people again and asks Twilio whether it is
+still going. Stop the old controller with `SIGTERM` rather than killing it: it
+then gives up the reconcile lock, and the new one asks Twilio at once instead
+of within five minutes.
+
 Once the services are up, `GET /health` answers without touching the bucket,
 and `GET /health/storage` and `GET /health/all` (admin only) report whether the
 bucket answers.
