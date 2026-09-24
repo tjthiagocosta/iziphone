@@ -393,23 +393,33 @@ describe('PhoneNumberService.update', () => {
       edit: { label: 'Front desk' },
     },
     {
-      meanwhile: 'released',
+      meanwhile: 'taken from its department',
       read: phoneRow({ departmentId: 'dept-1', status: 'ACTIVE' }),
       current: phoneRow(),
       edit: { departmentId: 'dept-1', isPrimary: true },
     },
+    {
+      meanwhile: 'released',
+      read: phoneRow(),
+      current: phoneRow({
+        status: 'RELEASED',
+        deletedAt: new Date('2026-03-24T00:00:00.000Z'),
+      }),
+      edit: { userId: 'user-1' },
+    },
   ])(
     'should refuse, and change nothing, when the number was $meanwhile during the edit',
     async ({ read, current, edit }) => {
-      // Only a write that names the owner the number has by now matches it.
+      // A write matches the number as it is by now on every field it names,
+      // and leaves unfiltered any field it does not name, as Prisma does.
+      const now: Record<string, unknown> = { deletedAt: null, ...current };
       const updateMany = vi.fn(
         async ({ where }: { where: Record<string, unknown> }) => ({
-          count:
-            where.id === current.id &&
-            where.userId === current.userId &&
-            where.departmentId === current.departmentId
-              ? 1
-              : 0,
+          count: Object.entries(where).every(
+            ([field, value]) => now[field] === value,
+          )
+            ? 1
+            : 0,
         }),
       );
       const update = vi.fn(async () => current);

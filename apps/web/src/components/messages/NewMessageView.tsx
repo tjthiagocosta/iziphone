@@ -101,7 +101,15 @@ export function NewMessageView() {
        * so there is nowhere to send the reader: the draft stays here with the
        * reason, and the inbox will show the thread on its next refresh.
        */
-      setFailure(sendFailureFrom(cause.status, cause.message).message);
+      const outcome = sendFailureFrom(cause.status, cause.message);
+
+      if (outcome.persisted) {
+        // The failed attempt is stored under this key, and the same key would
+        // only be answered with it: sending the draft again is a new message.
+        draftKey.current = crypto.randomUUID();
+      }
+
+      setFailure(outcome.message);
     }
   };
 

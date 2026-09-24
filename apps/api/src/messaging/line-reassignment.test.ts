@@ -5,6 +5,7 @@ import { MessageConversationService } from './conversation.service.js';
 import { MessageSendService } from './send.service.js';
 import { MessageSenderService } from './sender.service.js';
 import type { MessagingTransportInboundEvent } from './transport.js';
+import { TwilioMessagesTransportError } from './twilio/messages.service.js';
 import { MessageWebhookService } from './webhook.service.js';
 
 /*
@@ -367,6 +368,32 @@ describe('a send retried after the line changed hands', () => {
     expect(world.sent).toEqual(['Hello', 'Hello from Sales']);
   });
 
+  test('answers a new message whose first attempt failed with that failure, and sends a new draft', async () => {
+    // A failed attempt is kept, with its reason, in the thread it was filed
+    // in. Its key names that attempt, so sending the text again takes a new
+    // draft, which the composer starts after a stored failure.
+    const world = createWorld({ userId: CASEY });
+    world.failNextSend();
+    const first = await world.startMessage(CASEY, 'Hello', 'draft-failed');
+    const firstThread =
+      first.outcome === 'provider_failed' ? first.conversationId : null;
+
+    world.assignLine({ departmentId: SALES });
+    const retry = await world.startMessage(CASEY, 'Hello', 'draft-failed');
+
+    expect(firstThread).not.toBeNull();
+    expect(retry).toMatchObject({
+      outcome: 'deduplicated',
+      conversationId: firstThread,
+      message: { status: 'FAILED' },
+    });
+    expect(world.sent).toEqual([]);
+
+    const again = await world.startMessage(CASEY, 'Hello');
+    expect(again).toMatchObject({ outcome: 'sent' });
+    expect(world.sent).toEqual(['Hello']);
+  });
+
   test('never answers with a message from a thread the writer cannot see', async () => {
     // Two drafts can carry the same key. Alex's thread is not Blair's to be
     // told about, and Blair's message is theirs to send.
@@ -458,10 +485,18 @@ function createWorld(initialOwner: Owner) {
   });
 
   const sent: string[] = [];
+  let failNextSend = false;
   const send = new MessageSendService({
     db: client,
     transport: {
       sendSms: async (input) => {
+        if (failNextSend) {
+          failNextSend = false;
+          throw new TwilioMessagesTransportError(
+            'The provider could not be reached',
+            { request: {} },
+          );
+        }
         sent.push(input.text);
         return {
           outcome: 'accepted',
@@ -500,6 +535,10 @@ function createWorld(initialOwner: Owner) {
       ),
     conversationCount: () => db.conversationCount(),
     messageCount: () => db.messageCount(),
+    /** The provider cannot be reached for the next send, which is stored as failed. */
+    failNextSend: () => {
+      failNextSend = true;
+    },
     assignLine: (owner: Owner, status: 'ACTIVE' | 'RESERVED' = 'ACTIVE') =>
       db.setLineOwner(LINE_ID, owner, status),
     /**
