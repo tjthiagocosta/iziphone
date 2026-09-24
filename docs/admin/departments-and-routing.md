@@ -23,6 +23,11 @@ a department. A department's **Phone Numbers** tab lists what it owns. Releasing
 number removes it from Twilio and cannot be undone; deleting a department moves
 its numbers to the reserved pool.
 
+A number has one owner at a time. If another administrator assigns or releases
+a number while you are assigning or editing it, yours is refused and nothing
+changes: adding it to a user or a department says the number may be
+unavailable, and the phone number editor asks you to reload it and try again.
+
 ### When a number changes hands
 
 Text conversations stay with whoever held the number when they happened. Moving

@@ -737,18 +737,32 @@ export class DepartmentService {
       return false;
     }
 
-    await this.db.$transaction(async (tx) => {
+    const assigned = await this.db.$transaction(async (tx) => {
+      // Only while nobody holds it: another administrator can assign it after
+      // the check above. Unconditionally, this would take it from another
+      // department, or leave it held by a user as well, and a number held by
+      // both files this department's messages under that user alone.
+      const claimed = await tx.phoneNumber.updateMany({
+        where: {
+          id: phoneNumberId,
+          deletedAt: null,
+          userId: null,
+          departmentId: null,
+        },
+        data: { departmentId, isPrimary, status: 'ACTIVE', updatedBy: actorId },
+      });
+
+      if (claimed.count === 0) {
+        return false;
+      }
+
       if (isPrimary) {
         await tx.phoneNumber.updateMany({
-          where: { departmentId, isPrimary: true },
+          where: { departmentId, isPrimary: true, id: { not: phoneNumberId } },
           data: { isPrimary: false },
         });
       }
 
-      await tx.phoneNumber.update({
-        where: { id: phoneNumberId },
-        data: { departmentId, isPrimary, status: 'ACTIVE', updatedBy: actorId },
-      });
       await this.auditLog.create(
         {
           action: 'department.phone_number_assigned',
@@ -764,7 +778,12 @@ export class DepartmentService {
         },
         tx,
       );
+      return true;
     });
+
+    if (!assigned) {
+      return false;
+    }
 
     await this.routingCache.refreshPhoneNumbers([phoneNumber.phoneNumber]);
 

@@ -28,6 +28,95 @@ function fakeDb(tables: Record<string, unknown>): PrismaClient {
   return db as unknown as PrismaClient;
 }
 
+/**
+ * Two numbers: `phone-1`, the primary of `dept-1`, and `phone-2`, unassigned.
+ * Another administrator's assignment can be set to commit right after the
+ * service has read a number, between its check and its transaction, where a
+ * concurrent request lands; `updateMany` then applies its `where` to the rows
+ * as they stand, as the database does.
+ */
+function departmentNumbers() {
+  const rows: Array<Record<string, unknown>> = [
+    {
+      id: 'phone-1',
+      phoneNumber: MAIN_LINE,
+      deletedAt: null,
+      userId: null,
+      departmentId: 'dept-1',
+      isPrimary: true,
+      status: 'ACTIVE',
+    },
+    {
+      id: 'phone-2',
+      phoneNumber: SECOND_LINE,
+      deletedAt: null,
+      userId: null,
+      departmentId: null,
+      isPrimary: false,
+      status: 'RESERVED',
+    },
+  ];
+  const row = (id: string) => rows.find((candidate) => candidate.id === id);
+  let afterNextRead: (() => void) | null = null;
+
+  const matches = (candidate: Record<string, unknown>, where: object) =>
+    Object.entries(where).every(([field, condition]) =>
+      condition !== null && typeof condition === 'object' && 'not' in condition
+        ? candidate[field] !== condition.not
+        : candidate[field] === condition,
+    );
+
+  return {
+    row,
+    assignRightAfterItIsRead(
+      id: string,
+      owner: { userId: string } | { departmentId: string },
+    ) {
+      afterNextRead = () => {
+        const target = row(id);
+        if (target) {
+          Object.assign(target, owner, { status: 'ACTIVE' });
+        }
+      };
+    },
+    table: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const found = row(where.id);
+        const read = found ? { ...found } : null;
+        afterNextRead?.();
+        afterNextRead = null;
+        return read;
+      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: object;
+          data: Record<string, unknown>;
+        }) => {
+          const matching = rows.filter((candidate) =>
+            matches(candidate, where),
+          );
+          for (const candidate of matching) {
+            Object.assign(candidate, data);
+          }
+          return { count: matching.length };
+        },
+      ),
+      update: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { id: string };
+          data: Record<string, unknown>;
+        }) => Object.assign(row(where.id) ?? {}, data),
+      ),
+    },
+  };
+}
+
 function buildService(
   tables: Record<string, unknown>,
   mediaStore: InMemoryMediaStore = new InMemoryMediaStore(),
@@ -267,27 +356,24 @@ describe('DepartmentService', () => {
   });
 
   test('should demote the current primary when assigning a new primary number', async () => {
-    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const numbers = departmentNumbers();
     const { service, db, auditCreate, routingCache } = buildService({
       department: { findUnique: vi.fn(async () => ({ id: 'dept-1' })) },
-      phoneNumber: {
-        findUnique: vi.fn(async () => ({
-          id: 'phone-2',
-          phoneNumber: SECOND_LINE,
-          userId: null,
-          departmentId: null,
-        })),
-        updateMany,
-        update: vi.fn(async () => ({})),
-      },
+      phoneNumber: numbers.table,
     });
 
     expect(
       await service.assignPhoneNumber('dept-1', 'phone-2', true, 'admin-1'),
     ).toBe(true);
-    expect(updateMany).toHaveBeenCalledWith({
-      where: { departmentId: 'dept-1', isPrimary: true },
-      data: { isPrimary: false },
+    expect(numbers.row('phone-1')).toMatchObject({
+      departmentId: 'dept-1',
+      isPrimary: false,
+    });
+    expect(numbers.row('phone-2')).toMatchObject({
+      userId: null,
+      departmentId: 'dept-1',
+      isPrimary: true,
+      status: 'ACTIVE',
     });
     expect(routingCache.refreshPhoneNumbers).toHaveBeenCalledWith([
       SECOND_LINE,
@@ -297,6 +383,39 @@ describe('DepartmentService', () => {
       db,
     );
   });
+
+  test.each([
+    ['a user', { userId: 'user-1' }],
+    ['another department', { departmentId: 'dept-2' }],
+  ])(
+    'should refuse a number another administrator gave to %s while it was being assigned',
+    async (_, owner) => {
+      const numbers = departmentNumbers();
+      numbers.assignRightAfterItIsRead('phone-2', owner);
+      const { service, auditCreate, routingCache } = buildService({
+        department: { findUnique: vi.fn(async () => ({ id: 'dept-1' })) },
+        phoneNumber: numbers.table,
+      });
+
+      expect(
+        await service.assignPhoneNumber('dept-1', 'phone-2', true, 'admin-1'),
+      ).toBe(false);
+      // Held by the other assignment alone, never by both, and the
+      // department keeps the primary it had.
+      expect(numbers.row('phone-2')).toMatchObject({
+        userId: null,
+        departmentId: null,
+        isPrimary: false,
+        ...owner,
+      });
+      expect(numbers.row('phone-1')).toMatchObject({
+        departmentId: 'dept-1',
+        isPrimary: true,
+      });
+      expect(auditCreate).not.toHaveBeenCalled();
+      expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
+    },
+  );
 
   test('should refresh a number removed from the department', async () => {
     const { service, routingCache } = buildService({

@@ -224,7 +224,10 @@ export class PhoneNumberService {
     return toPhoneNumberResponse(configured);
   }
 
-  /** @throws AdminServiceError 400 on an invalid assignment target. */
+  /**
+   * @throws AdminServiceError 400 on an invalid assignment target, 409 when
+   * the number was assigned or released by somebody else during the edit.
+   */
   async update(
     id: string,
     data: UpdatePhoneNumber,
@@ -289,6 +292,30 @@ export class PhoneNumberService {
     }
 
     const updated = await this.db.$transaction(async (tx) => {
+      /*
+       * Everything above was worked out from the assignment read before this
+       * transaction. Another administrator can assign or release the number
+       * in between, and writing over that would take it from its new owner
+       * without a word. The row is claimed only while it still has the owner
+       * that was read, and the claim holds its lock until the writes below.
+       */
+      const claimed = await tx.phoneNumber.updateMany({
+        where: {
+          id,
+          deletedAt: null,
+          userId: existing.userId,
+          departmentId: existing.departmentId,
+        },
+        data: { updatedBy: actorId },
+      });
+
+      if (claimed.count === 0) {
+        throw new AdminServiceError(
+          'This number was assigned or released by somebody else in the meantime. Reload it and try again.',
+          409,
+        );
+      }
+
       // A department has one primary number; promoting this one demotes the rest.
       if (updateData.isPrimary === true && nextDepartmentId) {
         await tx.phoneNumber.updateMany({

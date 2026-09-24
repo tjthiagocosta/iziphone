@@ -79,6 +79,61 @@ function buildService(tables: Record<string, unknown>) {
   return { service, db, auditCreate, routingCache, accessLinks };
 }
 
+/**
+ * One unassigned number. Another administrator's assignment can be set to
+ * commit right after the service has read it, between its check and its
+ * transaction, where a concurrent request lands; `updateMany` then applies
+ * its `where` to the row as it stands, as the database does.
+ */
+function reservedNumber() {
+  const row: Record<string, unknown> = {
+    id: 'phone-1',
+    phoneNumber: DIRECT_LINE,
+    deletedAt: null,
+    userId: null,
+    departmentId: null,
+    status: 'RESERVED',
+  };
+  let afterNextRead: (() => void) | null = null;
+
+  return {
+    row,
+    assignRightAfterItIsRead(
+      owner: { userId: string } | { departmentId: string },
+    ) {
+      afterNextRead = () => Object.assign(row, owner, { status: 'ACTIVE' });
+    },
+    table: {
+      findUnique: vi.fn(async () => {
+        const read = { ...row };
+        afterNextRead?.();
+        afterNextRead = null;
+        return read;
+      }),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          const matches = Object.entries(where).every(
+            ([field, value]) => row[field] === value,
+          );
+          if (matches) {
+            Object.assign(row, data);
+          }
+          return { count: matches ? 1 : 0 };
+        },
+      ),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
+        Object.assign(row, data),
+      ),
+    },
+  };
+}
+
 function uniqueViolation(): Error {
   return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
     code: 'P2002',
@@ -88,17 +143,10 @@ function uniqueViolation(): Error {
 
 describe('UserService', () => {
   test('should refresh the direct line when a phone number is assigned', async () => {
+    const number = reservedNumber();
     const { service, db, auditCreate, routingCache } = buildService({
       user: { findUnique: vi.fn(async () => ({ id: 'user-1' })) },
-      phoneNumber: {
-        findUnique: vi.fn(async () => ({
-          id: 'phone-1',
-          phoneNumber: DIRECT_LINE,
-          userId: null,
-          departmentId: null,
-        })),
-        update: vi.fn(async () => ({})),
-      },
+      phoneNumber: number.table,
     });
 
     const assigned = await service.assignPhoneNumber(
@@ -108,6 +156,11 @@ describe('UserService', () => {
     );
 
     expect(assigned).toBe(true);
+    expect(number.row).toMatchObject({
+      userId: 'user-1',
+      departmentId: null,
+      status: 'ACTIVE',
+    });
     expect(routingCache.refreshPhoneNumbers).toHaveBeenCalledWith([
       DIRECT_LINE,
     ]);
@@ -116,6 +169,33 @@ describe('UserService', () => {
       db,
     );
   });
+
+  test.each([
+    ['a department', { departmentId: 'dept-1' }],
+    ['another user', { userId: 'user-2' }],
+  ])(
+    'should refuse a number another administrator gave to %s while it was being assigned',
+    async (_, owner) => {
+      const number = reservedNumber();
+      number.assignRightAfterItIsRead(owner);
+      const { service, auditCreate, routingCache } = buildService({
+        user: { findUnique: vi.fn(async () => ({ id: 'user-1' })) },
+        phoneNumber: number.table,
+      });
+
+      expect(
+        await service.assignPhoneNumber('user-1', 'phone-1', 'admin-1'),
+      ).toBe(false);
+      // Held by the other assignment alone, never by both.
+      expect(number.row).toMatchObject({
+        userId: null,
+        departmentId: null,
+        ...owner,
+      });
+      expect(auditCreate).not.toHaveBeenCalled();
+      expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
+    },
+  );
 
   test('should refuse a number that already belongs to someone', async () => {
     const { service, routingCache } = buildService({

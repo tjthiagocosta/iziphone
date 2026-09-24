@@ -507,11 +507,25 @@ export class UserService {
       return false;
     }
 
-    await this.db.$transaction(async (tx) => {
-      await tx.phoneNumber.update({
-        where: { id: phoneNumberId },
+    const assigned = await this.db.$transaction(async (tx) => {
+      // Only while nobody holds it: another administrator can assign it after
+      // the check above. Unconditionally, this would take it from another
+      // user, or leave it held by a department as well, and a number held by
+      // both files the department's messages under this user alone.
+      const claimed = await tx.phoneNumber.updateMany({
+        where: {
+          id: phoneNumberId,
+          deletedAt: null,
+          userId: null,
+          departmentId: null,
+        },
         data: { userId, status: 'ACTIVE', updatedBy: actorId },
       });
+
+      if (claimed.count === 0) {
+        return false;
+      }
+
       await this.auditLog.create(
         {
           action: 'user.phone_number_assigned',
@@ -523,7 +537,12 @@ export class UserService {
         },
         tx,
       );
+      return true;
     });
+
+    if (!assigned) {
+      return false;
+    }
 
     await this.routingCache.refreshPhoneNumbers([phoneNumber.phoneNumber]);
 

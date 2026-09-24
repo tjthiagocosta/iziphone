@@ -327,7 +327,7 @@ describe('PhoneNumberService.update', () => {
             isPrimary: true,
           }),
         ),
-        updateMany: vi.fn(async () => ({ count: 0 })),
+        updateMany: vi.fn(async () => ({ count: 1 })),
         update,
       },
     });
@@ -354,6 +354,7 @@ describe('PhoneNumberService.update', () => {
         findUnique: vi.fn(async () =>
           phoneRow({ userId: 'user-1', status: 'ACTIVE' }),
         ),
+        updateMany: vi.fn(async () => ({ count: 1 })),
         update,
       },
     });
@@ -377,6 +378,64 @@ describe('PhoneNumberService.update', () => {
       service.update('phone-1', { departmentId: 'dept-404' }, 'admin-1'),
     ).rejects.toEqual(new AdminServiceError('Department not found'));
   });
+
+  test.each([
+    {
+      meanwhile: 'assigned to a department',
+      read: phoneRow(),
+      current: phoneRow({ departmentId: 'dept-2', status: 'ACTIVE' }),
+      edit: { userId: 'user-1' },
+    },
+    {
+      meanwhile: 'given to another user',
+      read: phoneRow({ userId: 'user-2', status: 'ACTIVE' }),
+      current: phoneRow({ userId: 'user-3', status: 'ACTIVE' }),
+      edit: { label: 'Front desk' },
+    },
+    {
+      meanwhile: 'released',
+      read: phoneRow({ departmentId: 'dept-1', status: 'ACTIVE' }),
+      current: phoneRow(),
+      edit: { departmentId: 'dept-1', isPrimary: true },
+    },
+  ])(
+    'should refuse, and change nothing, when the number was $meanwhile during the edit',
+    async ({ read, current, edit }) => {
+      // Only a write that names the owner the number has by now matches it.
+      const updateMany = vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) => ({
+          count:
+            where.id === current.id &&
+            where.userId === current.userId &&
+            where.departmentId === current.departmentId
+              ? 1
+              : 0,
+        }),
+      );
+      const update = vi.fn(async () => current);
+      const { service, auditCreate, routingCache } = buildService({
+        user: { findUnique: vi.fn(async () => ({ id: 'user-1' })) },
+        department: { findUnique: vi.fn(async () => ({ id: 'dept-1' })) },
+        phoneNumber: {
+          findUnique: vi.fn(async () => read),
+          updateMany,
+          update,
+        },
+      });
+
+      await expect(
+        service.update('phone-1', edit, 'admin-1'),
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        message:
+          'This number was assigned or released by somebody else in the meantime. Reload it and try again.',
+      });
+      expect(updateMany).toHaveBeenCalledTimes(1);
+      expect(update).not.toHaveBeenCalled();
+      expect(auditCreate).not.toHaveBeenCalled();
+      expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('PhoneNumberService.release', () => {
