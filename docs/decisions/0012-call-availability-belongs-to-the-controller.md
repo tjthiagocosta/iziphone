@@ -200,9 +200,12 @@ Reconciling is not repeated per instance: a reconciliation first takes a
 Redis lock (`telephony:reconcile`, `SET NX PX`) and keeps it for nine rounds,
 one short of the time to the next, so that its holder finds it lapsed when
 that comes. An instance that finds it taken stays due and tries again every
-round until it lapses. An instance that stops gives the lock up, so the one
-that starts next reconciles at once. The cost is one Twilio request per leg of
-every live call every five minutes, however many instances run.
+round until it lapses. An instance that stops starts no further call's
+reconciliation, waits for the calls already under way, so that none is cut
+off between its state write and the events that tell the API, and then gives
+the lock up, so the one that starts next reconciles at once. The cost is one
+Twilio request per leg of every live call every five minutes, however many
+instances run.
 
 ### What occupies a user
 

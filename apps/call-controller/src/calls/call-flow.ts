@@ -663,17 +663,21 @@ export class CallFlow {
    * calls are asked about at a time, and a leg Twilio says nothing of within
    * `LEG_STATUS_TIMEOUT_MS` is left for the next reconciliation, so a Twilio
    * that is slow or unreachable makes this slow, never endless. One call
-   * that fails does not keep the others from being reconciled.
+   * that fails does not keep the others from being reconciled. Once `signal`
+   * is aborted no further call is started, and this resolves when the calls
+   * already under way are done, so that a controller that is stopping lets
+   * them finish instead of cutting one off between its write and its events.
    */
-  async reconcileWithTwilio(): Promise<void> {
+  async reconcileWithTwilio(signal?: AbortSignal): Promise<void> {
     const { telephony, log } = this.deps;
     const waiting = await telephony.liveCallIds();
+    const nextCall = () => (signal?.aborted ? undefined : waiting.shift());
 
     const reconcileWaitingCalls = async (): Promise<void> => {
       for (
-        let conversationUuid = waiting.shift();
+        let conversationUuid = nextCall();
         conversationUuid !== undefined;
-        conversationUuid = waiting.shift()
+        conversationUuid = nextCall()
       ) {
         try {
           await this.reconcileCall(conversationUuid);

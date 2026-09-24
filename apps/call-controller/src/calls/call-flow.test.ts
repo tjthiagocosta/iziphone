@@ -3091,6 +3091,46 @@ describe('CallFlow', () => {
         expect(mostAtOnce).toBe(RECONCILE_CONCURRENCY);
       });
 
+      test('reconciling takes no further call once told to stop, and finishes the ones under way', async () => {
+        // In voicemail on its caller's leg alone, as above; Twilio reports
+        // every leg over.
+        const { flow, telephony, events } = buildFlow({
+          routing: directLine,
+          online: [],
+        });
+        const calls = Array.from(
+          { length: 2 * RECONCILE_CONCURRENCY + 1 },
+          (_, index) => `CAcall${index + 1}`,
+        );
+        for (const callSid of calls) {
+          await flow.acceptInboundCall({
+            callSid,
+            from: caller,
+            to: businessNumber,
+          });
+        }
+        const stopping = new AbortController();
+        const asked: string[] = [];
+        vi.spyOn(telephony, 'fetchLegStatus').mockImplementation(
+          async (legUuid) => {
+            asked.push(legUuid);
+            // The controller is told to stop while Twilio is being asked.
+            stopping.abort();
+            await settle();
+            return { status: 'completed' };
+          },
+        );
+
+        await flow.reconcileWithTwilio(stopping.signal);
+
+        expect(asked).toHaveLength(RECONCILE_CONCURRENCY);
+        // Each call it had started was seen through to its end.
+        expect(events.callEnded).toHaveBeenCalledTimes(RECONCILE_CONCURRENCY);
+        for (const callSid of asked) {
+          await expect(telephony.getCallState(callSid)).resolves.toBeNull();
+        }
+      });
+
       test('a leg reconciled at the moment its own report arrives is published once', async () => {
         const { flow, twilio, events, beforeNextCallStateWrite } =
           await answeredCall();

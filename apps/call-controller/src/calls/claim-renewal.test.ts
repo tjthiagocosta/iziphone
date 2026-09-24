@@ -8,8 +8,21 @@ const INTERVAL = AVAILABILITY.CLAIM_RENEW_INTERVAL_MS;
 function buildFlow() {
   return {
     renewClaims: vi.fn(async () => undefined),
-    reconcileWithTwilio: vi.fn(async () => undefined),
+    reconcileWithTwilio: vi.fn(async (_signal?: AbortSignal) => undefined),
   };
+}
+
+/** A reconciliation that ends only once it is told to stop, and records how. */
+function stuckUntilStopped() {
+  const stops: string[] = [];
+  const reconcile = (signal?: AbortSignal) =>
+    new Promise<undefined>((resolve) => {
+      signal?.addEventListener('abort', () => {
+        stops.push('reconciliation stopped');
+        resolve(undefined);
+      });
+    });
+  return { reconcile, stops };
 }
 
 /**
@@ -19,6 +32,9 @@ function buildFlow() {
 function buildTelephony() {
   let lock: { holder: string; until: number } | undefined;
   return {
+    /** Who holds the reconcile lock now, if anybody. */
+    lockHolder: () =>
+      lock && lock.until > Date.now() ? lock.holder : undefined,
     restoreLiveCalls: vi.fn(async () => 0),
     takeReconcileLock: vi.fn(async (holder: string, ttlMs: number) => {
       if (lock && lock.until > Date.now()) {
@@ -102,7 +118,7 @@ describe('startClaimRenewal', () => {
 
   test('keeps renewing, well within a claim lifetime, while Twilio never answers', async () => {
     const flow = buildFlow();
-    flow.reconcileWithTwilio.mockReturnValue(new Promise(() => undefined));
+    flow.reconcileWithTwilio.mockImplementation(stuckUntilStopped().reconcile);
     const renewals: number[] = [];
     flow.renewClaims.mockImplementation(async () => {
       renewals.push(Date.now());
@@ -184,6 +200,89 @@ describe('startClaimRenewal', () => {
     expect(log.warn).toHaveBeenCalledOnce();
     expect(flow.reconcileWithTwilio).toHaveBeenCalledTimes(2);
     expect(flow.renewClaims).toHaveBeenCalledTimes(RECONCILE_EVERY_ROUNDS + 1);
+  });
+
+  describe('stopping', () => {
+    test('tells the reconciliation under way to stop, and gives the lock up after it', async () => {
+      const flow = buildFlow();
+      const telephony = buildTelephony();
+      const stuck = stuckUntilStopped();
+      flow.reconcileWithTwilio.mockImplementation(stuck.reconcile);
+      telephony.releaseReconcileLock.mockImplementation(async () => {
+        stuck.stops.push('lock given up');
+      });
+      const renewal = startClaimRenewal({
+        flow,
+        telephony,
+        log: createFakeLogger(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(flow.reconcileWithTwilio).toHaveBeenCalledOnce();
+
+      await renewal.stop();
+
+      expect(stuck.stops).toEqual(['reconciliation stopped', 'lock given up']);
+    });
+
+    test('does not return while a call the reconciliation started is still being handled', async () => {
+      const flow = buildFlow();
+      let finishCall: () => void = () => undefined;
+      flow.reconcileWithTwilio.mockImplementation(
+        () =>
+          new Promise<undefined>((resolve) => {
+            finishCall = () => resolve(undefined);
+          }),
+      );
+      const telephony = buildTelephony();
+      const renewal = startClaimRenewal({
+        flow,
+        telephony,
+        log: createFakeLogger(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      let stopped = false;
+      const stopping = renewal.stop().then(() => {
+        stopped = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stopped).toBe(false);
+      expect(telephony.lockHolder()).toBeDefined();
+
+      finishCall();
+      await stopping;
+      expect(telephony.lockHolder()).toBeUndefined();
+    });
+
+    test('a stop while the lock is being taken starts no call and still gives the lock up', async () => {
+      const flow = buildFlow();
+      const telephony = buildTelephony();
+      const take = telephony.takeReconcileLock.getMockImplementation();
+      if (!take) {
+        throw new Error('The fake telephony must take the lock');
+      }
+      let grant: () => void = () => undefined;
+      telephony.takeReconcileLock.mockImplementationOnce(
+        (holder, ttlMs) =>
+          new Promise<boolean>((resolve) => {
+            grant = () => resolve(take(holder, ttlMs));
+          }),
+      );
+      const renewal = startClaimRenewal({
+        flow,
+        telephony,
+        log: createFakeLogger(),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const stopping = renewal.stop();
+      grant();
+      await stopping;
+
+      expect(flow.reconcileWithTwilio).toHaveBeenCalledOnce();
+      expect(flow.reconcileWithTwilio.mock.calls[0]?.[0]?.aborted).toBe(true);
+      expect(telephony.lockHolder()).toBeUndefined();
+    });
   });
 
   describe('with several controller instances', () => {

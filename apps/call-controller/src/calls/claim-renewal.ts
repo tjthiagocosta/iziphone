@@ -31,8 +31,9 @@ export const RECONCILE_EVERY_ROUNDS = 10;
 
 export interface ClaimRenewal {
   /**
-   * Stop the rounds, and give the reconcile lock up if this instance holds
-   * it, so that whichever starts next reconciles at once.
+   * Stop the rounds, let a reconciliation under way finish the calls it
+   * already started, and then give the reconcile lock up if this instance
+   * holds it, so that whichever starts next reconciles at once.
    */
   stop(): Promise<void>;
 }
@@ -57,9 +58,10 @@ export function startClaimRenewal(deps: {
   let round = 0;
   let renewing = false;
   let reconciling = false;
+  let reconciliation: Promise<void> = Promise.resolve();
   let reconcileDue = false;
   let liveCallsRestored = false;
-  let stopped = false;
+  const stopping = new AbortController();
 
   // Calls whose state is missing from the live set would never be renewed
   // or reconciled: those already going when the set was introduced, and
@@ -93,7 +95,7 @@ export function startClaimRenewal(deps: {
         return;
       }
       reconcileDue = false;
-      await flow.reconcileWithTwilio();
+      await flow.reconcileWithTwilio(stopping.signal);
     } catch (error) {
       log.warn({ err: error }, 'Failed to reconcile calls with Twilio');
     } finally {
@@ -126,8 +128,8 @@ export function startClaimRenewal(deps: {
 
     // Started once the calls are renewed, and never waited for: a Twilio
     // that takes minutes to answer must not cost a single renewal.
-    if (reconcileDue && !reconciling && !stopped) {
-      void reconcile();
+    if (reconcileDue && !reconciling && !stopping.signal.aborted) {
+      reconciliation = reconcile();
     }
   };
 
@@ -142,8 +144,12 @@ export function startClaimRenewal(deps: {
 
   return {
     async stop() {
-      stopped = true;
+      // A call cut off between its state write and its events would leave
+      // the API believing it is still going, with nothing left to replay.
+      // The ones under way finish, a few seconds at most; no other starts.
+      stopping.abort();
       clearInterval(timer);
+      await reconciliation;
       try {
         await telephony.releaseReconcileLock(holder);
       } catch (error) {
