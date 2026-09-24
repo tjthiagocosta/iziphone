@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { lineDescription, lineName } from './line';
+import { lineDescription, lineName, threadLineName } from './line';
 
 describe('lineName', () => {
   test('prefers the label the number was given', () => {
@@ -39,5 +39,48 @@ describe('lineDescription', () => {
     expect(lineDescription({ phoneNumber: '+15555550188', label: null })).toBe(
       '(555) 555-0188',
     );
+  });
+});
+
+describe('threadLineName', () => {
+  const mainLine = { id: 'line-1', phoneNumber: '+15555550142', label: 'Main' };
+  const salesThread = {
+    sourcePhoneNumber: mainLine,
+    owner: { name: 'Sales' },
+  };
+  const supportThread = {
+    sourcePhoneNumber: mainLine,
+    owner: { name: 'Support' },
+  };
+
+  test('names a thread by its line when it is the only one on that line', () => {
+    const otherLine = {
+      sourcePhoneNumber: {
+        id: 'line-2',
+        phoneNumber: '+15555550199',
+        label: null,
+      },
+      owner: { name: 'Sales' },
+    };
+
+    expect(threadLineName(salesThread, [salesThread, otherLine])).toBe('Main');
+    expect(threadLineName(otherLine, [salesThread, otherLine])).toBe(
+      '(555) 555-0199',
+    );
+  });
+
+  test('adds the owner when the reader has two threads on one line', () => {
+    // The line changed hands and the reader can see both owners' threads;
+    // without the owner the two links would read the same.
+    const threads = [salesThread, supportThread];
+
+    expect(threadLineName(salesThread, threads)).toBe('Main · Sales');
+    expect(threadLineName(supportThread, threads)).toBe('Main · Support');
+  });
+
+  test('falls back to the line alone for a thread whose owner is gone', () => {
+    const orphan = { sourcePhoneNumber: mainLine, owner: null };
+
+    expect(threadLineName(orphan, [orphan, supportThread])).toBe('Main');
   });
 });

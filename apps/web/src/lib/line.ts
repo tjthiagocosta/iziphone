@@ -39,3 +39,27 @@ export function lineDescription(line: Line): string {
 
   return name === number ? number : `${name} · ${number}`;
 }
+
+/**
+ * What one of a contact's threads is called among that contact's threads: its
+ * line, unless the reader has more than one thread with the contact on that
+ * line. That happens when the line changed hands and the reader can see both
+ * owners' threads, and only the current owner's can be written in, so each
+ * then names its owner as well.
+ */
+export function threadLineName(
+  thread: {
+    sourcePhoneNumber: Line & { id: string };
+    owner: { name: string } | null;
+  },
+  threadsWithContact: ReadonlyArray<{ sourcePhoneNumber: { id: string } }>,
+): string {
+  const name = lineName(thread.sourcePhoneNumber);
+  const onSameLine = threadsWithContact.filter(
+    (other) => other.sourcePhoneNumber.id === thread.sourcePhoneNumber.id,
+  );
+
+  return onSameLine.length > 1 && thread.owner
+    ? `${name} · ${thread.owner.name}`
+    : name;
+}

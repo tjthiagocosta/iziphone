@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from '@repo/db';
 import type { MessageActivityNotifier } from './activity-notifier.js';
 import type { MessageConversationService } from './conversation.service.js';
+import { lineOwnerOf } from './conversation-scope.js';
 import type { MessagingLogger } from './logger.js';
 import type { MessagingMediaService } from './media.service.js';
 import type {
@@ -147,40 +148,43 @@ export class MessageWebhookService {
               ...(event.channel === 'MMS'
                 ? { mmsEnabled: true }
                 : { smsEnabled: true }),
-              // A thread belongs to the line's owner; a line nobody holds has
-              // nobody to file the message under, like a reserved one.
-              OR: [{ userId: { not: null } }, { departmentId: { not: null } }],
             },
             select: {
               id: true,
+              userId: true,
+              departmentId: true,
             },
           });
 
           if (!sourcePhoneNumber) {
-            await tx.messageProviderEvent.update({
-              where: { id: providerEvent.id },
-              data: {
-                processingState: 'QUARANTINED',
-                processingError: 'Unknown or inactive destination number',
-                processedAt: new Date(),
-              },
+            await this.quarantineInbound(tx, providerEvent.id, event, {
+              processingError: 'Unknown or inactive destination number',
+              logMessage:
+                'Quarantined inbound message for unknown destination number',
             });
-
-            this.log.warn(
-              {
-                providerMessageId: event.providerMessageId,
-                toLastFour: event.to.slice(-4),
-                channel: event.channel,
-              },
-              'Quarantined inbound message for unknown destination number',
-            );
 
             return { outcome: 'quarantined' } as const;
           }
 
+          // A thread belongs to the line's owner; a line nobody holds has
+          // nobody to file the message under. The number itself is known and
+          // active, which is what an operator looking into it will see.
+          if (!lineOwnerOf(sourcePhoneNumber)) {
+            await this.quarantineInbound(tx, providerEvent.id, event, {
+              processingError: 'Destination number has no owner',
+              logMessage:
+                'Quarantined inbound message for a destination number nobody holds',
+            });
+
+            return { outcome: 'quarantined' } as const;
+          }
+
+          // Filed with the owner read above. A handover that commits after
+          // that read is not seen, and the message stays with the owner it
+          // arrived under rather than being turned away and lost.
           const conversation = await this.conversationService.findOrCreateFor(
             event.from,
-            sourcePhoneNumber.id,
+            sourcePhoneNumber,
             tx,
           );
 
@@ -295,6 +299,36 @@ export class MessageWebhookService {
 
       throw error;
     }
+  }
+
+  /**
+   * Sets an inbound message aside unfiled. Nothing replays it, so the stored
+   * reason is the only trail it leaves and has to say what an operator will
+   * find when they look at the number.
+   */
+  private async quarantineInbound(
+    tx: Prisma.TransactionClient,
+    providerEventId: string,
+    event: MessagingTransportInboundEvent,
+    reason: { processingError: string; logMessage: string },
+  ): Promise<void> {
+    await tx.messageProviderEvent.update({
+      where: { id: providerEventId },
+      data: {
+        processingState: 'QUARANTINED',
+        processingError: reason.processingError,
+        processedAt: new Date(),
+      },
+    });
+
+    this.log.warn(
+      {
+        providerMessageId: event.providerMessageId,
+        toLastFour: event.to.slice(-4),
+        channel: event.channel,
+      },
+      reason.logMessage,
+    );
   }
 
   async processStatusEvent(payload: unknown): Promise<WebhookProcessResult> {

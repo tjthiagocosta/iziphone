@@ -5,7 +5,6 @@ import type {
   MessageConversationListResponse,
   MessageListQuery,
   MessageListResponse,
-  MessageOwner,
   MessageUnreadSummary,
 } from '@repo/dto';
 import { MessagingContactService } from './contact.service.js';
@@ -14,6 +13,7 @@ import {
   canAccessConversation,
   lineOwnerOf,
   loadDepartmentIds,
+  toMessageOwner,
 } from './conversation-scope.js';
 import { messageRecordInclude, toMessageDto } from './message-record.js';
 
@@ -33,10 +33,13 @@ export interface MessageConversationSendRecord {
     name: string | null;
     phoneNumber: string;
   };
+  /** The line with its owner as it stands now, read with the thread. */
   sourcePhoneNumber: {
     id: string;
     phoneNumber: string;
     label: string | null;
+    userId: string | null;
+    departmentId: string | null;
   };
 }
 
@@ -102,6 +105,8 @@ const sendRecordSelect = {
       id: true,
       phoneNumber: true,
       label: true,
+      userId: true,
+      departmentId: true,
     },
   },
 } satisfies Prisma.MessageConversationSelect;
@@ -261,56 +266,46 @@ export class MessageConversationService {
 
   /**
    * The thread a new message between this contact and this line belongs to:
-   * the one the line's current owner has with the contact, created if they
-   * have none. A thread under a previous owner of the line is never returned;
-   * it stays with that owner, and the line starts clean for the new one.
+   * the one the line's owner has with the contact, created if they have none.
+   * A thread under a previous owner of the line is never returned; it stays
+   * with that owner, and the line starts clean for the new one.
+   *
+   * `line` is the active line as the caller's transaction read it, and its
+   * owner is taken from that reading, not from a new one: an inbound message
+   * is filed with whoever held the line when it was looked up, and a send has
+   * already compared that owner with the one its sender may write as. A line
+   * nobody holds has no thread to file under, and is refused as a mistake.
    *
    * `contactPhoneNumber` must already be canonical: E.164 for a number, and a
    * short code or sender id as the provider sent it. Callers normalise at their
    * boundary.
-   *
-   * @throws Error when the line is gone, not active, or held by nobody.
    */
   async findOrCreateFor(
     contactPhoneNumber: string,
-    sourcePhoneNumberId: string,
+    line: { id: string; userId: string | null; departmentId: string | null },
     dbClient: MessageConversationDbClient = this.db,
   ): Promise<MessageConversationSendRecord> {
-    const [contact, sourcePhoneNumber] = await Promise.all([
-      this.contactService.findOrCreateByPhoneNumber(
-        contactPhoneNumber,
-        undefined,
-        dbClient,
-      ),
-      dbClient.phoneNumber.findUnique({
-        where: { id: sourcePhoneNumberId },
-        select: {
-          id: true,
-          deletedAt: true,
-          status: true,
-          userId: true,
-          departmentId: true,
-        },
-      }),
-    ]);
+    const owner = lineOwnerOf(line);
 
-    const owner = sourcePhoneNumber && lineOwnerOf(sourcePhoneNumber);
-
-    if (
-      !sourcePhoneNumber ||
-      sourcePhoneNumber.deletedAt ||
-      sourcePhoneNumber.status !== 'ACTIVE' ||
-      !owner
-    ) {
-      throw new Error('Source phone number not found');
+    if (!owner) {
+      throw new Error(`Line ${line.id} has no owner to file a thread under`);
     }
 
-    const pair = { contactId: contact.id, sourcePhoneNumberId };
+    const contact = await this.contactService.findOrCreateByPhoneNumber(
+      contactPhoneNumber,
+      undefined,
+      dbClient,
+    );
+    const pair = { contactId: contact.id, sourcePhoneNumberId: line.id };
 
     /*
-     * Upserted on the owner's own unique key so that two deliveries creating
-     * the same thread at once meet in the database. The existing row is left
-     * as it is: its owner is part of the key that found it.
+     * Upserted on the owner's own unique key, and the key is what keeps a
+     * contact to one thread per owner: two transactions creating the same
+     * thread at once can both miss it, and the second insert then fails with a
+     * unique-key error instead of making a second thread. The inbound webhook
+     * runs its transaction again when that happens; a send does not, and
+     * fails. The existing row is left as it is: its owner is part of the key
+     * that found it.
      */
     return dbClient.messageConversation.upsert({
       where:
@@ -471,7 +466,7 @@ function mapConversation(
     id: conversation.id,
     contact: conversation.contact,
     sourcePhoneNumber: conversation.sourcePhoneNumber,
-    owner: mapOwner(conversation),
+    owner: toMessageOwner(conversation),
     unreadCount: conversation.unreadCount,
     lastReadAt: conversation.lastReadAt?.toISOString() ?? null,
     lastMessageAt: conversation.lastMessageAt?.toISOString() ?? null,
@@ -487,24 +482,4 @@ function mapConversation(
     createdAt: conversation.createdAt.toISOString(),
     updatedAt: conversation.updatedAt.toISOString(),
   };
-}
-
-function mapOwner(conversation: ConversationRecord): MessageOwner | null {
-  if (conversation.user) {
-    return {
-      type: 'user',
-      id: conversation.user.id,
-      name: conversation.user.name || conversation.user.email,
-    };
-  }
-
-  if (conversation.department) {
-    return {
-      type: 'department',
-      id: conversation.department.id,
-      name: conversation.department.name,
-    };
-  }
-
-  return null;
 }

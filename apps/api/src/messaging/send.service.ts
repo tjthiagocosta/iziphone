@@ -7,7 +7,11 @@ import {
   type SendSms,
 } from '@repo/dto';
 import type { MessageConversationService } from './conversation.service.js';
-import { isLineOwnersThread } from './conversation-scope.js';
+import {
+  isLineOwnersThread,
+  isSameOwner,
+  lineOwnerOf,
+} from './conversation-scope.js';
 import type { MessagingLogger } from './logger.js';
 import {
   MessagingMediaError,
@@ -526,16 +530,11 @@ export class MessageSendService {
        * who can read both, a member of the old and the new department, would
        * otherwise write into a thread its new owner cannot see.
        *
-       * The owner is read again here rather than taken from `sender`, which
-       * was loaded before this transaction and before any media lookup: a
-       * reassignment in between would otherwise be missed.
+       * The owner is the one read with the thread, inside this transaction,
+       * rather than taken from `sender`, which was loaded before it and before
+       * any media lookup: a reassignment in between would otherwise be missed.
        */
-      const line = await tx.phoneNumber.findUnique({
-        where: { id: sender.id },
-        select: { userId: true, departmentId: true },
-      });
-
-      if (!line || !isLineOwnersThread(conversation, line)) {
+      if (!isLineOwnersThread(conversation, conversation.sourcePhoneNumber)) {
         return refusal(
           'line_reassigned',
           'This number has changed hands since this conversation; start a new conversation to message this contact from it',
@@ -566,7 +565,28 @@ export class MessageSendService {
       );
     }
 
-    return this.conversationService.findOrCreateFor(destination, sender.id, tx);
+    /*
+     * Filed under the owner the sender was allowed to write as, and only if
+     * the line is still an active line of theirs as this transaction reads it;
+     * `sender` was loaded before it. Otherwise the message would land in the
+     * thread of whoever took the line over, sent from a line its writer no
+     * longer holds.
+     */
+    const line = await tx.phoneNumber.findFirst({
+      where: { id: sender.id, deletedAt: null, status: 'ACTIVE' },
+      select: { id: true, userId: true, departmentId: true },
+    });
+    const holder = line && lineOwnerOf(line);
+    const writer = lineOwnerOf(sender);
+
+    if (!line || !holder || !writer || !isSameOwner(holder, writer)) {
+      return refusal(
+        'line_reassigned',
+        'This number changed hands while the message was being sent; nothing was sent',
+      );
+    }
+
+    return this.conversationService.findOrCreateFor(destination, line, tx);
   }
 
   private async createOutboundMessage(

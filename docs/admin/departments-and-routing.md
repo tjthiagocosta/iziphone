@@ -37,7 +37,7 @@ not move its conversations with it:
   no longer send from the number.
 - Somebody who can see both, such as a member of the old and the new
   department, sees two threads with the same contact on that number and can
-  reply only in the new owner's.
+  reply only in the new owner's. Their contacts list names each thread's owner.
 - Giving a number back to a previous owner carries on their own threads on it;
   what was written while somebody else had it stays with that somebody.
 - A number in the reserved pool receives no texts: a message sent to it while it

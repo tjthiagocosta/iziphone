@@ -27,7 +27,7 @@ describe('MessageSendService', () => {
 
     expect(harness.conversationService.findOrCreateFor).toHaveBeenCalledWith(
       CONTACT_NUMBER,
-      'phone-1',
+      { id: 'phone-1', userId: 'user-1', departmentId: null },
       expect.any(Object),
     );
     expect(harness.messageCreate).toHaveBeenCalledWith(
@@ -106,6 +106,8 @@ describe('MessageSendService', () => {
           id: 'phone-2',
           phoneNumber: '+15555550111',
           label: 'Billing',
+          userId: null,
+          departmentId: 'department-1',
         },
       }),
     );
@@ -119,7 +121,7 @@ describe('MessageSendService', () => {
 
     expect(harness.conversationService.findOrCreateFor).toHaveBeenCalledWith(
       '+15555550124',
-      'phone-2',
+      { id: 'phone-2', userId: null, departmentId: 'department-1' },
       expect.any(Object),
     );
     expect(result).toMatchObject({
@@ -226,6 +228,8 @@ describe('MessageSendService', () => {
           id: 'phone-2',
           phoneNumber: '+15555550150',
           label: 'Sales',
+          userId: 'user-1',
+          departmentId: null,
         },
       }),
     );
@@ -254,12 +258,16 @@ describe('MessageSendService', () => {
       userId: null,
       departmentId: 'dept-support',
     });
-    harness.phoneNumberFindUnique.mockResolvedValueOnce({
-      userId: null,
-      departmentId: 'dept-support',
-    });
     harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
-      buildConversation({ userId: null, departmentId: 'dept-sales' }),
+      buildConversation({
+        userId: null,
+        departmentId: 'dept-sales',
+        sourcePhoneNumber: {
+          ...buildConversation().sourcePhoneNumber,
+          userId: null,
+          departmentId: 'dept-support',
+        },
+      }),
     );
 
     const result = await harness.service.sendSms('user-1', {
@@ -279,11 +287,16 @@ describe('MessageSendService', () => {
 
   test('should judge the thread by who holds the line when the message is filed', async () => {
     // The sender was looked up while the line was still the user's own; it
-    // was reassigned before the send transaction ran.
-    harness.phoneNumberFindUnique.mockResolvedValueOnce({
-      userId: 'user-2',
-      departmentId: null,
-    });
+    // was reassigned before the send transaction read the thread and its line.
+    harness.conversationService.getAccessibleRecordForUser.mockResolvedValueOnce(
+      buildConversation({
+        sourcePhoneNumber: {
+          ...buildConversation().sourcePhoneNumber,
+          userId: 'user-2',
+          departmentId: null,
+        },
+      }),
+    );
 
     const result = await harness.service.sendSms('user-1', {
       fromPhoneNumberId: 'phone-1',
@@ -297,6 +310,69 @@ describe('MessageSendService', () => {
       reason: 'line_reassigned',
     });
     expect(harness.messageCreate).not.toHaveBeenCalled();
+  });
+
+  test('should judge a new message by who holds the line when it is filed', async () => {
+    // The same race on a new message: the sender was looked up as the line's
+    // owner, and by the time the send transaction reads the line it belongs
+    // to somebody else. Nothing may be filed under anybody.
+    harness.setLine({ id: 'phone-1', userId: 'user-2', departmentId: null });
+
+    const result = await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      to: CONTACT_NUMBER,
+      body: 'Hello there',
+      idempotencyKey: 'sms-new-reassigned-meanwhile',
+    });
+
+    expect(result).toMatchObject({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+    });
+    expect(harness.conversationService.findOrCreateFor).not.toHaveBeenCalled();
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+    expect(harness.transport.sendSms).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['given up', { id: 'phone-1', userId: null, departmentId: null }],
+    ['released or deleted', null],
+  ])(
+    'should refuse a new message on a line %s while it was being sent',
+    async (_, line) => {
+      harness.setLine(line);
+
+      const result = await harness.service.sendSms('user-1', {
+        fromPhoneNumberId: 'phone-1',
+        to: CONTACT_NUMBER,
+        body: 'Hello there',
+        idempotencyKey: 'sms-new-line-gone-meanwhile',
+      });
+
+      expect(result).toMatchObject({
+        outcome: 'refused',
+        reason: 'line_reassigned',
+      });
+      expect(
+        harness.conversationService.findOrCreateFor,
+      ).not.toHaveBeenCalled();
+      expect(harness.transport.sendSms).not.toHaveBeenCalled();
+    },
+  );
+
+  test('should read the line in the send transaction, as an active line', async () => {
+    await harness.service.sendSms('user-1', {
+      fromPhoneNumberId: 'phone-1',
+      to: CONTACT_NUMBER,
+      body: 'Hello there',
+      idempotencyKey: 'sms-line-read',
+    });
+
+    expect(harness.phoneNumberFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'phone-1', deletedAt: null, status: 'ACTIVE' },
+      }),
+    );
   });
 
   test('should refuse sends when the conversation is not accessible', async () => {
@@ -732,17 +808,19 @@ function createHarness() {
   });
   const messageConversationUpdate = vi.fn(async () => ({}));
   const messageSuppressionFindFirst = vi.fn(async () => null);
-  // Who holds the line as the send transaction reads it.
-  const phoneNumberFindUnique = vi.fn(
-    async (): Promise<{
-      userId: string | null;
-      departmentId: string | null;
-    } | null> => ({ userId: 'user-1', departmentId: null }),
+  // The lines as the send transaction reads them; by default each is held by
+  // the owner its sender was loaded with.
+  const lines = new Map<string, LineRow | null>([
+    ['phone-1', { id: 'phone-1', userId: 'user-1', departmentId: null }],
+    ['phone-2', { id: 'phone-2', userId: null, departmentId: 'department-1' }],
+  ]);
+  const phoneNumberFindFirst = vi.fn(
+    async ({ where }: { where: { id: string } }) => lines.get(where.id) ?? null,
   );
 
   const transaction = {
     phoneNumber: {
-      findUnique: phoneNumberFindUnique,
+      findFirst: phoneNumberFindFirst,
     },
     message: {
       findUnique: messageFindUnique,
@@ -786,13 +864,23 @@ function createHarness() {
     messageCreate,
     messageUpdate,
     messageSuppressionFindFirst,
-    phoneNumberFindUnique,
+    phoneNumberFindFirst,
+    /** Changes how the send transaction will find `phone-1`. */
+    setLine: (line: LineRow | null) => {
+      lines.set('phone-1', line);
+    },
     storedMessage: () => storedMessage,
     setStoredMessage: (message: ReturnType<typeof buildStoredMessage>) => {
       storedMessage = message;
     },
   };
 }
+
+type LineRow = {
+  id: string;
+  userId: string | null;
+  departmentId: string | null;
+};
 
 function buildSender(overrides: { mmsEnabled: boolean }) {
   return {
@@ -815,7 +903,13 @@ function buildConversation(
     userId: string | null;
     departmentId: string | null;
     contact: { id: string; name: string | null; phoneNumber: string };
-    sourcePhoneNumber: { id: string; phoneNumber: string; label: string };
+    sourcePhoneNumber: {
+      id: string;
+      phoneNumber: string;
+      label: string;
+      userId: string | null;
+      departmentId: string | null;
+    };
   }> = {},
 ) {
   return {
@@ -829,10 +923,13 @@ function buildConversation(
       name: null,
       phoneNumber: CONTACT_NUMBER,
     },
+    // Who holds the line, as the send transaction reads it with the thread.
     sourcePhoneNumber: {
       id: 'phone-1',
       phoneNumber: SENDER_NUMBER,
       label: 'Support',
+      userId: 'user-1' as string | null,
+      departmentId: null as string | null,
     },
     ...overrides,
   };

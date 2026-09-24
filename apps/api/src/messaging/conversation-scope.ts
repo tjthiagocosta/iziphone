@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from '@repo/db';
+import type { MessageOwner } from '@repo/dto';
 
 /**
  * Whom a line works for: a user or a department. Every read below is decided
@@ -9,9 +10,10 @@ export type LineOwner =
   | { kind: 'department'; departmentId: string };
 
 /**
- * The owner of a line as it stands now, or null for a line nobody holds. An
- * administrator cannot give a number to a user and a department at once; the
- * user is read first, as everywhere else an owner is shown.
+ * The owner of a line as it stands now, or null for a line nobody holds; given
+ * a conversation, the owner it copied from its line. An administrator cannot
+ * give a number to a user and a department at once; the user is read first,
+ * here and so everywhere an owner is compared or shown.
  */
 export function lineOwnerOf(line: {
   userId: string | null;
@@ -28,6 +30,18 @@ export function lineOwnerOf(line: {
   return null;
 }
 
+/** Whether two owners are the same user or the same department. */
+export function isSameOwner(left: LineOwner, right: LineOwner): boolean {
+  switch (left.kind) {
+    case 'user':
+      return right.kind === 'user' && right.userId === left.userId;
+    case 'department':
+      return (
+        right.kind === 'department' && right.departmentId === left.departmentId
+      );
+  }
+}
+
 /**
  * Whether a conversation is the current owner's thread on its line, and so the
  * one new messages on that line with that contact go to. A conversation keeps
@@ -38,15 +52,50 @@ export function isLineOwnersThread(
   conversation: { userId: string | null; departmentId: string | null },
   line: { userId: string | null; departmentId: string | null },
 ): boolean {
-  const owner = lineOwnerOf(line);
+  const lineOwner = lineOwnerOf(line);
+  const threadOwner = lineOwnerOf(conversation);
+
+  return (
+    lineOwner !== null &&
+    threadOwner !== null &&
+    isSameOwner(lineOwner, threadOwner)
+  );
+}
+
+/**
+ * An owner as the API shows it, from a row that carries the owner columns and
+ * both owner relations. Null when the row has no owner, or when the owner's
+ * own row is missing. Both relations are required so that a query which
+ * forgets to select one fails to compile rather than showing every thread as
+ * having nobody; a caller that knowingly has no relation passes `null`.
+ */
+export function toMessageOwner(row: {
+  userId: string | null;
+  departmentId: string | null;
+  user: { name: string | null; email: string } | null;
+  department: { name: string } | null;
+}): MessageOwner | null {
+  const owner = lineOwnerOf(row);
 
   switch (owner?.kind) {
     case 'user':
-      return conversation.userId === owner.userId;
+      return row.user
+        ? {
+            type: 'user',
+            id: owner.userId,
+            name: row.user.name || row.user.email,
+          }
+        : null;
     case 'department':
-      return conversation.departmentId === owner.departmentId;
+      return row.department
+        ? {
+            type: 'department',
+            id: owner.departmentId,
+            name: row.department.name,
+          }
+        : null;
     default:
-      return false;
+      return null;
   }
 }
 

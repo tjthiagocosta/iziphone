@@ -86,6 +86,10 @@ describe('MessagingContactService.listForUser', () => {
               phoneNumber: '+15555550188',
               label: 'Support',
             },
+            userId: null,
+            departmentId: 'dept-1',
+            user: null,
+            department: { name: 'Support' },
           },
           {
             id: 'conversation-2',
@@ -96,6 +100,10 @@ describe('MessagingContactService.listForUser', () => {
               phoneNumber: '+15555550199',
               label: null,
             },
+            userId: 'user-1',
+            departmentId: null,
+            user: { name: null, email: 'agent@example.com' },
+            department: null,
           },
         ],
       },
@@ -118,6 +126,7 @@ describe('MessagingContactService.listForUser', () => {
                 phoneNumber: '+15555550188',
                 label: 'Support',
               },
+              owner: { type: 'department', id: 'dept-1', name: 'Support' },
               lastMessageAt: '2026-09-08T12:00:00.000Z',
               unreadCount: 2,
             },
@@ -127,6 +136,11 @@ describe('MessagingContactService.listForUser', () => {
                 id: 'line-2',
                 phoneNumber: '+15555550199',
                 label: null,
+              },
+              owner: {
+                type: 'user',
+                id: 'user-1',
+                name: 'agent@example.com',
               },
               lastMessageAt: null,
               unreadCount: 0,
@@ -139,6 +153,59 @@ describe('MessagingContactService.listForUser', () => {
       limit: 50,
       totalPages: 1,
     });
+  });
+
+  test('should say whose each thread is, so two owners on one line can be told apart', async () => {
+    // The line moved from Sales to Support and the reader is in both: the
+    // contact has a thread with each department on the same line.
+    const line = { id: 'line-1', phoneNumber: '+15555550142', label: 'Main' };
+    contactFindMany.mockResolvedValueOnce([
+      {
+        id: 'contact-1',
+        name: null,
+        phoneNumber: '+15555550187',
+        messageConversations: [
+          {
+            id: 'conversation-support',
+            lastMessageAt: null,
+            unreadCount: 0,
+            sourcePhoneNumber: line,
+            userId: null,
+            departmentId: 'dept-support',
+            user: null,
+            department: { name: 'Support' },
+          },
+          {
+            id: 'conversation-sales',
+            lastMessageAt: null,
+            unreadCount: 1,
+            sourcePhoneNumber: line,
+            userId: null,
+            departmentId: 'dept-sales',
+            user: null,
+            department: { name: 'Sales' },
+          },
+        ],
+      },
+    ]);
+
+    const result = await service.listForUser('user-1', query);
+    const args = contactFindMany.mock.calls[0]?.[0] as {
+      include: { messageConversations: { select: Record<string, unknown> } };
+    };
+
+    expect(args.include.messageConversations.select).toMatchObject({
+      userId: true,
+      departmentId: true,
+      user: { select: { name: true, email: true } },
+      department: { select: { name: true } },
+    });
+    expect(
+      result.contacts[0]?.conversations.map((thread) => thread.owner),
+    ).toEqual([
+      { type: 'department', id: 'dept-support', name: 'Support' },
+      { type: 'department', id: 'dept-sales', name: 'Sales' },
+    ]);
   });
 
   test('should match a punctuated number against the stored digits', async () => {

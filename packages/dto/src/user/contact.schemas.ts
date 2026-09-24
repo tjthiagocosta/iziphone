@@ -4,7 +4,10 @@ import {
   PaginationQuerySchema,
 } from '../common/pagination.js';
 import { IsoDateTimeSchema } from '../common/primitives.js';
-import { MessageConversationSourcePhoneNumberSchema } from './messaging.schemas.js';
+import {
+  MessageConversationSourcePhoneNumberSchema,
+  MessageOwnerSchema,
+} from './messaging.schemas.js';
 
 export const CONTACT_LIST_MAX_LIMIT = 100;
 
@@ -16,12 +19,16 @@ export const ContactListQuerySchema = PaginationQuerySchema.extend({
 
 /**
  * One thread with this contact. A contact has one per line they were reached
- * on, and only the ones the caller may see are listed — which is also the
- * answer to "which of our numbers do I know them on?".
+ * on and owner of that line, and only the ones the caller may see are listed —
+ * which is also the answer to "which of our numbers do I know them on?". A
+ * line that changed hands can list twice, once per owner, for somebody who
+ * can read both owners' threads.
  */
 export const ContactConversationSchema = z.object({
   id: z.string(),
   sourcePhoneNumber: MessageConversationSourcePhoneNumberSchema,
+  /** Whose thread it is, as on the conversation itself. */
+  owner: MessageOwnerSchema.nullable(),
   lastMessageAt: IsoDateTimeSchema.nullable(),
   unreadCount: z.number().int().nonnegative(),
 });

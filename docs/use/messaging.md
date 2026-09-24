@@ -28,7 +28,10 @@ A department page shows the same inbox scoped to that department's line.
 When an administrator gives a number to somebody else, its conversations stay
 with whoever had it. You keep reading the threads from your time on the number
 but can no longer send from it; the new owner starts with none of them, and
-anything the contact sends afterwards goes to the new owner.
+anything the contact sends afterwards goes to the new owner. A message you are
+sending at the moment the number changes hands is not sent, and the error says
+so: "This number changed hands while the message was being sent; nothing was
+sent".
 
 ## When a message arrives
 
@@ -80,6 +83,11 @@ you can see it did not go out rather than assuming it did.
 **Contacts** lists everyone you have called or messaged, searchable by name or
 number, with a chip per conversation line and a call button. Contacts are created
 by calling or messaging somebody; there is no form to add one.
+
+If you can see two conversations with a contact on the same number, because the
+number changed hands and you can read both owners' threads, each chip also
+names its owner, for example "Main · Sales" and "Main · Support". Only the
+current owner's can be replied in.
 
 ## Related
 

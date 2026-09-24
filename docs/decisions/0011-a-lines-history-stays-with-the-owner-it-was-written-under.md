@@ -46,6 +46,15 @@ when it was written, and the line starts clean for its new owner.
   both the old and the new department) cannot reply in the old thread. The API
   refuses it with `line_reassigned`, and the composer says so before anything
   is typed. They write to the contact from the current owner's thread.
+- A new message is filed under the owner its sender was allowed to write as,
+  and only if that owner holds the line as the sending transaction reads it. A
+  line that changes hands, or is given up, before that read refuses the message
+  with `line_reassigned` rather than filing it in the new owner's thread from a
+  line its writer no longer holds. A change that commits in the moment between
+  that read and the insert is not seen: the message is sent and filed under its
+  writer, as the line was read. An inbound message is likewise filed with
+  whoever held the line as its transaction read it, and a handover in that
+  moment does not turn it away.
 - A line given back to a previous owner picks up that owner's own thread again;
   nothing anybody else wrote in between joins it.
 - A line nobody holds files nothing. An inbound message to it is quarantined,
@@ -57,7 +66,9 @@ In the schema the old unique key on (contact, line) becomes two:
 user or by a department, never both, so every thread has exactly one of the two
 owner columns set. Postgres leaves a NULL out of a unique index, so each row is
 held to the key of the owner it has, and the other key ignores it. Find-or-create
-reads the line's owner and upserts on that owner's key.
+is given the line as the caller's transaction read it and upserts on that
+line's owner's key. It does not read the line again, so a message is filed
+under the owner its caller checked and never under one it did not.
 
 Nothing that reassigns a number changes. The users, departments and phone
 numbers modules keep writing the line's owner and nothing else; messaging reads
@@ -76,8 +87,9 @@ it when a message arrives or is sent.
 - The same contact on the same line can appear twice for somebody who can see
   two owners' threads (a member of both departments, or somebody who owned the
   line personally and is in the department it moved to). An open thread names
-  its owner in the header; in the inbox and the contacts list the two look
-  alike. Only the current owner's can be written in.
+  its owner in the header, and the contacts list adds the owner to the line's
+  name when a contact has two threads on it; in the inbox the two look alike.
+  Only the current owner's can be written in.
 - The realtime notification follows the thread's owner, as before: a message on
   a reassigned line wakes the new owner's browsers and not the previous
   owner's.
@@ -99,7 +111,9 @@ it when a message arrives or is sent.
 - Two deliveries creating the same thread at once still collide on a unique key.
   The inbound webhook already runs a transaction that lost such a race once
   more, and the collision on either new key is classified as a lost race, not
-  as a duplicate delivery.
+  as a duplicate delivery. A send does not run again: of two first messages to
+  the same contact sent at the same moment, the second fails, as it did under
+  the old key.
 
 ## Alternatives considered
 
@@ -122,6 +136,9 @@ it when a message arrives or is sent.
 - **`NULLS NOT DISTINCT`, or partial unique indexes.** A single unique index over
   (contact, line, user, department) that treats NULLs as equal would do it in
   one index. The Prisma schema cannot express it, and `db push` would drop it
-  if it were created by hand. Partial indexes are only available in Prisma as a
-  preview feature. The two plain indexes give the same guarantee here because a
-  thread always has exactly one owner column set.
+  if it were created by hand. A partial unique index (a `where` on `@@unique`)
+  is accepted by the schema only behind the `partialIndexes` preview feature
+  (checked on Prisma 7.10), and a preview feature can change between releases,
+  which a constraint the data depends on should not. The two plain indexes give
+  the same guarantee here because a thread always has exactly one owner column
+  set.

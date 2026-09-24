@@ -22,6 +22,7 @@ describe('ContactSchema', () => {
               phoneNumber: '+15555550100',
               label: 'Support',
             },
+            owner: { type: 'department', id: 'dept-1', name: 'Support' },
             lastMessageAt: '2026-09-20T12:00:00.000Z',
             unreadCount: 1,
           },
@@ -31,4 +32,33 @@ describe('ContactSchema', () => {
       expect(result.success).toBe(true);
     },
   );
+
+  test('says whose each thread is, and allows a thread with no owner left', () => {
+    const thread = {
+      id: 'conv-1',
+      sourcePhoneNumber: {
+        id: 'phone-1',
+        phoneNumber: '+15555550100',
+        label: 'Support',
+      },
+      lastMessageAt: null,
+      unreadCount: 0,
+    };
+    const contact = {
+      id: 'contact-1',
+      name: null,
+      phoneNumber: '+15555550123',
+    };
+
+    expect(
+      ContactSchema.safeParse({
+        ...contact,
+        conversations: [{ ...thread, owner: null }],
+      }).success,
+    ).toBe(true);
+    // The field itself is required: `null` is how a thread says it has none.
+    expect(
+      ContactSchema.safeParse({ ...contact, conversations: [thread] }).success,
+    ).toBe(false);
+  });
 });

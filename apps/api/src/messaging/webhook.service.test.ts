@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@repo/db';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import type { MessageConversationSendRecord } from './conversation.service.js';
 import { MessageWebhookService } from './webhook.service.js';
 
 const CONTACT_NUMBER = '+15555550123';
@@ -67,6 +68,21 @@ describe('MessageWebhookService', () => {
     expect(harness.messageSuppressionUpdateMany).not.toHaveBeenCalled();
   });
 
+  test('should file an inbound message with the line as it found it', async () => {
+    // The owner is the one this transaction read; the thread is found from
+    // that reading and not from a second one that could disagree with it.
+    const line = { id: 'phone-1', userId: null, departmentId: 'dept-1' };
+    harness.phoneNumberFindFirst.mockResolvedValueOnce(line);
+
+    await harness.service.processInboundEvent({ MessageSid: 'SMignored' });
+
+    expect(harness.conversationService.findOrCreateFor).toHaveBeenCalledWith(
+      CONTACT_NUMBER,
+      line,
+      expect.any(Object),
+    );
+  });
+
   test('should quarantine inbound messages for unknown destination numbers', async () => {
     harness.phoneNumberFindFirst.mockResolvedValueOnce(null);
 
@@ -80,8 +96,39 @@ describe('MessageWebhookService', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           processingState: 'QUARANTINED',
+          processingError: 'Unknown or inactive destination number',
         }),
       }),
+    );
+  });
+
+  test('should say why when it quarantines a message to an active number nobody holds', async () => {
+    // The number is known and active in the admin console, so the stored
+    // reason, the only trail such a message leaves, must not call it unknown.
+    harness.phoneNumberFindFirst.mockResolvedValueOnce({
+      id: 'phone-1',
+      userId: null,
+      departmentId: null,
+    });
+
+    const result = await harness.service.processInboundEvent({
+      MessageSid: 'SMignored',
+    });
+
+    expect(result).toEqual({ outcome: 'quarantined' });
+    expect(harness.conversationService.findOrCreateFor).not.toHaveBeenCalled();
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+    expect(harness.messageProviderEventUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          processingState: 'QUARANTINED',
+          processingError: 'Destination number has no owner',
+        }),
+      }),
+    );
+    expect(harness.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ toLastFour: '0100' }),
+      'Quarantined inbound message for a destination number nobody holds',
     );
   });
 
@@ -529,23 +576,27 @@ function createHarness() {
     normalizeStatusEvent: vi.fn(() => buildStatusEvent()),
   };
   const conversationService = {
-    findOrCreateFor: vi.fn(async () => ({
-      id: 'conversation-1',
-      contactId: 'contact-1',
-      sourcePhoneNumberId: 'phone-1',
-      userId: 'user-1',
-      departmentId: null,
-      contact: {
-        id: 'contact-1',
-        name: null,
-        phoneNumber: CONTACT_NUMBER,
-      },
-      sourcePhoneNumber: {
-        id: 'phone-1',
-        phoneNumber: SENDER_NUMBER,
-        label: 'Support',
-      },
-    })),
+    findOrCreateFor: vi.fn(
+      async (): Promise<MessageConversationSendRecord> => ({
+        id: 'conversation-1',
+        contactId: 'contact-1',
+        sourcePhoneNumberId: 'phone-1',
+        userId: 'user-1',
+        departmentId: null,
+        contact: {
+          id: 'contact-1',
+          name: null,
+          phoneNumber: CONTACT_NUMBER,
+        },
+        sourcePhoneNumber: {
+          id: 'phone-1',
+          phoneNumber: SENDER_NUMBER,
+          label: 'Support',
+          userId: 'user-1',
+          departmentId: null,
+        },
+      }),
+    ),
   };
   const mediaService = {
     ingestInboundMedia: vi.fn(async () => {}),
@@ -569,7 +620,13 @@ function createHarness() {
     },
   );
   const messageProviderEventUpdate = vi.fn(async () => ({}));
-  const phoneNumberFindFirst = vi.fn(async () => ({ id: 'phone-1' }));
+  const phoneNumberFindFirst = vi.fn(
+    async (): Promise<{
+      id: string;
+      userId: string | null;
+      departmentId: string | null;
+    } | null> => ({ id: 'phone-1', userId: 'user-1', departmentId: null }),
+  );
   const messageCreate = vi.fn(async () => ({
     id: 'message-1',
     conversationId: 'conversation-1',

@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@repo/db';
 import type { MessageSender } from '@repo/dto';
+import { toMessageOwner } from './conversation-scope.js';
 
 /** A phone number the user may send from, with the channels it supports. */
 export interface AllowedSender {
@@ -20,9 +21,25 @@ type SenderRecord = {
   isPrimary: boolean;
   smsEnabled: boolean;
   mmsEnabled: boolean;
-  user?: { id: string; name: string | null; email: string } | null;
-  department?: { id: string; name: string } | null;
+  userId: string | null;
+  departmentId: string | null;
+  user: { id: string; name: string | null; email: string } | null;
+  department: { id: string; name: string } | null;
 };
+
+/** A line as a sender, with both owner columns and both owner relations. */
+const senderSelect = {
+  id: true,
+  phoneNumber: true,
+  label: true,
+  isPrimary: true,
+  smsEnabled: true,
+  mmsEnabled: true,
+  userId: true,
+  departmentId: true,
+  user: { select: { id: true, name: true, email: true } },
+  department: { select: { id: true, name: true } },
+} as const;
 
 export class MessageSenderService {
   constructor(private readonly db: PrismaClient) {}
@@ -36,21 +53,7 @@ export class MessageSenderService {
           status: 'ACTIVE',
           OR: [{ smsEnabled: true }, { mmsEnabled: true }],
         },
-        select: {
-          id: true,
-          phoneNumber: true,
-          label: true,
-          isPrimary: true,
-          smsEnabled: true,
-          mmsEnabled: true,
-          user: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
+        select: senderSelect,
       }),
       this.db.phoneNumber.findMany({
         where: {
@@ -66,20 +69,7 @@ export class MessageSenderService {
             },
           },
         },
-        select: {
-          id: true,
-          phoneNumber: true,
-          label: true,
-          isPrimary: true,
-          smsEnabled: true,
-          mmsEnabled: true,
-          department: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
+        select: senderSelect,
       }),
     ]);
 
@@ -173,34 +163,22 @@ export class MessageSenderService {
   }
 
   private mapSender(sender: SenderRecord): MessageSender {
-    if (sender.user) {
-      return {
-        id: sender.id,
-        phoneNumber: sender.phoneNumber,
-        label: sender.label,
-        ownerType: 'user',
-        ownerId: sender.user.id,
-        ownerName: sender.user.name || sender.user.email,
-        isPrimary: sender.isPrimary,
-        smsEnabled: sender.smsEnabled,
-        mmsEnabled: sender.mmsEnabled,
-      };
+    const owner = toMessageOwner(sender);
+
+    if (!owner) {
+      throw new Error(`Sender ${sender.id} is missing an owner`);
     }
 
-    if (sender.department) {
-      return {
-        id: sender.id,
-        phoneNumber: sender.phoneNumber,
-        label: sender.label,
-        ownerType: 'department',
-        ownerId: sender.department.id,
-        ownerName: sender.department.name,
-        isPrimary: sender.isPrimary,
-        smsEnabled: sender.smsEnabled,
-        mmsEnabled: sender.mmsEnabled,
-      };
-    }
-
-    throw new Error(`Sender ${sender.id} is missing an owner`);
+    return {
+      id: sender.id,
+      phoneNumber: sender.phoneNumber,
+      label: sender.label,
+      ownerType: owner.type,
+      ownerId: owner.id,
+      ownerName: owner.name,
+      isPrimary: sender.isPrimary,
+      smsEnabled: sender.smsEnabled,
+      mmsEnabled: sender.mmsEnabled,
+    };
   }
 }

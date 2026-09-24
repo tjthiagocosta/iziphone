@@ -16,7 +16,11 @@ import { MessageWebhookService } from './webhook.service.js';
  * the handful of tables they touch. The stand-in keeps the two unique keys a
  * conversation has in the database (contact, line and user; contact, line and
  * department), NULLs included, so a thread that would be filed twice fails
- * here as it would there.
+ * here as it would there. Its find-or-create lets other work run between the
+ * find and the create, so two that race for the same new thread both miss it
+ * and the second create fails on the key, as a read then an insert would. An
+ * administrator's change can also be slipped in right after a line is read,
+ * where another transaction's commit would land.
  */
 
 const LINE_ID = 'line-1';
@@ -206,6 +210,113 @@ describe('a line that changes hands', () => {
     const [blairThread] = await world.inbox(BLAIR);
     expect(await world.thread(BLAIR, blairThread?.id)).toEqual(['Second']);
   });
+
+  test('while a new message is being sent files it nowhere', async () => {
+    const world = createWorld({ userId: ALEX });
+    await world.receive('Hi Alex');
+    const [alexThread] = await world.inbox(ALEX);
+
+    world.assignLineMidSend({ userId: BLAIR });
+    const started = await world.startMessage(ALEX, 'Following up');
+
+    // Alex was allowed to send when they pressed send, and no longer holds
+    // the line when the message would be filed: neither Alex's thread nor a
+    // new one of Blair's gets it, and nothing goes to the customer.
+    expect(started).toMatchObject({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+    });
+    expect(world.sent).toHaveLength(0);
+    expect(await world.inbox(BLAIR)).toEqual([]);
+    expect(await world.thread(ALEX, alexThread?.id)).toEqual(['Hi Alex']);
+    expect(world.conversationCount()).toBe(1);
+  });
+
+  test('to nobody while a new message is being sent refuses it rather than failing', async () => {
+    const world = createWorld({ departmentId: SALES });
+
+    world.assignLineMidSend(null, 'RESERVED');
+    const started = await world.startMessage(DANA, 'Hello');
+
+    expect(started).toMatchObject({
+      outcome: 'refused',
+      reason: 'line_reassigned',
+    });
+    expect(world.sent).toHaveLength(0);
+    expect(world.conversationCount()).toBe(0);
+  });
+
+  test('while a text is being filed keeps it with the owner it arrived under', async () => {
+    const world = createWorld({ userId: ALEX });
+    await world.receive('Hi Alex');
+    const [alexThread] = await world.inbox(ALEX);
+
+    world.assignLineMidReceive({ userId: BLAIR });
+    const received = await world.receive('One more thing');
+
+    // The handover commits after the webhook has read the line as Alex's. The
+    // text is filed with Alex, as that read said, rather than turned back to
+    // the provider, which would not deliver it again.
+    expect(received).toEqual({ outcome: 'processed' });
+    expect(await world.thread(ALEX, alexThread?.id)).toEqual([
+      'One more thing',
+      'Hi Alex',
+    ]);
+    expect(await world.inbox(BLAIR)).toEqual([]);
+
+    // The next text reads the line after the handover, and is Blair's.
+    await world.receive('Hello?');
+    const [blairThread] = await world.inbox(BLAIR);
+    expect(await world.thread(BLAIR, blairThread?.id)).toEqual(['Hello?']);
+    expect(world.conversationCount()).toBe(2);
+  });
+
+  test('after a send has read the line files the message with its writer', async () => {
+    const world = createWorld({ userId: ALEX });
+    await world.receive('Hi Alex');
+    const [alexThread] = await world.inbox(ALEX);
+
+    world.assignLineAfterSendReadsIt({ userId: BLAIR });
+    const started = await world.startMessage(ALEX, 'Following up');
+
+    // The line was Alex's as the send read it, so the message is Alex's: sent,
+    // and filed in Alex's thread, never in one of Blair's.
+    expect(started).toMatchObject({
+      outcome: 'sent',
+      conversationId: alexThread?.id,
+    });
+    expect(world.sent).toEqual(['Following up']);
+    expect(await world.thread(ALEX, alexThread?.id)).toEqual([
+      'Following up',
+      'Hi Alex',
+    ]);
+    expect(await world.inbox(BLAIR)).toEqual([]);
+  });
+
+  test('keeps two texts that arrive together for the new owner in one thread', async () => {
+    const world = createWorld({ userId: ALEX });
+    await world.receive('Hi Alex');
+
+    // The first texts after the handover both find no thread for Blair; one
+    // creates it, the other loses on the key and is filed again beside it.
+    world.assignLine({ userId: BLAIR });
+    const results = await Promise.all([
+      world.receive('Is anyone there?'),
+      world.receive('Hello?'),
+    ]);
+
+    expect(results).toEqual([
+      { outcome: 'processed' },
+      { outcome: 'processed' },
+    ]);
+    const blairInbox = await world.inbox(BLAIR);
+    expect(blairInbox).toHaveLength(1);
+    expect((await world.thread(BLAIR, blairInbox[0]?.id))?.sort()).toEqual([
+      'Hello?',
+      'Is anyone there?',
+    ]);
+    expect(world.conversationCount()).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -254,20 +365,24 @@ function createWorld(initialOwner: Owner) {
     log,
   });
 
+  const sent: string[] = [];
   const send = new MessageSendService({
     db: client,
     transport: {
-      sendSms: async (input) => ({
-        outcome: 'accepted',
-        provider: 'TWILIO',
-        channel: 'SMS',
-        providerMessageId: `SM${++providerSequence}`,
-        clientReference: input.clientReference,
-        requestId: null,
-        request: {},
-        response: {},
-        responseHeaders: {},
-      }),
+      sendSms: async (input) => {
+        sent.push(input.text);
+        return {
+          outcome: 'accepted',
+          provider: 'TWILIO',
+          channel: 'SMS',
+          providerMessageId: `SM${++providerSequence}`,
+          clientReference: input.clientReference,
+          requestId: null,
+          request: {},
+          response: {},
+          responseHeaders: {},
+        };
+      },
       sendMms: () => {
         throw new Error('not used');
       },
@@ -286,13 +401,39 @@ function createWorld(initialOwner: Owner) {
 
   return {
     published,
+    sent,
     audiences: () =>
       published.map((message) =>
         [...(JSON.parse(message) as { userIds: string[] }).userIds].sort(),
       ),
     conversationCount: () => db.conversationCount(),
+    messageCount: () => db.messageCount(),
     assignLine: (owner: Owner, status: 'ACTIVE' | 'RESERVED' = 'ACTIVE') =>
       db.setLineOwner(LINE_ID, owner, status),
+    /**
+     * Reassigns the line once the next send has checked its sender, just
+     * before its transaction starts: the widest gap an administrator's change
+     * can fall into.
+     */
+    assignLineMidSend: (
+      owner: Owner,
+      status: 'ACTIVE' | 'RESERVED' = 'ACTIVE',
+    ) =>
+      db.beforeNextTransaction(() => db.setLineOwner(LINE_ID, owner, status)),
+    /**
+     * Reassigns the line right after the next inbound text has looked it up,
+     * before the text is filed.
+     */
+    assignLineMidReceive: (owner: Owner) =>
+      db.afterNextLineRead(() => db.setLineOwner(LINE_ID, owner, 'ACTIVE')),
+    /**
+     * Reassigns the line right after the next send's transaction has read it,
+     * before the message is filed.
+     */
+    assignLineAfterSendReadsIt: (owner: Owner) =>
+      db.beforeNextTransaction(() =>
+        db.afterNextLineRead(() => db.setLineOwner(LINE_ID, owner, 'ACTIVE')),
+      ),
     receive: (body: string) =>
       webhook.processInboundEvent({
         provider: 'TWILIO',
@@ -518,6 +659,8 @@ function createDatabase() {
         id: line.id,
         phoneNumber: line.phoneNumber,
         label: line.label,
+        userId: line.userId,
+        departmentId: line.departmentId,
       },
       user,
       department: department && {
@@ -556,21 +699,42 @@ function createDatabase() {
     row.updatedAt = now();
   }
 
+  let beforeNextTransaction: (() => void) | null = null;
+  let afterNextLineRead: (() => void) | null = null;
+
+  /** A copy of a line as read, then whatever was set to happen after it. */
+  function readLine(row: Row | null | undefined) {
+    const copy = row ? { ...row } : null;
+    const interleaved = afterNextLineRead;
+    afterNextLineRead = null;
+    interleaved?.();
+    return copy;
+  }
+
   const client = {
-    $transaction: async (work: (tx: unknown) => Promise<unknown>) =>
-      work(client),
+    $transaction: async (work: (tx: unknown) => Promise<unknown>) => {
+      const interleaved = beforeNextTransaction;
+      beforeNextTransaction = null;
+      interleaved?.();
+      return work(client);
+    },
     userDepartment: {
       findMany: async ({ where }: { where: Where }) =>
         tables.userDepartment.filter((row) =>
           matches('userDepartment', row, where),
         ),
     },
+    // Copies, as a query returns: a sender loaded before the line changes
+    // hands must not change with it.
     phoneNumber: {
       findUnique: async ({ where }: { where: { id: string } }) =>
-        byId('phoneNumber', where.id),
+        readLine(byId('phoneNumber', where.id)),
       findFirst: async ({ where }: { where: Where }) =>
-        tables.phoneNumber.find((row) => matches('phoneNumber', row, where)) ??
-        null,
+        readLine(
+          tables.phoneNumber.find((line) =>
+            matches('phoneNumber', line, where),
+          ),
+        ),
     },
     contact: {
       findUnique: async ({ where }: { where: { phoneNumber: string } }) =>
@@ -617,6 +781,9 @@ function createDatabase() {
         if (existing) {
           return conversationView(existing);
         }
+        // Whatever else is running gets its turn between the miss and the
+        // insert, as another transaction would.
+        await new Promise((resolve) => setTimeout(resolve, 0));
         const row: Row = {
           id: nextId('conversation'),
           unreadCount: 0,
@@ -713,6 +880,15 @@ function createDatabase() {
   return {
     client,
     conversationCount: () => tables.messageConversation.length,
+    messageCount: () => tables.message.length,
+    /** Runs `action` just before the next transaction begins. */
+    beforeNextTransaction(action: () => void) {
+      beforeNextTransaction = action;
+    },
+    /** Runs `action` right after the next read of a line has returned. */
+    afterNextLineRead(action: () => void) {
+      afterNextLineRead = action;
+    },
     addUser(id: string, departmentIds: string[] = []) {
       tables.user.push({
         id,

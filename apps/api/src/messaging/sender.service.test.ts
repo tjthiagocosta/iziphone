@@ -31,11 +31,14 @@ describe('MessageSenderService', () => {
           isPrimary: true,
           smsEnabled: true,
           mmsEnabled: false,
+          userId: 'user-1',
+          departmentId: null,
           user: {
             id: 'user-1',
             name: 'Agent One',
             email: 'agent@example.com',
           },
+          department: null,
         },
       ])
       .mockResolvedValueOnce([
@@ -46,6 +49,9 @@ describe('MessageSenderService', () => {
           isPrimary: false,
           smsEnabled: true,
           mmsEnabled: true,
+          userId: null,
+          departmentId: 'dept-1',
+          user: null,
           department: {
             id: 'dept-1',
             name: 'Support',
@@ -69,13 +75,10 @@ describe('MessageSenderService', () => {
         isPrimary: true,
         smsEnabled: true,
         mmsEnabled: true,
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-          },
-        },
+        userId: true,
+        departmentId: true,
+        user: { select: { id: true, name: true, email: true } },
+        department: { select: { id: true, name: true } },
       },
     });
     expect(findMany).toHaveBeenNthCalledWith(2, {
@@ -99,12 +102,10 @@ describe('MessageSenderService', () => {
         isPrimary: true,
         smsEnabled: true,
         mmsEnabled: true,
-        department: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
+        userId: true,
+        departmentId: true,
+        user: { select: { id: true, name: true, email: true } },
+        department: { select: { id: true, name: true } },
       },
     });
     expect(result).toEqual([

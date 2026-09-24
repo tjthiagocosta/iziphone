@@ -4,9 +4,11 @@ import {
   buildConversationScope,
   canAccessConversation,
   isLineOwnersThread,
+  isSameOwner,
   lineOwnerOf,
   loadConversationAudience,
   loadDepartmentIds,
+  toMessageOwner,
 } from './conversation-scope.js';
 
 describe('lineOwnerOf', () => {
@@ -23,6 +25,98 @@ describe('lineOwnerOf', () => {
 
   test('has no owner for a line nobody holds', () => {
     expect(lineOwnerOf({ userId: null, departmentId: null })).toBeNull();
+  });
+});
+
+describe('isSameOwner', () => {
+  const alex = { kind: 'user', userId: 'user-alex' } as const;
+  const sales = { kind: 'department', departmentId: 'dept-sales' } as const;
+
+  test('matches the same user and the same department', () => {
+    expect(isSameOwner(alex, { kind: 'user', userId: 'user-alex' })).toBe(true);
+    expect(
+      isSameOwner(sales, { kind: 'department', departmentId: 'dept-sales' }),
+    ).toBe(true);
+  });
+
+  test('tells different owners apart, a user from a department included', () => {
+    expect(isSameOwner(alex, { kind: 'user', userId: 'user-blair' })).toBe(
+      false,
+    );
+    expect(
+      isSameOwner(sales, { kind: 'department', departmentId: 'dept-support' }),
+    ).toBe(false);
+    // The same id on both sides still names two different owners.
+    expect(
+      isSameOwner(
+        { kind: 'user', userId: 'shared-id' },
+        { kind: 'department', departmentId: 'shared-id' },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('toMessageOwner', () => {
+  const user = { name: 'Alex Rivera', email: 'alex@example.com' };
+  const department = { name: 'Sales' };
+
+  test('shows a user by name, or by email when they have none', () => {
+    expect(
+      toMessageOwner({
+        userId: 'user-alex',
+        departmentId: null,
+        user,
+        department: null,
+      }),
+    ).toEqual({ type: 'user', id: 'user-alex', name: 'Alex Rivera' });
+    expect(
+      toMessageOwner({
+        userId: 'user-alex',
+        departmentId: null,
+        user: { name: null, email: 'alex@example.com' },
+        department: null,
+      }),
+    ).toEqual({ type: 'user', id: 'user-alex', name: 'alex@example.com' });
+  });
+
+  test('shows a department by name', () => {
+    expect(
+      toMessageOwner({
+        userId: null,
+        departmentId: 'dept-sales',
+        user: null,
+        department,
+      }),
+    ).toEqual({ type: 'department', id: 'dept-sales', name: 'Sales' });
+  });
+
+  test('reads the owner the way every comparison does', () => {
+    // Both columns set cannot be written through the product; if a row ever
+    // carried both, what is shown must be the owner sends are judged by.
+    expect(
+      toMessageOwner({
+        userId: 'user-alex',
+        departmentId: 'dept-sales',
+        user,
+        department,
+      }),
+    ).toMatchObject({ type: 'user', id: 'user-alex' });
+    // And it is that owner's row that names it: without it there is no name
+    // to show, not the other owner's.
+    expect(
+      toMessageOwner({
+        userId: 'user-alex',
+        departmentId: 'dept-sales',
+        user: null,
+        department,
+      }),
+    ).toBeNull();
+  });
+
+  test('has no owner for a row that has none', () => {
+    expect(
+      toMessageOwner({ userId: null, departmentId: null, user, department }),
+    ).toBeNull();
   });
 });
 

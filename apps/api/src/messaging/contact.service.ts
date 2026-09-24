@@ -3,6 +3,7 @@ import type { Contact, ContactListQuery, ContactListResponse } from '@repo/dto';
 import {
   buildConversationScope,
   loadDepartmentIds,
+  toMessageOwner,
 } from './conversation-scope.js';
 
 type ContactDbClient = PrismaClient | Prisma.TransactionClient;
@@ -23,6 +24,10 @@ function conversationsInScope(scope: Prisma.MessageConversationWhereInput) {
       sourcePhoneNumber: {
         select: { id: true, phoneNumber: true, label: true },
       },
+      userId: true,
+      departmentId: true,
+      user: { select: { name: true, email: true } },
+      department: { select: { name: true } },
     },
   } satisfies Prisma.Contact$messageConversationsArgs;
 }
@@ -118,6 +123,10 @@ type ContactWithConversations = {
       phoneNumber: string;
       label: string | null;
     };
+    userId: string | null;
+    departmentId: string | null;
+    user: { name: string | null; email: string } | null;
+    department: { name: string } | null;
   }>;
 };
 
@@ -129,6 +138,7 @@ function toContactDto(contact: ContactWithConversations): Contact {
     conversations: contact.messageConversations.map((conversation) => ({
       id: conversation.id,
       sourcePhoneNumber: conversation.sourcePhoneNumber,
+      owner: toMessageOwner(conversation),
       lastMessageAt: conversation.lastMessageAt?.toISOString() ?? null,
       unreadCount: conversation.unreadCount,
     })),

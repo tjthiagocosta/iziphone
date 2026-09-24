@@ -13,7 +13,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useContacts } from '@/hooks/use-contacts';
 import { avatarColorFor } from '@/lib/avatar-color';
 import { initialsOf } from '@/lib/initials';
-import { lineName } from '@/lib/line';
+import { threadLineName } from '@/lib/line';
 import { formatPhoneNumber } from '@/lib/phone-number';
 import {
   type CallEligibility,
@@ -143,6 +143,7 @@ function ContactItem({
             <ConversationChip
               key={conversation.id}
               conversation={conversation}
+              label={threadLineName(conversation, contact.conversations)}
             />
           ))}
         </div>
@@ -165,17 +166,17 @@ function ContactItem({
 
 function ConversationChip({
   conversation,
+  label,
 }: {
   conversation: ContactConversation;
+  label: string;
 }) {
-  const line = conversation.sourcePhoneNumber;
-
   return (
     <Link
       href={`/app/conversations/${conversation.id}`}
       className="flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-0.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
     >
-      {lineName(line)}
+      {label}
       {conversation.unreadCount > 0 && (
         <Badge className="h-4 min-w-4 justify-center px-1 text-[10px] bg-info text-white">
           {conversation.unreadCount}
