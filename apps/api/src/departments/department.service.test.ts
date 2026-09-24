@@ -418,20 +418,43 @@ describe('DepartmentService', () => {
   );
 
   test('should refresh a number removed from the department', async () => {
-    const { service, routingCache } = buildService({
-      phoneNumber: {
-        findUnique: vi.fn(async () => ({
-          id: 'phone-1',
-          phoneNumber: MAIN_LINE,
-        })),
-        update: vi.fn(async () => ({})),
-      },
+    const numbers = departmentNumbers();
+    const { service, db, auditCreate, routingCache } = buildService({
+      phoneNumber: numbers.table,
     });
 
     expect(
       await service.removePhoneNumber('dept-1', 'phone-1', 'admin-1'),
     ).toBe(true);
+    expect(numbers.row('phone-1')).toMatchObject({
+      departmentId: null,
+      isPrimary: false,
+      status: 'RESERVED',
+    });
     expect(routingCache.refreshPhoneNumbers).toHaveBeenCalledWith([MAIN_LINE]);
+    expect(auditCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'department.phone_number_removed' }),
+      db,
+    );
+  });
+
+  test('should leave a number alone that another administrator moved while it was being removed', async () => {
+    const numbers = departmentNumbers();
+    numbers.assignRightAfterItIsRead('phone-1', { departmentId: 'dept-2' });
+    const { service, auditCreate, routingCache } = buildService({
+      phoneNumber: numbers.table,
+    });
+
+    expect(
+      await service.removePhoneNumber('dept-1', 'phone-1', 'admin-1'),
+    ).toBe(false);
+    // Still working for its new owner, not reserved under them.
+    expect(numbers.row('phone-1')).toMatchObject({
+      departmentId: 'dept-2',
+      status: 'ACTIVE',
+    });
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
   });
 
   test('should refresh the department when an agent is added or removed', async () => {

@@ -805,9 +805,12 @@ export class DepartmentService {
       return false;
     }
 
-    await this.db.$transaction(async (tx) => {
-      await tx.phoneNumber.update({
-        where: { id: phoneNumberId },
+    const removed = await this.db.$transaction(async (tx) => {
+      // Only while this department still holds it: another administrator can
+      // move it elsewhere after the check above, and reserving it then would
+      // leave its new owner with a number that takes no calls or texts.
+      const released = await tx.phoneNumber.updateMany({
+        where: { id: phoneNumberId, departmentId, deletedAt: null },
         data: {
           departmentId: null,
           isPrimary: false,
@@ -815,6 +818,11 @@ export class DepartmentService {
           updatedBy: actorId,
         },
       });
+
+      if (released.count === 0) {
+        return false;
+      }
+
       await this.auditLog.create(
         {
           action: 'department.phone_number_removed',
@@ -826,7 +834,12 @@ export class DepartmentService {
         },
         tx,
       );
+      return true;
     });
+
+    if (!removed) {
+      return false;
+    }
 
     await this.routingCache.refreshPhoneNumbers([phoneNumber.phoneNumber]);
 

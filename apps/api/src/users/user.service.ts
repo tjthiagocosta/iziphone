@@ -564,11 +564,19 @@ export class UserService {
       return false;
     }
 
-    await this.db.$transaction(async (tx) => {
-      await tx.phoneNumber.update({
-        where: { id: phoneNumberId },
+    const removed = await this.db.$transaction(async (tx) => {
+      // Only while this user still holds it: another administrator can move it
+      // to somebody else after the check above, and reserving it then would
+      // leave its new owner with a number that takes no calls or texts.
+      const released = await tx.phoneNumber.updateMany({
+        where: { id: phoneNumberId, userId, deletedAt: null },
         data: { userId: null, status: 'RESERVED', updatedBy: actorId },
       });
+
+      if (released.count === 0) {
+        return false;
+      }
+
       await this.auditLog.create(
         {
           action: 'user.phone_number_removed',
@@ -580,7 +588,12 @@ export class UserService {
         },
         tx,
       );
+      return true;
     });
+
+    if (!removed) {
+      return false;
+    }
 
     await this.routingCache.refreshPhoneNumbers([phoneNumber.phoneNumber]);
 

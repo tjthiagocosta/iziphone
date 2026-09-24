@@ -217,21 +217,40 @@ describe('UserService', () => {
   });
 
   test('should refresh the direct line when a phone number is removed', async () => {
-    const { service, routingCache } = buildService({
-      phoneNumber: {
-        findUnique: vi.fn(async () => ({
-          id: 'phone-1',
-          phoneNumber: DIRECT_LINE,
-        })),
-        update: vi.fn(async () => ({})),
-      },
+    const number = reservedNumber();
+    Object.assign(number.row, { userId: 'user-1', status: 'ACTIVE' });
+    const { service, db, auditCreate, routingCache } = buildService({
+      phoneNumber: number.table,
     });
 
-    await service.removePhoneNumber('user-1', 'phone-1', 'admin-1');
-
+    expect(
+      await service.removePhoneNumber('user-1', 'phone-1', 'admin-1'),
+    ).toBe(true);
+    expect(number.row).toMatchObject({ userId: null, status: 'RESERVED' });
     expect(routingCache.refreshPhoneNumbers).toHaveBeenCalledWith([
       DIRECT_LINE,
     ]);
+    expect(auditCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'user.phone_number_removed' }),
+      db,
+    );
+  });
+
+  test('should leave a number alone that another administrator moved while it was being removed', async () => {
+    const number = reservedNumber();
+    Object.assign(number.row, { userId: 'user-1', status: 'ACTIVE' });
+    number.assignRightAfterItIsRead({ userId: 'user-2' });
+    const { service, auditCreate, routingCache } = buildService({
+      phoneNumber: number.table,
+    });
+
+    expect(
+      await service.removePhoneNumber('user-1', 'phone-1', 'admin-1'),
+    ).toBe(false);
+    // Still working for its new owner, not reserved under them.
+    expect(number.row).toMatchObject({ userId: 'user-2', status: 'ACTIVE' });
+    expect(auditCreate).not.toHaveBeenCalled();
+    expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
   });
 
   test('should refresh direct lines and ring groups when a user is deleted', async () => {
