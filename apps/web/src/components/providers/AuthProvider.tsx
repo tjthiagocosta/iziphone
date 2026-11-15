@@ -8,6 +8,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from 'react';
 import { fetchCurrentUser, fetchRealtimeToken } from '@/lib/api/auth';
@@ -34,6 +35,13 @@ export interface AuthContextValue {
   /** Why the session could not be loaded, when the API was unreachable. */
   error: string | null;
   signOut: () => Promise<void>;
+  /**
+   * Asks the API again whose session the browser holds and answers that user,
+   * or null when it holds none or a newer load or a sign-out overtook the
+   * answer. A page that signs the visitor in awaits it before it navigates;
+   * see `enterApp`.
+   */
+  reloadSession: () => Promise<AuthUser | null>;
   /** A fresh token for the call controller; it authenticates the socket and the voice routes. */
   getRealtimeToken: () => Promise<string>;
 }
@@ -66,40 +74,40 @@ function reportSignOutFailure(cause: unknown): void {
 }
 
 /**
- * Loads the signed-in user from the API once per page load. The edge proxy
- * only sees that a session cookie exists; this is where a cookie that no
- * longer opens a session sends the visitor back to the login page.
+ * Loads the signed-in user from the API when the page loads, and again when a
+ * page that signed the visitor in asks it to. The edge proxy only sees that a
+ * session cookie exists; this is where a cookie that no longer opens a
+ * session sends the visitor back to the login page.
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [state, setState] = useState<AuthState>({ status: 'loading' });
+  /*
+   * Moves on with every load, every sign-out and the provider going away, so
+   * that only the newest of them settles the state. The first load can still
+   * be out when the visitor signs in, and its "nobody" must not land after
+   * the answer the sign-in asked for.
+   */
+  const sessionChange = useRef(0);
 
   const signOutLocally = useCallback(
     (target: LoginTarget) => {
+      sessionChange.current += 1;
       setState({ status: 'signed-out' });
       router.replace(loginPathFor(target));
     },
     [router],
   );
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadSession = useCallback(async (): Promise<AuthUser | null> => {
+    sessionChange.current += 1;
+    const load = sessionChange.current;
 
-    fetchCurrentUser().then(
-      (user) => {
-        if (cancelled) return;
-        if (user) {
-          setState({ status: 'signed-in', user });
-          return;
-        }
-        setState({ status: 'signed-out' });
-        const { pathname, search } = window.location;
-        if (requiresSession(pathname)) {
-          router.replace(loginPathFor({ redirect: `${pathname}${search}` }));
-        }
-      },
-      (error: unknown) => {
-        if (cancelled) return;
+    let user: AuthUser | null;
+    try {
+      user = await fetchCurrentUser();
+    } catch (error) {
+      if (load === sessionChange.current) {
         setState({
           status: 'failed',
           error:
@@ -107,13 +115,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               ? error.message
               : 'The session could not be loaded',
         });
-      },
-    );
+      }
+      throw error;
+    }
+
+    // Overtaken: what the provider holds is a newer answer's, not this one's.
+    if (load !== sessionChange.current) {
+      return null;
+    }
+    if (user) {
+      setState({ status: 'signed-in', user });
+      return user;
+    }
+    setState({ status: 'signed-out' });
+    const { pathname, search } = window.location;
+    if (requiresSession(pathname)) {
+      router.replace(loginPathFor({ redirect: `${pathname}${search}` }));
+    }
+    return null;
+  }, [router]);
+
+  useEffect(() => {
+    // The state carries a failure to the views; nothing else waits on this load.
+    loadSession().catch(() => undefined);
 
     return () => {
-      cancelled = true;
+      sessionChange.current += 1;
     };
-  }, [router]);
+  }, [loadSession]);
 
   /*
    * Only while signed in: a 401 before the first load has settled is the
@@ -151,6 +180,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading: state.status === 'loading',
     error: state.status === 'failed' ? state.error : null,
     signOut,
+    reloadSession: loadSession,
     getRealtimeToken: fetchRealtimeToken,
   };
 

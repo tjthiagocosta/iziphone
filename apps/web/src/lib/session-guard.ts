@@ -1,9 +1,12 @@
 /*
  * Which paths need a signed-in user, and how the browser finds out whether
- * one is present. Shared by the edge proxy, which checks the cookie, and the
+ * one is present. Shared by the edge proxy, which checks the cookie, the
  * auth provider, which learns from the API that the cookie no longer opens a
- * session.
+ * session, and the pages that sign a visitor in, which have the provider
+ * learn that it now does.
  */
+
+import type { AuthenticatedUser } from '@repo/dto';
 
 /*
  * Paths a signed-out visitor may open. There is no sign-up page: a person gets
@@ -154,4 +157,38 @@ export function safeRedirectTarget(redirect: string | null): string {
   // this origin but must not keep its authority when it is handed to the
   // router.
   return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+}
+
+/**
+ * What a page that has just signed the visitor in says when the API does not
+ * see the session it created: the browser refused the cookie, so every
+ * request the app makes would be refused too.
+ */
+export const SESSION_NOT_KEPT =
+  'This browser did not keep your session, so the app cannot open. Allow cookies for this site, then sign in.';
+
+export interface AppEntry {
+  /** Has the auth provider ask the API whose session this is; null for none. */
+  reloadSession: () => Promise<AuthenticatedUser | null>;
+  navigate: (path: string) => void;
+}
+
+/**
+ * Takes a tab whose sign-in has just succeeded into the app at `target`. The
+ * auth provider loaded the user once, when the page opened and there was no
+ * session yet, and a client-side navigation keeps it mounted with that
+ * answer: without the reload the app would open with nobody signed in, and
+ * the phone would never start. Answers why it stayed, or null once it went.
+ */
+export async function enterApp(
+  target: string,
+  { reloadSession, navigate }: AppEntry,
+): Promise<string | null> {
+  const user = await reloadSession();
+  if (!user) {
+    return SESSION_NOT_KEPT;
+  }
+
+  navigate(target);
+  return null;
 }

@@ -1,8 +1,11 @@
-import { describe, expect, test } from 'vitest';
+import type { AuthenticatedUser } from '@repo/dto';
+import { describe, expect, test, vi } from 'vitest';
 import {
+  enterApp,
   loginNoticeFor,
   loginPathFor,
   requiresSession,
+  SESSION_NOT_KEPT,
   safeRedirectTarget,
 } from './session-guard';
 
@@ -109,5 +112,62 @@ describe('safeRedirectTarget', () => {
 
   test('strips an authority that points back at this origin', () => {
     expect(safeRedirectTarget('//localhost/app/inbox')).toBe('/app/inbox');
+  });
+});
+
+describe('enterApp', () => {
+  const user: AuthenticatedUser = {
+    id: 'user-1',
+    email: 'casey.morgan@example.com',
+    name: 'Casey Morgan',
+    role: 'AGENT',
+    emailVerified: true,
+  };
+
+  test('opens the app only once the provider has loaded the new session', async () => {
+    let answer: (signedIn: AuthenticatedUser | null) => void = () => {};
+    const reloadSession = vi.fn(
+      () =>
+        new Promise<AuthenticatedUser | null>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const navigate = vi.fn();
+
+    const entry = enterApp('/app/inbox', { reloadSession, navigate });
+
+    expect(reloadSession).toHaveBeenCalledOnce();
+    expect(navigate).not.toHaveBeenCalled();
+
+    answer(user);
+
+    await expect(entry).resolves.toBeNull();
+    expect(navigate).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledWith('/app/inbox');
+  });
+
+  test('stays and says why when the API does not see the session', async () => {
+    const navigate = vi.fn();
+
+    const problem = await enterApp('/', {
+      reloadSession: async () => null,
+      navigate,
+    });
+
+    expect(problem).toBe(SESSION_NOT_KEPT);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  test('stays when the session cannot be read, and lets the page say so', async () => {
+    const unreachable = new Error('Unable to reach the server');
+    const navigate = vi.fn();
+
+    await expect(
+      enterApp('/', {
+        reloadSession: () => Promise.reject(unreachable),
+        navigate,
+      }),
+    ).rejects.toBe(unreachable);
+    expect(navigate).not.toHaveBeenCalled();
   });
 });

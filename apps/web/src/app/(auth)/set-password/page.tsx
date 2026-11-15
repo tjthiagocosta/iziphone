@@ -4,6 +4,7 @@ import type { SetPasswordLink } from '@repo/dto';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { useAuth } from '@/components/providers/AuthProvider';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -19,9 +20,11 @@ import {
   passwordProblem,
   SET_PASSWORD_CHECKING,
   SET_PASSWORD_NO_TOKEN,
+  SET_PASSWORD_SAVED_APP_UNOPENED,
   setPasswordCopy,
 } from '@/lib/access-link';
 import { describeAccessLink, setPassword } from '@/lib/api/auth';
+import { enterApp } from '@/lib/session-guard';
 
 /**
  * Where an invite and a reset both land. The link in the URL is the whole
@@ -30,6 +33,7 @@ import { describeAccessLink, setPassword } from '@/lib/api/auth';
  */
 export default function SetPasswordPage() {
   const router = useRouter();
+  const { reloadSession } = useAuth();
   const [token, setToken] = useState<string | null>(null);
   const [link, setLink] = useState<SetPasswordLink | null>(null);
   const [password, setPasswordValue] = useState('');
@@ -86,15 +90,35 @@ export default function SetPasswordPage() {
 
     try {
       await setPassword(token, password);
-      // The answer carried the session cookie, so this lands in the app.
-      router.push('/');
-      router.refresh();
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
           ? caughtError.message
           : 'We could not set your password. Try again in a moment.',
       );
+      setIsSaving(false);
+      return;
+    }
+
+    // The answer carried the session cookie, so this lands in the app. The
+    // link is spent from here on: a failure now is not one to set the password.
+    try {
+      const problem = await enterApp('/', {
+        reloadSession,
+        navigate: (path) => {
+          router.push(path);
+          router.refresh();
+        },
+      });
+      if (problem) {
+        setError(problem);
+      }
+    } catch (caughtError) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Unable to load the new session', caughtError);
+      }
+
+      setError(SET_PASSWORD_SAVED_APP_UNOPENED);
     } finally {
       setIsSaving(false);
     }

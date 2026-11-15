@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { useAuth } from '@/components/providers/AuthProvider';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -13,10 +14,15 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { signIn } from '@/lib/auth-client';
-import { loginNoticeFor, safeRedirectTarget } from '@/lib/session-guard';
+import {
+  enterApp,
+  loginNoticeFor,
+  safeRedirectTarget,
+} from '@/lib/session-guard';
 
 export default function LoginPage() {
   const router = useRouter();
+  const { reloadSession } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -46,8 +52,16 @@ export default function LoginPage() {
         const redirect = new URLSearchParams(window.location.search).get(
           'redirect',
         );
-        router.push(safeRedirectTarget(redirect));
-        router.refresh();
+        const problem = await enterApp(safeRedirectTarget(redirect), {
+          reloadSession,
+          navigate: (path) => {
+            router.push(path);
+            router.refresh();
+          },
+        });
+        if (problem) {
+          setError(problem);
+        }
       }
     } catch (caughtError) {
       if (process.env.NODE_ENV !== 'production') {

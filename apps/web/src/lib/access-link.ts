@@ -71,6 +71,14 @@ export function passwordProblem(
   return null;
 }
 
+/**
+ * What it says when the password was set, and the session with it, but the
+ * app could not be opened. The link is spent by then, so the person is sent
+ * to sign in rather than told to try the form again.
+ */
+export const SET_PASSWORD_SAVED_APP_UNOPENED =
+  'Your password is set, but the app could not open. Sign in with your new password to continue.';
+
 /** The one answer the forgot-password page gives, whoever asked. */
 export const FORGOT_PASSWORD_CONFIRMATION =
   'If that address belongs to an account, a reset link is on its way. It expires shortly, so use it soon; ask an administrator if it does not arrive.';
