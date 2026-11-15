@@ -336,12 +336,23 @@ export class TelephonySession {
       try {
         await this.deps.requestHangup(legSid);
       } catch (error) {
-        this.update({
-          error: messageOf(error, 'The call could not be ended on the server'),
-        });
+        // Said while this call, or its end, is on screen. Past that the user
+        // has no call left here to act on, and on the next call it would
+        // read as being about that one.
+        if (this.activeCall === call || this.isEndShownFor(call)) {
+          this.update({
+            error: messageOf(
+              error,
+              'The call could not be ended on the server',
+            ),
+          });
+        }
       }
     }
-    if (this.disposed) return;
+    // The controller ends the leg before it answers, so Twilio's disconnect
+    // can come first and end the call here. Marking it "disconnecting" then
+    // would keep it there: a closed call emits nothing more.
+    if (this.disposed || this.activeCall !== call) return;
 
     this.update({ callStatus: 'disconnecting' });
     call.disconnect();
@@ -594,10 +605,7 @@ export class TelephonySession {
           transfer: shown ? { ...shown, status: 'answered' } : null,
           error: null,
         });
-      } else if (
-        attempt.call === this.lastEndedCall &&
-        this.state.callStatus === 'disconnected'
-      ) {
+      } else if (this.isEndShownFor(attempt.call)) {
         // The leg dropped first and "Call ended" is still on screen.
         this.update({ endReason: 'transferred' });
         this.clearEndedTimer();
@@ -721,6 +729,13 @@ export class TelephonySession {
     });
 
     this.clearCallUiSoon();
+  }
+
+  /** Whether "Call ended" is on screen for this call. */
+  private isEndShownFor(call: VoiceCall): boolean {
+    return (
+      this.lastEndedCall === call && this.state.callStatus === 'disconnected'
+    );
   }
 
   private clearCallUiSoon(): void {

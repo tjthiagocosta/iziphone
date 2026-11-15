@@ -27,8 +27,9 @@ class FakeCall extends EventEmitter implements VoiceCall {
     this.emit('reject');
   });
   disconnect = vi.fn(() => {
-    this.currentStatus = 'closed';
-    this.emit('disconnect');
+    // Twilio's call does nothing, and says nothing, once it has closed.
+    if (this.currentStatus === 'closed') return;
+    this.drop();
   });
   mute = vi.fn((shouldMute: boolean) => {
     this.muted = shouldMute;
@@ -47,6 +48,12 @@ class FakeCall extends EventEmitter implements VoiceCall {
 
   status(): string {
     return this.currentStatus;
+  }
+
+  /** The leg ended from elsewhere: the other party, or the controller. */
+  drop(): void {
+    this.currentStatus = 'closed';
+    this.emit('disconnect');
   }
 }
 
@@ -594,6 +601,91 @@ describe('TelephonySession', () => {
 
       expect(deps.requestHangup).toHaveBeenCalledOnce();
       expect(call.disconnect).toHaveBeenCalledOnce();
+    });
+
+    describe('when the leg drops before the controller answers', () => {
+      async function endingCall() {
+        const answer = deferred<void>();
+        const context = await startedSession({
+          requestHangup: vi.fn(() => answer.promise),
+        });
+        const call = context.device.nextCall;
+        call.parameters.CallSID = 'CA_out';
+        await context.session.makeCall('+15550100199', line);
+        call.accept();
+
+        const ending = context.session.hangUp();
+        // The controller ended the leg, and Twilio said so first.
+        call.drop();
+        return { ...context, call, answer, ending };
+      }
+
+      test('the call ends, then clears, as one hung up the slower way', async () => {
+        const { session, answer, ending } = await endingCall();
+
+        answer.resolve();
+        await ending;
+
+        expect(session.getState()).toMatchObject({
+          callStatus: 'disconnected',
+          isEndingCall: false,
+        });
+        vi.advanceTimersByTime(ENDED_DISPLAY_MS);
+        expect(session.getState()).toMatchObject({
+          callStatus: 'idle',
+          remoteNumber: null,
+        });
+      });
+
+      test('a controller that then fails says so while the call shows as ended', async () => {
+        const { session, answer, ending } = await endingCall();
+
+        answer.reject(new Error('Request failed with status 502'));
+        await ending;
+
+        expect(session.getState()).toMatchObject({
+          callStatus: 'disconnected',
+          error: 'Request failed with status 502',
+        });
+      });
+
+      test('a failure that comes once the call has left the screen is not shown', async () => {
+        const { session, answer, ending } = await endingCall();
+        vi.advanceTimersByTime(ENDED_DISPLAY_MS);
+
+        answer.reject(new Error('Request failed with status 502'));
+        await ending;
+
+        expect(session.getState()).toMatchObject({
+          callStatus: 'idle',
+          error: null,
+        });
+      });
+
+      test.each(['ended the call', 'failed'])(
+        'a controller that %s once the next call rings leaves that call alone',
+        async (outcome) => {
+          const { device, session, answer, ending } = await endingCall();
+          const next = new FakeCall({ CallSid: 'CA_in', From: '+15550100101' });
+          device.emit('incoming', next);
+
+          if (outcome === 'failed') {
+            answer.reject(new Error('Request failed with status 502'));
+          } else {
+            answer.resolve();
+          }
+          await ending;
+
+          expect(next.disconnect).not.toHaveBeenCalled();
+          expect(session.getState()).toMatchObject({
+            callStatus: 'ringing',
+            remoteNumber: '+15550100101',
+            error: null,
+          });
+          session.answerIncoming();
+          expect(next.accept).toHaveBeenCalledOnce();
+        },
+      );
     });
   });
 
