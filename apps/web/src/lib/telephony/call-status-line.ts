@@ -36,6 +36,7 @@ export function callStatusLine(
     case 'connecting':
       return { text: 'Connecting...', tone: 'connecting' };
     case 'ringing':
+    case 'ringing-out':
       return { text: 'Ringing...', tone: 'ringing' };
     case 'disconnecting':
       return { text: 'Ending...', tone: 'ending' };

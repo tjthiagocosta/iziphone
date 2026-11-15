@@ -18,7 +18,10 @@ export type DeviceStatus = 'offline' | 'connecting' | 'ready' | 'error';
 export type CallStatus =
   | 'idle'
   | 'connecting'
+  /** This device is being rung. */
   | 'ringing'
+  /** The other party of a call this device placed is being rung. */
+  | 'ringing-out'
   | 'connected'
   | 'disconnecting'
   | 'disconnected';
@@ -684,7 +687,8 @@ export class TelephonySession {
         error: null,
       });
     });
-    call.on('ringing', () => this.update({ callStatus: 'ringing' }));
+    // Twilio raises it only on a call this device placed.
+    call.on('ringing', () => this.update({ callStatus: 'ringing-out' }));
     call.on('mute', (muted) => this.update({ isMuted: muted }));
     call.on('disconnect', () => this.ended());
     call.on('cancel', () => this.ended());

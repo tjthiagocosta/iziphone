@@ -272,13 +272,12 @@ describe('offerFate', () => {
   });
 
   test('keeps a held offer off screen while a call the user dials rings at the far end', () => {
-    // The session reports that as "ringing" too.
     expect(
       fatesOver([
         at('connected', offer),
         at('idle', offer),
         at('connecting', offer),
-        at('ringing', offer),
+        at('ringing-out', offer),
         at('connected', offer),
       ]),
     ).toEqual(['hold', 'hold', 'hold', 'hold', 'hold']);
@@ -288,13 +287,26 @@ describe('offerFate', () => {
     expect(
       fatesOver([
         at('connecting', null),
-        at('ringing', null),
-        at('ringing', offer),
+        at('ringing-out', null),
+        at('ringing-out', offer),
         at('disconnected', offer),
         at('ringing', offer),
       ]),
     ).toEqual([null, null, 'hold', 'hold', 'show']);
   });
+
+  test.each([...BUSY, 'ringing-out'] as const)(
+    'shows a held offer once the device rings for it, though the phone was %s',
+    (callStatus) => {
+      expect(
+        fatesOver([
+          at(callStatus, offer),
+          at('ringing', offer),
+          at('connecting', offer),
+        ]),
+      ).toEqual(['hold', 'show', 'dismiss']);
+    },
+  );
 
   test.each(FREE)(
     'dismisses an expired offer the device never rang for while the phone is %s',
@@ -347,7 +359,7 @@ describe('offerFate', () => {
     ).toEqual(['show', 'show', 'show', 'dismiss']);
   });
 
-  test.each([...FREE, ...BUSY, 'ringing'] as const)(
+  test.each([...FREE, ...BUSY, 'ringing', 'ringing-out'] as const)(
     'has nothing to decide without an offer while the phone is %s',
     (callStatus) => {
       expect(
@@ -431,6 +443,18 @@ describe('an offer over the life of a call', () => {
         at('connecting', offer),
       ]),
     ).toEqual([null, 'hold', 'hold', 'show', 'dismiss']);
+  });
+
+  test('turns up when the device rings for it while a dial is still being set up', () => {
+    expect(
+      fatesOver([
+        at('connecting', null),
+        at('connecting', offer),
+        at('ringing', offer),
+        at('connecting', offer),
+        at('connected', offer),
+      ]),
+    ).toEqual([null, 'hold', 'show', 'dismiss', null]);
   });
 
   test('outlives the end of the ring for the offer it replaced', () => {

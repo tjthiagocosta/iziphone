@@ -407,7 +407,7 @@ describe('TelephonySession', () => {
       });
 
       call.emit('ringing');
-      expect(session.getState().callStatus).toBe('ringing');
+      expect(session.getState().callStatus).toBe('ringing-out');
 
       call.accept();
       expect(session.getState().callStatus).toBe('connected');

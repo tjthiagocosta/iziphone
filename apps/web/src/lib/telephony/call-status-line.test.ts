@@ -83,6 +83,9 @@ describe('callStatusLine', () => {
       tone: 'ringing',
     });
     expect(
+      callStatusLine({ ...connected, callStatus: 'ringing-out' }, 0),
+    ).toEqual({ text: 'Ringing...', tone: 'ringing' });
+    expect(
       callStatusLine({ ...connected, callStatus: 'connecting' }, 0),
     ).toEqual({ text: 'Connecting...', tone: 'connecting' });
     expect(

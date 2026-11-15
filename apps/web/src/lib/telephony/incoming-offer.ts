@@ -89,7 +89,7 @@ export function offerFate({
   answeredOffer,
   expiredOffer,
 }: OfferFateInput): OfferDecision {
-  const phase = phaseOf(callStatus, memory.phase);
+  const phase = phaseOf(callStatus);
   const fate = offer
     ? fateIn(phase, offer, memory, { answeredOffer, expiredOffer })
     : null;
@@ -105,21 +105,20 @@ export function offerFate({
   };
 }
 
-function phaseOf(callStatus: CallStatus, lastPhase: PhonePhase): PhonePhase {
+function phaseOf(callStatus: CallStatus): PhonePhase {
   switch (callStatus) {
     case 'idle':
     case 'disconnected':
       return 'free';
     case 'connecting':
+    case 'ringing-out':
     case 'connected':
     case 'disconnecting':
       return 'busy';
     case 'ringing':
-      // The session says "ringing" both when the device is rung and when the
-      // far end of a dialed call is. The Device drops an invite that reaches
-      // it during a call, so only a free phone is rung: on a busy one it is
-      // the dialed call, and the phone stays busy.
-      return lastPhase === 'busy' ? 'busy' : 'rung';
+      // The device rings only for a call it can take, whatever the phone
+      // was doing a moment before: a dial still being set up gives way to it.
+      return 'rung';
   }
 }
 
