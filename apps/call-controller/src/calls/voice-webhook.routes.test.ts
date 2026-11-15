@@ -100,6 +100,55 @@ describe('voiceWebhookRoutes', () => {
       });
     });
 
+    test('starts an outbound call although Twilio sends its To and Called empty', async () => {
+      const response = await post(
+        '/webhooks/twilio/voice/inbound',
+        'CallSid=CAagent1&From=client%3Auser-1&Caller=client%3Auser-1&To=&Called=&Direction=inbound&type=outbound-pstn&grant=a-grant-token',
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toContain('text/xml');
+      expect(flow.acceptInboundCall).not.toHaveBeenCalled();
+      expect(flow.startOutboundCall).toHaveBeenCalledWith({
+        callSid: 'CAagent1',
+        from: 'client:user-1',
+        grant: 'a-grant-token',
+      });
+    });
+
+    test('accepts an inbound call whose optional fields arrive empty', async () => {
+      const response = await post(
+        '/webhooks/twilio/voice/inbound',
+        'CallSid=CAcall1&From=%2B15555550101&To=%2B15555550102&type=&grant=',
+      );
+
+      expect(response.statusCode).toBe(200);
+      expect(flow.acceptInboundCall).toHaveBeenCalledWith({
+        callSid: 'CAcall1',
+        from: '+15555550101',
+        to: '+15555550102',
+      });
+    });
+
+    test.each([
+      ['From', 'From=&To=%2B15555550102'],
+      ['To', 'From=%2B15555550101&To='],
+    ])(
+      'rejects an inbound call whose %s arrives empty',
+      async (_name, numbers) => {
+        const response = await post(
+          '/webhooks/twilio/voice/inbound',
+          `CallSid=CAcall1&${numbers}`,
+        );
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({
+          error: 'Inbound call payload is incomplete',
+        });
+        expect(flow.acceptInboundCall).not.toHaveBeenCalled();
+      },
+    );
+
     test('reads nothing but the grant from the call: whom to dial, from where and who is calling are its', async () => {
       const response = await post(
         '/webhooks/twilio/voice/inbound',
@@ -226,6 +275,22 @@ describe('voiceWebhookRoutes', () => {
         participantLabel: undefined,
         status: 'no-answer',
         duration: 0,
+      });
+    });
+
+    test('reads a field that arrives empty as absent', async () => {
+      const response = await post(
+        '/webhooks/twilio/voice/status?conversationUuid=CAcall1',
+        'CallSid=CAleg1&CallStatus=ringing&CallDuration=&ParticipantLabel=',
+      );
+
+      expect(response.statusCode).toBe(204);
+      expect(flow.handleCallStatus).toHaveBeenCalledWith({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        participantLabel: undefined,
+        status: 'ringing',
+        duration: undefined,
       });
     });
 

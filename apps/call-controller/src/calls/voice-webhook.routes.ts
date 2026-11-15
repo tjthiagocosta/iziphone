@@ -7,17 +7,21 @@ import type { TelephonyService } from './telephony.service.js';
 
 /*
  * Twilio's webhooks. Bodies are form-encoded; a repeated field arrives as an
- * array, so every field is read through `field`. Responses are TwiML for the
- * calls Twilio is asking about, and 204 for status notifications.
+ * array, and Twilio sends parameters it has no value for as empty strings (a
+ * softphone call has an empty `To`), so every field is read through
+ * `formValue`. Responses are TwiML for the calls Twilio is asking about, and
+ * 204 for status notifications.
  */
 
-const field = z.preprocess(
-  (value) => (Array.isArray(value) ? value[0] : value),
-  z.string().min(1).optional(),
-);
+function formValue(value: unknown) {
+  const first = Array.isArray(value) ? value[0] : value;
+  return first === '' ? undefined : first;
+}
+
+const field = z.preprocess(formValue, z.string().min(1).optional());
 
 const seconds = z.preprocess(
-  (value) => (Array.isArray(value) ? value[0] : value),
+  formValue,
   z.coerce.number().int().nonnegative().optional().catch(undefined),
 );
 
