@@ -64,7 +64,7 @@ lifecycle events and the API subscribes to persist them. Channel names live in
 | `call:incoming` | call-controller | Inbound call received |
 | `call:started` | call-controller | Call answered / conference joined |
 | `call:ended` | call-controller | Call finished |
-| `call:missed` | call-controller | Nobody answered |
+| `call:missed` | call-controller | Nobody answered: the caller was sent to voicemail, or hung up while it rang. Stays missed whatever `call:ended` says |
 | `call:transferred` | call-controller | Transfer completed |
 | `call:held`, `call:resumed` | call-controller | The other party was put on hold, or taken off it |
 | `call:participant-status` | call-controller | Participant joined, left, muted, held |

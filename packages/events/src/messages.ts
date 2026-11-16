@@ -54,12 +54,21 @@ export const CallEndedEventSchema = z.object({
 });
 export type CallEndedEvent = z.infer<typeof CallEndedEventSchema>;
 
+/**
+ * Why nobody answered an inbound call: it was sent to voicemail, or the
+ * caller hung up while it was still ringing.
+ */
+export const CallMissedReasonSchema = z.enum(['voicemail', 'caller-hung-up']);
+export type CallMissedReason = z.infer<typeof CallMissedReasonSchema>;
+
 export const CallMissedEventSchema = z.object({
   conversationUuid: z.string(),
   from: z.string(),
   to: z.string().optional(),
   departmentId: z.string().optional(),
   userId: z.string().optional(),
+  // A controller from before the reason existed reported voicemail only.
+  reason: CallMissedReasonSchema.default('voicemail'),
   timestamp: IsoDateTimeSchema,
 });
 export type CallMissedEvent = z.infer<typeof CallMissedEventSchema>;

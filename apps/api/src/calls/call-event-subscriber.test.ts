@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import type { PrismaClient } from '@repo/db';
+import type { Prisma, PrismaClient } from '@repo/db';
 import { CHANNELS, type ChannelInput } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Redis } from 'ioredis';
@@ -68,11 +68,21 @@ function createHarness() {
   const redis = { duplicate: () => connection } as unknown as Redis;
 
   const db = {
+    // The writes have already run by the time they are handed over, so this
+    // only records which went through together; it rolls nothing back.
+    $transaction: vi.fn(async (writes: Promise<unknown>[]) =>
+      Promise.all(writes),
+    ),
     call: {
-      upsert: vi.fn(async () => ({ id: 'call-1' })),
-      update: vi.fn(async () => ({ id: 'call-1' })),
-      updateMany: vi.fn(async () => ({ count: 1 })),
-      findUnique: vi.fn(async (): Promise<unknown> => storedCall),
+      upsert: vi.fn(async (_args: Prisma.CallUpsertArgs) => ({ id: 'call-1' })),
+      update: vi.fn(async (_args: Prisma.CallUpdateArgs) => ({ id: 'call-1' })),
+      updateMany: vi.fn(async (_args: Prisma.CallUpdateManyArgs) => ({
+        count: 1,
+      })),
+      findUnique: vi.fn(
+        async (_args: Prisma.CallFindUniqueArgs): Promise<unknown> =>
+          storedCall,
+      ),
     },
     callEvent: {
       create: vi.fn(async () => ({ id: 'event-1' })),
@@ -146,6 +156,42 @@ function createHarness() {
     quit,
     emit,
   };
+}
+
+/**
+ * The one `calls` row the events are about, written as Postgres would write
+ * it: each write lands whole, and a conditional one only where its condition
+ * holds. It knows the plain values and the one condition the subscriber
+ * writes with, `status: { not }`, and nothing else of Prisma.
+ */
+function storeOneCall(db: ReturnType<typeof createHarness>['db']) {
+  let row: Record<string, unknown> | null = null;
+  const holds = (where: Prisma.CallWhereInput) =>
+    typeof where.status !== 'object' ||
+    where.status === null ||
+    row?.status !== where.status.not;
+  const write = (data: object) => {
+    row = { ...row, ...data };
+  };
+
+  db.call.findUnique.mockImplementation(async () =>
+    row ? { ...storedCall, ...row } : null,
+  );
+  db.call.upsert.mockImplementation(async ({ create, update }) => {
+    write(row ? update : { id: 'call-1', ...create });
+    return { id: 'call-1' };
+  });
+  db.call.update.mockImplementation(async ({ data }) => {
+    write(data);
+    return { id: 'call-1' };
+  });
+  db.call.updateMany.mockImplementation(async ({ where, data }) => {
+    if (!row || !holds(where ?? {})) return { count: 0 };
+    write(data);
+    return { count: 1 };
+  });
+
+  return () => row;
 }
 
 describe('CallEventSubscriberService', () => {
@@ -305,13 +351,22 @@ describe('CallEventSubscriberService', () => {
     expect(harness.db.call.update).toHaveBeenCalledWith({
       where: { id: 'call-1' },
       data: {
-        status: 'busy',
         duration: 42,
         callerLegUuid: 'caller-leg',
         agentLegUuid: 'agent-leg',
         externalLegUuid: null,
       },
     });
+    expect(harness.db.call.updateMany).toHaveBeenCalledWith({
+      where: { id: 'call-1', status: { not: 'missed' } },
+      data: { status: 'busy' },
+    });
+    // Both or neither: a call left with a duration but no end status would
+    // show as still going.
+    expect(harness.db.$transaction).toHaveBeenCalledExactlyOnceWith([
+      harness.db.call.update.mock.results[0]?.value,
+      harness.db.call.updateMany.mock.results[0]?.value,
+    ]);
     expect(harness.db.callEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         eventType: 'CALL_BUSY',
@@ -363,7 +418,136 @@ describe('CallEventSubscriberService', () => {
       data: expect.objectContaining({
         eventType: 'CALL_NO_ANSWER',
         actorType: 'SYSTEM',
+        description: 'Call missed: no agent answered',
+        metadata: expect.objectContaining({ reason: 'voicemail' }),
       }),
+    });
+  });
+
+  test('says on the timeline when the caller hung up before anyone answered', async () => {
+    await harness.emit(CHANNELS.CALL_MISSED, {
+      conversationUuid: 'conv-3',
+      from,
+      to,
+      departmentId: 'dept-1',
+      reason: 'caller-hung-up',
+      timestamp,
+    } satisfies ChannelInput<'call:missed'>);
+
+    expect(harness.db.call.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: { status: 'missed' } }),
+    );
+    expect(harness.db.callEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        eventType: 'CALL_NO_ANSWER',
+        actorType: 'CALLER',
+        actorId: from,
+        description: 'Call missed: the caller hung up before anyone answered',
+        metadata: expect.objectContaining({ reason: 'caller-hung-up' }),
+      }),
+    });
+  });
+
+  describe('a call nobody answered', () => {
+    const incoming = {
+      conversationUuid: 'conv-1',
+      from,
+      to,
+      callerLegUuid: 'caller-leg',
+      departmentId: 'dept-1',
+      timestamp,
+    } satisfies ChannelInput<'call:incoming'>;
+    const gaveUp = {
+      conversationUuid: 'conv-1',
+      from,
+      to,
+      departmentId: 'dept-1',
+      reason: 'caller-hung-up',
+      timestamp,
+    } satisfies ChannelInput<'call:missed'>;
+    const sentToVoicemail = { ...gaveUp, reason: 'voicemail' } as const;
+    // Twilio's word for the caller's leg, which the controller answered to
+    // hold it in the conference: all of it was ringing.
+    const callerLegCompleted = {
+      conversationUuid: 'conv-1',
+      duration: 32,
+      status: 'completed',
+      callerLegUuid: 'caller-leg',
+      timestamp,
+    } satisfies ChannelInput<'call:ended'>;
+
+    async function stored(events: Array<[string, unknown]>) {
+      const row = storeOneCall(harness.db);
+      await harness.emit(CHANNELS.CALL_INCOMING, incoming);
+      for (const [channel, payload] of events) {
+        await harness.emit(channel, payload);
+      }
+      return row();
+    }
+
+    const voicemailLeft = { ...callerLegCompleted, duration: 0 };
+
+    test.each([
+      { first: 'the missed report', events: [gaveUp, callerLegCompleted] },
+      { first: 'the end', events: [callerLegCompleted, gaveUp] },
+    ])(
+      'is missed when the caller hangs up while it rings, $first first',
+      async ({ events }) => {
+        await expect(
+          stored(
+            events.map((event) => [
+              'reason' in event ? CHANNELS.CALL_MISSED : CHANNELS.CALL_ENDED,
+              event,
+            ]),
+          ),
+        ).resolves.toMatchObject({ status: 'missed', duration: 32 });
+      },
+    );
+
+    test.each([
+      { first: 'the missed report', events: [sentToVoicemail, voicemailLeft] },
+      { first: 'the end', events: [voicemailLeft, sentToVoicemail] },
+    ])('stays missed after a voicemail, $first first', async ({ events }) => {
+      await expect(
+        stored(
+          events.map((event) => [
+            'reason' in event ? CHANNELS.CALL_MISSED : CHANNELS.CALL_ENDED,
+            event,
+          ]),
+        ),
+      ).resolves.toMatchObject({ status: 'missed', duration: 0 });
+    });
+
+    test('stays missed however often either report is delivered', async () => {
+      await expect(
+        stored([
+          [CHANNELS.CALL_ENDED, callerLegCompleted],
+          [CHANNELS.CALL_MISSED, gaveUp],
+          [CHANNELS.CALL_ENDED, callerLegCompleted],
+          [CHANNELS.CALL_MISSED, gaveUp],
+          [CHANNELS.CALL_ENDED, callerLegCompleted],
+        ]),
+      ).resolves.toMatchObject({ status: 'missed' });
+    });
+
+    test('an answered call ends with the status Twilio reports', async () => {
+      await expect(
+        stored([
+          [
+            CHANNELS.CALL_STARTED,
+            {
+              conversationUuid: 'conv-1',
+              from,
+              to,
+              userId: 'user-1',
+              direction: 'inbound',
+              agentLegUuid: 'agent-leg',
+              timestamp,
+            } satisfies ChannelInput<'call:started'>,
+          ],
+          [CHANNELS.CALL_ENDED, { ...callerLegCompleted, duration: 95 }],
+        ]),
+      ).resolves.toMatchObject({ status: 'completed', duration: 95 });
     });
   });
 

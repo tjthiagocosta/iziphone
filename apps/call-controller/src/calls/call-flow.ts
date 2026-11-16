@@ -7,7 +7,7 @@ import type {
   TransferFailureReason,
   UnavailableReason,
 } from '@repo/dto';
-import { OUTBOUND_GRANT } from '@repo/events';
+import { type CallMissedReason, OUTBOUND_GRANT } from '@repo/events';
 import type { FastifyBaseLogger } from 'fastify';
 import {
   type InboundCallPlan,
@@ -1339,7 +1339,16 @@ export class CallFlow {
         await Promise.all(
           plan.hangUpLegUuids.map((other) => telephony.safeHangup(other)),
         );
-        await this.reportEnded(plan.final, status, duration ?? 0);
+        // The state is already gone, so nothing would retry either report:
+        // one that fails must not cost the other. The API takes them in
+        // either order.
+        try {
+          await this.reportEnded(plan.final, status, duration ?? 0);
+        } finally {
+          if (plan.callerGaveUp) {
+            await this.reportMissed(plan.final, 'caller-hung-up');
+          }
+        }
         return;
       case 'ring-next':
         if (await this.ringNextInOrder(conversationUuid)) {
@@ -1506,7 +1515,8 @@ export class CallFlow {
   /**
    * Nobody can take the call before it was even offered: answer with
    * voicemail. A call that ended, or began to, while its ring was being set
-   * up is not reported missed: whoever ended it reports its end.
+   * up is not reported missed here: whoever ended it reports its end, and a
+   * caller who hung up reports it missed with it.
    */
   private async voicemailInsteadOfRinging(
     state: CallState,
@@ -1520,13 +1530,7 @@ export class CallFlow {
       return { result: true };
     });
     if (update?.result) {
-      await this.deps.events.callMissed({
-        conversationUuid: state.conversationUuid,
-        from: state.from,
-        to: state.to,
-        departmentId: state.departmentId,
-        userId: state.targetUserId,
-      });
+      await this.reportMissed(state, 'voicemail');
     }
 
     return this.deps.telephony.buildVoicemailTwiml(
@@ -1589,13 +1593,7 @@ export class CallFlow {
     // A call an agent talked on was not missed, even when the transfer that
     // followed fell through and voicemail is where the caller ends up.
     if (!state.answered) {
-      await events.callMissed({
-        conversationUuid,
-        from: state.from,
-        to: state.to,
-        departmentId: state.departmentId,
-        userId: state.targetUserId,
-      });
+      await this.reportMissed(state, 'voicemail');
     }
     if (moved.wasHeld) {
       await events.callResumed({
@@ -1623,6 +1621,21 @@ export class CallFlow {
     if (update) {
       await this.reportEnded(update.before, status, 0);
     }
+  }
+
+  /** Nobody answered the call: tell the API, which lists it as missed. */
+  private async reportMissed(
+    state: CallState,
+    reason: CallMissedReason,
+  ): Promise<void> {
+    await this.deps.events.callMissed({
+      conversationUuid: state.conversationUuid,
+      from: state.from,
+      to: state.to,
+      departmentId: state.departmentId,
+      userId: state.targetUserId,
+      reason,
+    });
   }
 
   /** The call is over and its state is gone: tell the API, forget the legs. */
@@ -1928,7 +1941,13 @@ type LegEndPlan =
   /** The leg is forgotten and the call goes on as it was. */
   | { kind: 'forgotten' }
   /** The call is over. `final` is what it was left as, for the report. */
-  | { kind: 'ended'; final: CallState; hangUpLegUuids: string[] }
+  | {
+      kind: 'ended';
+      final: CallState;
+      hangUpLegUuids: string[];
+      /** The caller gave up waiting: the call is reported missed too. */
+      callerGaveUp: boolean;
+    }
   /** A fixed-order ring moves on to whoever is next. */
   | { kind: 'ring-next' }
   /** Nobody is left to answer. */
@@ -1960,18 +1979,28 @@ function decideLegEnded(
     return hasActiveLegs(draft)
       ? { result: { kind: 'forgotten' } }
       : {
-          result: { kind: 'ended', final: draft, hangUpLegUuids: [] },
+          result: {
+            kind: 'ended',
+            final: draft,
+            hangUpLegUuids: [],
+            callerGaveUp: false,
+          },
           remove: true,
         };
   }
 
   // The caller hanging up ends the call as it stood, their leg included.
+  // Before anybody answered, and before voicemail took them, they gave up
+  // waiting: the call was missed, and nothing else will report it. One sent
+  // to voicemail was reported missed on the way there.
   if (participant.participantType === 'caller') {
     return {
       result: {
         kind: 'ended',
         final: draft,
         hangUpLegUuids: legUuidsOf(draft).filter((other) => other !== legUuid),
+        callerGaveUp:
+          draft.direction === 'inbound' && !draft.answered && !draft.voicemail,
       },
       remove: true,
     };
@@ -1989,6 +2018,7 @@ function decideLegEnded(
             kind: 'ended',
             final: draft,
             hangUpLegUuids: everyOtherLeg,
+            callerGaveUp: false,
           },
           remove: true,
         };
@@ -1999,7 +2029,12 @@ function decideLegEnded(
         };
       }
       return {
-        result: { kind: 'ended', final: draft, hangUpLegUuids: [] },
+        result: {
+          kind: 'ended',
+          final: draft,
+          hangUpLegUuids: [],
+          callerGaveUp: false,
+        },
         remove: true,
       };
 
@@ -2014,6 +2049,7 @@ function decideLegEnded(
               kind: 'ended',
               final: draft,
               hangUpLegUuids: everyOtherLeg,
+              callerGaveUp: false,
             },
             remove: true,
           };
@@ -2033,6 +2069,7 @@ function decideLegEnded(
             kind: 'ended',
             final: draft,
             hangUpLegUuids: everyOtherLeg,
+            callerGaveUp: false,
           },
           remove: true,
         };

@@ -335,6 +335,7 @@ describe('CallFlow', () => {
         to: businessNumber,
         departmentId: 'dept-1',
         userId: undefined,
+        reason: 'voicemail',
       });
     });
 
@@ -551,6 +552,138 @@ describe('CallFlow', () => {
       await expect(telephony.getLegMetadata('CAleg1')).resolves.toBeNull();
     });
 
+    test.each([
+      {
+        ring: 'everybody at once',
+        routing: department,
+        departmentId: 'dept-1',
+        userId: undefined,
+      },
+      {
+        ring: 'a fixed order',
+        routing: {
+          ...department,
+          settings: { ...settings, openHoursRoutingType: 'FIXED_ORDER' },
+        } satisfies CachedRouting,
+        departmentId: 'dept-1',
+        userId: undefined,
+      },
+      {
+        ring: 'a member’s own number',
+        routing: directLine,
+        departmentId: undefined,
+        userId: 'user-1',
+      },
+    ])(
+      'a caller who hangs up while $ring rings is one missed call',
+      async ({ routing, departmentId, userId }) => {
+        const { flow, events, twilio, telephony } = await ringingCall({
+          routing,
+        });
+
+        // The controller answered the caller's leg to hold it in the
+        // conference, so Twilio reports it completed, twice.
+        await flow.handleConferenceEvent({
+          conversationUuid: 'CAcall1',
+          event: 'participant-leave',
+          legUuid: 'CAcall1',
+          participantLabel: 'caller|%2B15555550101|nonce',
+          duration: 32,
+        });
+        await flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAcall1',
+          status: 'completed',
+          duration: 32,
+        });
+
+        expect(events.callMissed).toHaveBeenCalledExactlyOnceWith({
+          conversationUuid: 'CAcall1',
+          from: caller,
+          to: businessNumber,
+          departmentId,
+          userId,
+          reason: 'caller-hung-up',
+        });
+        expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 'completed', duration: 32 }),
+        );
+        expect(twilio.hangups()).toContain('CAleg1');
+        expect(twilio.redirects()).toHaveLength(0);
+        await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
+      },
+    );
+
+    test('a caller who hangs up while the next member of a fixed order is dialed is one missed call', async () => {
+      const { flow, events, twilio } = await ringingCall({
+        routing: {
+          ...department,
+          settings: { ...settings, openHoursRoutingType: 'FIXED_ORDER' },
+        },
+      });
+      // The first member's ring ended, and the second is not rung yet.
+      twilio.whileCreating(async () => {
+        twilio.whileCreating(async () => undefined);
+        await flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAcall1',
+          status: 'completed',
+          duration: 21,
+        });
+      });
+
+      await flow.handleCallStatus({
+        conversationUuid: 'CAcall1',
+        legUuid: 'CAleg1',
+        status: 'no-answer',
+      });
+
+      expect(events.callMissed).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ reason: 'caller-hung-up' }),
+      );
+      expect(events.callEnded).toHaveBeenCalledOnce();
+      expect(twilio.redirects()).toHaveLength(0);
+    });
+
+    test('a call the caller gave up on is reported ended even when its missed report fails', async () => {
+      const { flow, events, telephony } = await ringingCall();
+      events.callMissed.mockRejectedValueOnce(
+        new Error('Redis is unavailable'),
+      );
+
+      await expect(
+        flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAcall1',
+          status: 'completed',
+          duration: 32,
+        }),
+      ).rejects.toThrow('Redis is unavailable');
+
+      expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ status: 'completed', duration: 32 }),
+      );
+      await expect(telephony.getLegMetadata('CAleg1')).resolves.toBeNull();
+    });
+
+    test('a call the caller gave up on is reported missed even when its end report fails', async () => {
+      const { flow, events } = await ringingCall();
+      events.callEnded.mockRejectedValueOnce(new Error('Redis is unavailable'));
+
+      await expect(
+        flow.handleCallStatus({
+          conversationUuid: 'CAcall1',
+          legUuid: 'CAcall1',
+          status: 'completed',
+          duration: 32,
+        }),
+      ).rejects.toThrow('Redis is unavailable');
+
+      expect(events.callMissed).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ reason: 'caller-hung-up' }),
+      );
+    });
+
     test('a rejected call hangs everyone up and ends once the legs are gone', async () => {
       const { flow, events, telephony, twilio } = await ringingCall();
 
@@ -579,6 +712,8 @@ describe('CallFlow', () => {
           status: 'completed',
         }),
       );
+      // Somebody ended it; the caller did not give up waiting.
+      expect(events.callMissed).not.toHaveBeenCalled();
       await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
       await expect(telephony.getLegMetadata('CAleg1')).resolves.toBeNull();
     });
@@ -663,6 +798,10 @@ describe('CallFlow', () => {
 
       expect(events.callEnded).toHaveBeenCalledWith(
         expect.objectContaining({ conversationUuid: 'CAcall1', duration: 25 }),
+      );
+      // Reported missed once, on the way to voicemail.
+      expect(events.callMissed).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ reason: 'voicemail' }),
       );
       await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
       await expect(telephony.getLegMetadata('CAcall1')).resolves.toBeNull();
@@ -954,6 +1093,7 @@ describe('CallFlow', () => {
         agentLegUuid: 'CAleg1',
         externalLegUuid: undefined,
       });
+      expect(events.callMissed).not.toHaveBeenCalled();
       await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
     });
 
@@ -2965,8 +3105,11 @@ describe('CallFlow', () => {
           await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
           expect(claimsOf('user-1')).toEqual([]);
           expect(claimsOf('user-2')).toEqual([]);
-          // The caller hung up: nobody missed a call they could have taken.
-          expect(events.callMissed).not.toHaveBeenCalled();
+          // Missed because the caller gave up, and only that: the ring that
+          // found nobody to ring does not send them to voicemail as well.
+          expect(events.callMissed).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ reason: 'caller-hung-up' }),
+          );
         });
 
         test('lets every member go when the call is ended while they are dialed at once', async () => {

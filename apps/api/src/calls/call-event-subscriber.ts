@@ -4,6 +4,7 @@ import {
   type Prisma,
   type PrismaClient,
 } from '@repo/db';
+import type { CallStatus } from '@repo/dto';
 import {
   type CallConversationMigratedEvent,
   type CallEndedEvent,
@@ -35,6 +36,14 @@ const END_STATUS_EVENT: Record<CallEndedEvent['status'], CallEventType> = {
   'no-answer': 'CALL_NO_ANSWER',
 };
 
+/**
+ * A call the controller reported missed stays missed, whatever Twilio says
+ * of its end. The caller's leg of a call nobody answered still completes,
+ * after ringing out or after leaving a voicemail, and the two reports reach
+ * this service in either order.
+ */
+const MISSED: CallStatus = 'missed';
+
 interface TimelineEntry {
   callId: string;
   eventType: CallEventType;
@@ -42,6 +51,25 @@ interface TimelineEntry {
   actorId?: string | undefined;
   description: string;
   metadata?: Record<string, unknown>;
+}
+
+/** How the timeline tells why nobody answered the call. */
+function missedEntry(
+  event: CallMissedEvent,
+): Pick<TimelineEntry, 'actorType' | 'actorId' | 'description'> {
+  switch (event.reason) {
+    case 'voicemail':
+      return {
+        actorType: 'SYSTEM',
+        description: 'Call missed: no agent answered',
+      };
+    case 'caller-hung-up':
+      return {
+        actorType: 'CALLER',
+        actorId: event.from,
+        description: 'Call missed: the caller hung up before anyone answered',
+      };
+  }
 }
 
 /**
@@ -245,16 +273,24 @@ export class CallEventSubscriberService {
     const existing = await this.findCall(event.conversationUuid);
     if (!existing) return;
 
-    const call = await this.db.call.update({
-      where: { id: existing.id },
-      data: {
-        status: event.status,
-        duration: event.duration,
-        callerLegUuid: event.callerLegUuid ?? existing.callerLegUuid,
-        agentLegUuid: event.agentLegUuid ?? existing.agentLegUuid,
-        externalLegUuid: event.externalLegUuid ?? existing.externalLegUuid,
-      },
-    });
+    // One transaction, so the end is stored whole or not at all. The status
+    // is conditional on the row as it is when written, not as it was read,
+    // so that a `call:missed` handled in between is not overwritten either.
+    const [call] = await this.db.$transaction([
+      this.db.call.update({
+        where: { id: existing.id },
+        data: {
+          duration: event.duration,
+          callerLegUuid: event.callerLegUuid ?? existing.callerLegUuid,
+          agentLegUuid: event.agentLegUuid ?? existing.agentLegUuid,
+          externalLegUuid: event.externalLegUuid ?? existing.externalLegUuid,
+        },
+      }),
+      this.db.call.updateMany({
+        where: { id: existing.id, status: { not: MISSED } },
+        data: { status: event.status },
+      }),
+    ]);
 
     await this.addTimelineEntry({
       callId: call.id,
@@ -279,21 +315,21 @@ export class CallEventSubscriberService {
         from: event.from,
         to: event.to ?? '',
         direction: 'inbound',
-        status: 'missed',
+        status: MISSED,
         departmentId: event.departmentId ?? null,
         userId: event.userId ?? null,
       },
-      update: { status: 'missed' },
+      update: { status: MISSED },
     });
 
     await this.addTimelineEntry({
       callId: call.id,
       eventType: 'CALL_NO_ANSWER',
-      actorType: 'SYSTEM',
-      description: 'Call missed: no agent answered',
+      ...missedEntry(event),
       metadata: {
         departmentId: event.departmentId,
         userId: event.userId,
+        reason: event.reason,
       },
     });
   }

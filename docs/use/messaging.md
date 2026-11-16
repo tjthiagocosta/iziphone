@@ -13,6 +13,12 @@ Voicemails, Messages**. "Show older" pages further back.
 A message row opens the thread. A call row offers **Call back** instead, from
 the line the call was on.
 
+An incoming call nobody answered is listed under **Missed**: the caller was
+sent to voicemail, or hung up while it was still ringing, however short the
+ring. One that left a voicemail is under **Voicemails** too. A call somebody
+answered is never missed, even when it reaches voicemail later because a
+transfer did not go through.
+
 Not every sender is a person with a phone number. Delivery notices, one-time
 codes and alerts arrive from a short code such as 55501, or from a name such as
 EXAMPLECO. They land in the inbox as their own threads, named by whatever the

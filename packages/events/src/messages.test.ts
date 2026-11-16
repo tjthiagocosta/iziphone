@@ -4,6 +4,7 @@ import {
   CallEndedEventSchema,
   CallHoldEventSchema,
   CallIncomingEventSchema,
+  CallMissedEventSchema,
   CallRecordingReadyEventSchema,
   CHANNEL_SCHEMAS,
   MessageActivityNotificationSchema,
@@ -58,6 +59,29 @@ describe('CallEndedEventSchema', () => {
         duration: -1,
         status: 'completed',
       }).success,
+    ).toBe(false);
+  });
+});
+
+describe('CallMissedEventSchema', () => {
+  const missed = {
+    conversationUuid: 'conv-1',
+    from: '+15555550100',
+    timestamp: '2026-04-21T12:00:00.000Z',
+  };
+
+  test('takes a call reported without a reason for one sent to voicemail', () => {
+    expect(CallMissedEventSchema.parse(missed).reason).toBe('voicemail');
+  });
+
+  test('carries a caller who hung up, and refuses a reason it does not know', () => {
+    expect(
+      CallMissedEventSchema.parse({ ...missed, reason: 'caller-hung-up' })
+        .reason,
+    ).toBe('caller-hung-up');
+    expect(
+      CallMissedEventSchema.safeParse({ ...missed, reason: 'declined' })
+        .success,
     ).toBe(false);
   });
 });

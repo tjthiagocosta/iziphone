@@ -13,6 +13,7 @@ describe('createCallEventPublisher', () => {
       from: '+15555550101',
       to: '+15555550102',
       departmentId: 'dept-1',
+      reason: 'caller-hung-up',
     });
 
     expect(publish).toHaveBeenCalledWith(
@@ -22,6 +23,7 @@ describe('createCallEventPublisher', () => {
         from: '+15555550101',
         to: '+15555550102',
         departmentId: 'dept-1',
+        reason: 'caller-hung-up',
         timestamp: '2026-09-08T12:34:56.000Z',
       }),
     );
