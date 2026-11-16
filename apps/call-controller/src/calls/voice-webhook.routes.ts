@@ -81,6 +81,11 @@ export const voiceWebhookRoutes: FastifyPluginAsync<
   VoiceWebhookOptions
 > = async (fastify, { flow, telephony }) => {
   const { config } = fastify;
+  if (!config.checkTwilioSignatures) {
+    fastify.log.warn(
+      'TWILIO_SIGNATURE_CHECK is off: Twilio voice webhooks are accepted without a signature',
+    );
+  }
 
   fastify.addHook(
     'preHandler',
@@ -91,7 +96,7 @@ export const voiceWebhookRoutes: FastifyPluginAsync<
             publicUrl: config.twilio.webhookBaseUrl,
           }
         : null,
-      skipValidation: config.nodeEnv === 'development',
+      skipValidation: !config.checkTwilioSignatures,
     }),
   );
 

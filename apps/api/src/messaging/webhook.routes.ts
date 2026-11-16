@@ -11,10 +11,15 @@ export const twilioMessagesWebhookRoutes: FastifyPluginAsync = async (
   fastify,
 ) => {
   const { config, db, log, mediaStore, redis } = fastify;
+  if (!config.checkTwilioSignatures) {
+    log.warn(
+      'TWILIO_SIGNATURE_CHECK is off: Twilio messaging webhooks are accepted without a signature',
+    );
+  }
   const validateTwilioSignature = createTwilioSignatureValidator({
     authToken: config.twilio?.authToken ?? null,
     publicUrl: config.publicUrl,
-    skipValidation: config.nodeEnv === 'development',
+    skipValidation: !config.checkTwilioSignatures,
   });
   const webhookService = new MessageWebhookService({
     db,

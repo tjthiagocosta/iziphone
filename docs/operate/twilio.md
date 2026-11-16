@@ -37,9 +37,19 @@ the numbers assigned to it.
 
 ## Webhook signatures
 
-Twilio signs every webhook. Signature validation is enforced when `NODE_ENV` is
-anything other than `development`, and skipped in development so local tunnels
-are easy to work with. Never run with `NODE_ENV=development` on a public host.
+Twilio signs every webhook, and both services refuse one without a valid
+signature with a 403 (a 500 while the Twilio credentials are not set), in
+every environment unless `TWILIO_SIGNATURE_CHECK` is `off` (below). Twilio signs the exact public URL it
+called, so the check works behind a proxy or a tunnel only when
+`BETTER_AUTH_URL` (texts) and `WEBHOOK_BASE_URL` (calls) are the addresses
+Twilio was given, scheme and host included.
+
+`TWILIO_SIGNATURE_CHECK=off` turns the check off, so a developer can post a
+webhook by hand with `curl`. It is for a development stack only: unless
+`NODE_ENV=development`, the services refuse to start with it off, and they log
+a warning at boot when it is. Never leave it off on a stack Twilio, or anybody
+else, can reach. See
+[0015](../decisions/0015-twilio-signatures-are-checked-unless-a-development-stack-says-otherwise.md).
 
 ## Related
 

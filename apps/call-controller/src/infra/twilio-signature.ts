@@ -11,7 +11,7 @@ export interface TwilioSignatureOptions {
    * signed against; null while the deployment has no Twilio credentials.
    */
   signer: { authToken: string; publicUrl: string } | null;
-  /** Development skips validation so local tunnels are easy to work with. */
+  /** Set by `TWILIO_SIGNATURE_CHECK=off`, which only development allows. */
   skipValidation: boolean;
 }
 

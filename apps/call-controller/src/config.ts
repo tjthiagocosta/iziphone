@@ -38,6 +38,7 @@ const EnvSchema = z.object({
   TWILIO_API_SECRET: z.string().optional(),
   TWILIO_TWIML_APP_SID: z.string().optional(),
   TWILIO_HOLD_AUDIO_URL: z.url().optional(),
+  TWILIO_SIGNATURE_CHECK: z.enum(['on', 'off']).default('on'),
 });
 
 type EnvValues = z.infer<typeof EnvSchema>;
@@ -83,6 +84,11 @@ export interface ControllerConfig {
   internalApi: { url: string; token: string };
   /** Null until the deployment has Twilio credentials; voice then reports itself unconfigured. */
   twilio: TwilioVoiceConfig | null;
+  /**
+   * Whether a Twilio webhook must carry a valid signature. Only a
+   * development stack may turn it off, to post webhooks by hand.
+   */
+  checkTwilioSignatures: boolean;
 }
 
 export class ControllerConfigError extends Error {
@@ -126,7 +132,27 @@ export function loadControllerConfig(env: NodeJS.ProcessEnv): ControllerConfig {
       token: values.INTERNAL_API_TOKEN,
     },
     twilio: resolveTwilio(values),
+    checkTwilioSignatures: resolveSignatureCheck(values),
   };
+}
+
+/**
+ * With the check off, anyone who can reach the webhook routes can drive a
+ * call, so only a development stack may start that way. Production is the
+ * default, so a stack that forgets NODE_ENV is held to it.
+ */
+function resolveSignatureCheck(values: EnvValues): boolean {
+  if (values.TWILIO_SIGNATURE_CHECK === 'on') {
+    return true;
+  }
+
+  if (values.NODE_ENV !== 'development') {
+    throw new ControllerConfigError([
+      'TWILIO_SIGNATURE_CHECK: off is allowed only with NODE_ENV=development; anywhere else anyone could post a fake Twilio webhook',
+    ]);
+  }
+
+  return false;
 }
 
 function resolveTwilio(values: EnvValues): TwilioVoiceConfig | null {
