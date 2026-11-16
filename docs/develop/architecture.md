@@ -145,6 +145,16 @@ or goes away. Every change to a call's state is a conditional write on its
 the other Redis keys.
 See [0012](../decisions/0012-call-availability-belongs-to-the-controller.md).
 
+**The browser asks again after a failure that can pass.** No answer, a 408, a
+429 and a 5xx can pass; any other refusal, and an answer the app cannot read,
+cannot (`apps/web/src/lib/api/retry.ts`). Everyone behind one office address
+shares the API's rate limit, so loading the signed-in user when a page opens
+follows this rule: it asks again, waiting from 1 s doubling to 30 s, and the
+session reads as loading meanwhile, not failed. It stops once the API answers,
+a newer load or a sign-out overtakes it, or the page goes away. The reload a
+sign-in page makes asks once, because that page reports the failure itself and
+the visitor can try again. The softphone's start follows the same rule, below.
+
 **Browser softphone behavior.** The web app registers a Twilio Voice device on
 sign-in and refreshes its token before it expires. Microphone access is
 requested before the device registers. A registration that fails in a way

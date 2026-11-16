@@ -13,6 +13,7 @@ import {
 } from 'react';
 import { fetchCurrentUser, fetchRealtimeToken } from '@/lib/api/auth';
 import { onSessionExpired } from '@/lib/api/client';
+import { keepAsking } from '@/lib/api/retry';
 import { authClient } from '@/lib/auth-client';
 import {
   type LoginTarget,
@@ -32,7 +33,10 @@ export interface AuthContextValue {
   user: AuthUser | null;
   /** True until the API has said whether the session cookie opens a session. */
   isLoading: boolean;
-  /** Why the session could not be loaded, when the API was unreachable. */
+  /**
+   * Why the session could not be loaded: a failure that will not pass, or any
+   * failure of the one reload a sign-in page asks for.
+   */
   error: string | null;
   signOut: () => Promise<void>;
   /**
@@ -84,9 +88,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' });
   /*
    * Moves on with every load, every sign-out and the provider going away, so
-   * that only the newest of them settles the state. The first load can still
-   * be out when the visitor signs in, and its "nobody" must not land after
-   * the answer the sign-in asked for.
+   * that only the newest of them settles the state, and a load waiting to ask
+   * again gives up. The first load can still be out when the visitor signs
+   * in, and its "nobody" must not land after the answer the sign-in asked for.
    */
   const sessionChange = useRef(0);
 
@@ -99,45 +103,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [router],
   );
 
-  const loadSession = useCallback(async (): Promise<AuthUser | null> => {
-    sessionChange.current += 1;
-    const load = sessionChange.current;
+  /*
+   * The load a page makes when it opens asks again after a failure that can
+   * pass, such as a spent rate limit or a restarting API, and the state stays
+   * loading meanwhile: failed, the shell would stay empty until a reload. A
+   * page that signs the visitor in asks once. It says itself that the app
+   * could not open, the visitor is there to try again, and an answer that
+   * came after they left would navigate them away from wherever they went.
+   */
+  const loadSession = useCallback(
+    async ({ askAgain }: { askAgain: boolean }): Promise<AuthUser | null> => {
+      sessionChange.current += 1;
+      const load = sessionChange.current;
 
-    let user: AuthUser | null;
-    try {
-      user = await fetchCurrentUser();
-    } catch (error) {
-      if (load === sessionChange.current) {
-        setState({
-          status: 'failed',
-          error:
-            error instanceof Error
-              ? error.message
-              : 'The session could not be loaded',
-        });
+      let user: AuthUser | null;
+      try {
+        user = askAgain
+          ? await keepAsking(
+              fetchCurrentUser,
+              () => load === sessionChange.current,
+            )
+          : await fetchCurrentUser();
+      } catch (error) {
+        if (load === sessionChange.current) {
+          setState({
+            status: 'failed',
+            error:
+              error instanceof Error
+                ? error.message
+                : 'The session could not be loaded',
+          });
+        }
+        throw error;
       }
-      throw error;
-    }
 
-    // Overtaken: what the provider holds is a newer answer's, not this one's.
-    if (load !== sessionChange.current) {
+      // Overtaken: what the provider holds is a newer answer's, not this one's.
+      if (load !== sessionChange.current) {
+        return null;
+      }
+      if (user) {
+        setState({ status: 'signed-in', user });
+        return user;
+      }
+      setState({ status: 'signed-out' });
+      const { pathname, search } = window.location;
+      if (requiresSession(pathname)) {
+        router.replace(loginPathFor({ redirect: `${pathname}${search}` }));
+      }
       return null;
-    }
-    if (user) {
-      setState({ status: 'signed-in', user });
-      return user;
-    }
-    setState({ status: 'signed-out' });
-    const { pathname, search } = window.location;
-    if (requiresSession(pathname)) {
-      router.replace(loginPathFor({ redirect: `${pathname}${search}` }));
-    }
-    return null;
-  }, [router]);
+    },
+    [router],
+  );
+
+  const reloadSession = useCallback(
+    () => loadSession({ askAgain: false }),
+    [loadSession],
+  );
 
   useEffect(() => {
     // The state carries a failure to the views; nothing else waits on this load.
-    loadSession().catch(() => undefined);
+    loadSession({ askAgain: true }).catch(() => undefined);
 
     return () => {
       sessionChange.current += 1;
@@ -180,7 +205,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading: state.status === 'loading',
     error: state.status === 'failed' ? state.error : null,
     signOut,
-    reloadSession: loadSession,
+    reloadSession,
     getRealtimeToken: fetchRealtimeToken,
   };
 

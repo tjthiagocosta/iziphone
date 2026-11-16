@@ -12,6 +12,7 @@ import {
   type CallTransferOutcome,
   type TransferFailureReason,
 } from '@repo/dto';
+import { canPassByRetrying, retryDelay } from '../api/retry';
 
 export type DeviceStatus = 'offline' | 'connecting' | 'ready' | 'error';
 
@@ -155,16 +156,6 @@ export const ENDED_DISPLAY_MS = 1000;
  */
 export const PENDING_ANSWER_TTL_MS = 10_000;
 
-/**
- * How long a start that failed in a way that can pass waits before it is
- * tried again: doubling from the first to the cap, as the call socket does
- * after a refused handshake.
- * Everyone behind one office address shares the API's rate limit, and a
- * phone that gave up after one 429 would leave its user unreachable.
- */
-export const START_RETRY_MIN_MS = 1000;
-export const START_RETRY_MAX_MS = 30_000;
-
 const CALL_STATE_CLOSED = 'closed';
 
 /**
@@ -210,7 +201,8 @@ export class TelephonySession {
   /** The call "Call ended" is on screen for. */
   private lastEndedCall: VoiceCall | null = null;
   private endedTimer: ReturnType<typeof setTimeout> | null = null;
-  private startRetryDelay = START_RETRY_MIN_MS;
+  /** Starts that failed in a row, each in a way that can pass. */
+  private failedStarts = 0;
   private startRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -304,12 +296,11 @@ export class TelephonySession {
     }
 
     this.update({ deviceStatus: 'connecting', error: message });
-    const delay = this.startRetryDelay;
-    this.startRetryDelay = Math.min(delay * 2, START_RETRY_MAX_MS);
+    this.failedStarts += 1;
     this.startRetryTimer = setTimeout(() => {
       this.startRetryTimer = null;
       void this.registerDevice();
-    }, delay);
+    }, retryDelay(this.failedStarts));
   }
 
   /** Tears the device down. Twilio drops any call still on it. */
@@ -870,25 +861,6 @@ function wasTurnedDown(error: unknown): boolean {
     error.status >= 400 &&
     error.status < 500
   );
-}
-
-/**
- * Whether a voice token request that failed this way may succeed later. No
- * answer at all, a timeout, too many requests and a server error can all
- * pass. Any other refusal, a 401 for a user who is signed out among them,
- * would only be given again, and so would an answer this app cannot read.
- */
-function canPassByRetrying(error: unknown): boolean {
-  if (
-    typeof error !== 'object' ||
-    error === null ||
-    !('status' in error) ||
-    typeof error.status !== 'number'
-  ) {
-    return true;
-  }
-  const { status } = error;
-  return status === 408 || status === 429 || status >= 500;
 }
 
 const UNCONFIRMED_TRANSFER_MESSAGE =

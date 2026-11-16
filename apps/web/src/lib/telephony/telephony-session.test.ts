@@ -1,11 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { retryDelay } from '../api/retry';
 import {
   ENDED_DISPLAY_MS,
   getCallSid,
   PENDING_ANSWER_TTL_MS,
-  START_RETRY_MAX_MS,
-  START_RETRY_MIN_MS,
   TelephonySession,
   type TelephonySessionDeps,
   type TelephonyState,
@@ -15,6 +14,10 @@ import {
 
 /** The number of the user's the test calls leave from. */
 const line = '+15550100102';
+
+/** The waits between start attempts, as the shared retry rule sets them. */
+const FIRST_WAIT_MS = retryDelay(1);
+const LONGEST_WAIT_MS = retryDelay(100);
 
 class FakeCall extends EventEmitter implements VoiceCall {
   parameters: Record<string, string>;
@@ -186,7 +189,7 @@ describe('TelephonySession', () => {
       });
 
       await context.session.start();
-      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+      await vi.advanceTimersByTimeAsync(LONGEST_WAIT_MS * 4);
 
       expect(context.deps.requestMicrophone).toHaveBeenCalledOnce();
       expect(context.deps.fetchVoiceToken).not.toHaveBeenCalled();
@@ -216,7 +219,7 @@ describe('TelephonySession', () => {
         error: 'Rate limit exceeded. Try again in 42 seconds.',
       });
 
-      await vi.advanceTimersByTimeAsync(START_RETRY_MIN_MS);
+      await vi.advanceTimersByTimeAsync(FIRST_WAIT_MS);
 
       expect(context.deps.createDevice).toHaveBeenCalledOnce();
       expect(context.state).toMatchObject({
@@ -239,7 +242,7 @@ describe('TelephonySession', () => {
       });
 
       await context.session.start();
-      await vi.advanceTimersByTimeAsync(START_RETRY_MIN_MS);
+      await vi.advanceTimersByTimeAsync(FIRST_WAIT_MS);
 
       expect(context.state.deviceStatus).toBe('ready');
     });
@@ -254,19 +257,19 @@ describe('TelephonySession', () => {
       });
 
       await context.session.start();
-      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+      await vi.advanceTimersByTimeAsync(LONGEST_WAIT_MS * 4);
 
       const waits = attemptedAt
         .slice(1)
         .map((at, i) => at - (attemptedAt[i] ?? Number.NaN));
       expect(waits.slice(0, 7)).toEqual([
-        START_RETRY_MIN_MS,
-        START_RETRY_MIN_MS * 2,
-        START_RETRY_MIN_MS * 4,
-        START_RETRY_MIN_MS * 8,
-        START_RETRY_MIN_MS * 16,
-        START_RETRY_MAX_MS,
-        START_RETRY_MAX_MS,
+        FIRST_WAIT_MS,
+        FIRST_WAIT_MS * 2,
+        FIRST_WAIT_MS * 4,
+        FIRST_WAIT_MS * 8,
+        FIRST_WAIT_MS * 16,
+        LONGEST_WAIT_MS,
+        LONGEST_WAIT_MS,
       ]);
     });
 
@@ -285,7 +288,7 @@ describe('TelephonySession', () => {
       });
 
       await context.session.start();
-      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+      await vi.advanceTimersByTimeAsync(LONGEST_WAIT_MS * 4);
 
       expect(context.deps.fetchVoiceToken).toHaveBeenCalledOnce();
       expect(context.state).toMatchObject({
@@ -316,7 +319,7 @@ describe('TelephonySession', () => {
         error: 'The phone could not start',
       });
 
-      await vi.advanceTimersByTimeAsync(START_RETRY_MIN_MS);
+      await vi.advanceTimersByTimeAsync(FIRST_WAIT_MS);
 
       expect(devices).toHaveLength(2);
       expect(devices[1]?.register).toHaveBeenCalledOnce();
@@ -331,7 +334,7 @@ describe('TelephonySession', () => {
       });
 
       await context.session.start();
-      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+      await vi.advanceTimersByTimeAsync(LONGEST_WAIT_MS * 4);
 
       expect(context.deps.fetchVoiceToken).toHaveBeenCalledOnce();
       expect(context.state).toMatchObject({
@@ -349,7 +352,7 @@ describe('TelephonySession', () => {
       await context.session.start();
 
       context.session.dispose();
-      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+      await vi.advanceTimersByTimeAsync(LONGEST_WAIT_MS * 4);
 
       expect(context.deps.fetchVoiceToken).toHaveBeenCalledOnce();
     });
