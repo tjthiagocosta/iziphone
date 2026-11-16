@@ -760,14 +760,14 @@ export class TelephonyService {
 
   /**
    * What Twilio says a leg is doing now, for a call whose status callbacks
-   * may have been lost: its `CallStatus`, and how long it lasted once it is
-   * over. A leg Twilio does not know cannot still be on the call, and is
+   * may have been lost: its `CallStatus`, and how long it lasted and when it
+   * ended once it is over. A leg Twilio does not know cannot still be on the call, and is
    * reported `completed`. Rejects when Twilio has not answered within
    * `LEG_STATUS_TIMEOUT_MS`; the request itself is left to end on its own.
    */
   async fetchLegStatus(
     legUuid: string,
-  ): Promise<{ status: string; duration?: number }> {
+  ): Promise<{ status: string; duration?: number; endedAt?: Date }> {
     const { client } = this.requireVoice();
 
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -786,9 +786,15 @@ export class TelephonyService {
     try {
       const leg = await Promise.race([client.calls(legUuid).fetch(), timedOut]);
       const duration = Number.parseInt(leg.duration ?? '', 10);
-      return Number.isNaN(duration)
-        ? { status: leg.status }
-        : { status: leg.status, duration };
+      // The SDK hands back the raw text of a time it could not parse.
+      const endedAt: unknown = leg.endTime;
+      return {
+        status: leg.status,
+        ...(Number.isNaN(duration) ? {} : { duration }),
+        ...(endedAt instanceof Date && Number.isFinite(endedAt.getTime())
+          ? { endedAt }
+          : {}),
+      };
     } catch (error) {
       if (responseStatus(error) === 404) {
         return { status: 'completed' };

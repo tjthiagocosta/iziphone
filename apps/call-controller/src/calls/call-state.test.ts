@@ -8,6 +8,7 @@ import {
   parseConversationName,
   participantOfLeg,
   removeLeg,
+  talkTimeOf,
   usersLetGo,
 } from './call-state.js';
 
@@ -225,5 +226,27 @@ describe('usersLetGo', () => {
     const answered = buildState({ activeAgentUserId: 'user-1' });
 
     expect(usersLetGo(answered, { ...answered, held: true })).toEqual([]);
+  });
+});
+
+describe('talkTimeOf', () => {
+  const answeredAt = '2026-09-08T12:00:10.000Z';
+  const endedAt = new Date('2026-09-08T12:01:37.400Z');
+
+  test('counts from the first answer to the end, in whole seconds', () => {
+    expect(talkTimeOf(buildState({ answeredAt }), endedAt)).toBe(87);
+  });
+
+  test('is nothing for a call nobody answered, however long it rang', () => {
+    expect(talkTimeOf(buildState({ answered: false }), endedAt)).toBe(0);
+  });
+
+  test('is not known for a call answered without a record of when', () => {
+    expect(talkTimeOf(buildState(), endedAt)).toBeUndefined();
+  });
+
+  test('is never negative, even when the clock was set back meanwhile', () => {
+    const before = new Date('2026-09-08T12:00:05.000Z');
+    expect(talkTimeOf(buildState({ answeredAt }), before)).toBe(0);
   });
 });

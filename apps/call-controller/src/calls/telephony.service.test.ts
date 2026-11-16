@@ -323,6 +323,29 @@ describe('TelephonyService', () => {
       }
     });
 
+    test('says when a leg that is over ended', async () => {
+      const { telephony, twilio } = createFakeTelephony();
+      const endedAt = new Date('2026-03-20T10:01:00.000Z');
+      twilio.reportLeg('CAleg1', 'completed', endedAt);
+
+      await expect(telephony.fetchLegStatus('CAleg1')).resolves.toEqual({
+        status: 'completed',
+        duration: 42,
+        endedAt,
+      });
+    });
+
+    test('leaves out an end time Twilio sent in a form it cannot read', async () => {
+      const { telephony, twilio } = createFakeTelephony();
+      // What the SDK hands back for a time it could not parse: the text.
+      twilio.reportLeg('CAleg1', 'completed', 'soon' as unknown as Date);
+
+      await expect(telephony.fetchLegStatus('CAleg1')).resolves.toEqual({
+        status: 'completed',
+        duration: 42,
+      });
+    });
+
     test('takes a leg Twilio does not know for one that is over', async () => {
       const { telephony, twilio } = createFakeTelephony();
       twilio.forgetLeg('CAleg1');

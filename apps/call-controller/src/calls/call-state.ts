@@ -69,6 +69,12 @@ export interface CallState {
    */
   voicemailGreetingUrl?: string;
   answered: boolean;
+  /**
+   * When somebody first answered, on this controller's clock: an agent on an
+   * inbound call, the number dialed or forwarded to otherwise. Absent on a
+   * call answered under a controller that did not record it.
+   */
+  answeredAt?: string;
   /** The caller has been sent to voicemail; nobody will pick up. */
   voicemail: boolean;
   /** The other party is on hold, by the hold button or by a pending transfer. */
@@ -117,6 +123,29 @@ export function legUuidsOf(state: CallState): string[] {
 
 export function hasActiveLegs(state: CallState): boolean {
   return legUuidsOf(state).length > 0;
+}
+
+/**
+ * How long the call was talked on, in whole seconds: from its first answer
+ * to `endedAt`, hold and transfers included. A call nobody answered was not
+ * talked on however long it rang or sat in voicemail, so it is 0. Undefined
+ * for a call answered under a controller that did not record when.
+ *
+ * Not Twilio's `CallDuration`: Twilio reports a leg's end twice, once
+ * without one, and the caller's leg it times includes the ring.
+ */
+export function talkTimeOf(
+  state: CallState,
+  endedAt: Date,
+): number | undefined {
+  if (!state.answered) {
+    return 0;
+  }
+  if (!state.answeredAt) {
+    return undefined;
+  }
+  const talked = endedAt.getTime() - Date.parse(state.answeredAt);
+  return Math.max(0, Math.round(talked / 1000));
 }
 
 /**

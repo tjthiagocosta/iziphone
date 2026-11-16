@@ -5,7 +5,7 @@ import {
   type CachedRoutingSettings,
   TELEPHONY,
 } from '@repo/events';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { e164 } from '../test/e164.js';
 import { createFakeLogger } from '../test/fake-logger.js';
 import { createFakeTelephony } from '../test/fake-telephony.js';
@@ -234,6 +234,17 @@ async function answeredOutboundCall() {
   return context;
 }
 
+/**
+ * Holds the controller's clock still from here on; the function it returns
+ * moves it on by that many seconds. How long a call was talked on is read
+ * from this clock, never from the duration Twilio reports.
+ */
+function holdTheClock(): (seconds: number) => void {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(Date.parse('2026-03-20T10:00:00.000Z'));
+  return (seconds) => vi.setSystemTime(Date.now() + seconds * 1000);
+}
+
 const agent = { userId: 'user-1', legUuid: 'CAleg1' };
 
 /** The answered call, with user-2 online and a transfer to them ringing on CAleg2. */
@@ -254,6 +265,10 @@ describe('CallFlow', () => {
       'fetch',
       vi.fn(async () => new Response(null, { status: 204 })),
     );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   describe('inbound calls', () => {
@@ -605,8 +620,9 @@ describe('CallFlow', () => {
           userId,
           reason: 'caller-hung-up',
         });
+        // It rang for 32 seconds and was talked on for none.
         expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({ status: 'completed', duration: 32 }),
+          expect.objectContaining({ status: 'completed', duration: 0 }),
         );
         expect(twilio.hangups()).toContain('CAleg1');
         expect(twilio.redirects()).toHaveLength(0);
@@ -661,7 +677,7 @@ describe('CallFlow', () => {
       ).rejects.toThrow('Redis is unavailable');
 
       expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ status: 'completed', duration: 32 }),
+        expect.objectContaining({ status: 'completed', duration: 0 }),
       );
       await expect(telephony.getLegMetadata('CAleg1')).resolves.toBeNull();
     });
@@ -796,8 +812,9 @@ describe('CallFlow', () => {
         duration: 25,
       });
 
+      // Nobody talked on it: the time in voicemail is the recording's.
       expect(events.callEnded).toHaveBeenCalledWith(
-        expect.objectContaining({ conversationUuid: 'CAcall1', duration: 25 }),
+        expect.objectContaining({ conversationUuid: 'CAcall1', duration: 0 }),
       );
       // Reported missed once, on the way to voicemail.
       expect(events.callMissed).toHaveBeenCalledExactlyOnceWith(
@@ -1074,14 +1091,15 @@ describe('CallFlow', () => {
 
   describe('answered calls', () => {
     test('ends when the caller hangs up', async () => {
+      const talk = holdTheClock();
       const { flow, events, twilio, telephony } = await answeredCall();
+      talk(90);
 
       await flow.handleConferenceEvent({
         conversationUuid: 'CAcall1',
         event: 'participant-leave',
         legUuid: 'CAcall1',
         participantLabel: 'caller|%2B15555550101|nonce',
-        duration: 90,
       });
 
       expect(twilio.hangups()).toEqual(['CAleg1']);
@@ -1098,13 +1116,15 @@ describe('CallFlow', () => {
     });
 
     test('ends when the active agent drops off', async () => {
+      const talk = holdTheClock();
       const { flow, events, twilio } = await answeredCall();
+      talk(45);
 
       await flow.handleCallStatus({
         conversationUuid: 'CAcall1',
         legUuid: 'CAleg1',
         status: 'completed',
-        duration: 45,
+        duration: 52,
       });
 
       expect(twilio.hangups()).toContain('CAcall1');
@@ -1112,6 +1132,46 @@ describe('CallFlow', () => {
         expect.objectContaining({ status: 'completed', duration: 45 }),
       );
     });
+
+    // Twilio reports the caller's leg gone as a conference leave, which says
+    // nothing of how long, and as a call status, which times the leg from
+    // when the controller answered it to hold it: ring included.
+    const leave = {
+      conversationUuid: 'CAcall1',
+      event: 'participant-leave',
+      legUuid: 'CAcall1',
+      participantLabel: 'caller|%2B15555550101|nonce',
+    };
+    const callStatus = {
+      conversationUuid: 'CAcall1',
+      legUuid: 'CAcall1',
+      status: 'completed',
+      duration: 35,
+    };
+
+    test.each([
+      { first: 'the conference leave', leaveFirst: true },
+      { first: 'the call status', leaveFirst: false },
+    ])(
+      'lasts as long as it was talked on, $first first',
+      async ({ leaveFirst }) => {
+        const talk = holdTheClock();
+        const { flow, events } = await answeredCall();
+        talk(27);
+
+        if (leaveFirst) {
+          await flow.handleConferenceEvent(leave);
+          await flow.handleCallStatus(callStatus);
+        } else {
+          await flow.handleCallStatus(callStatus);
+          await flow.handleConferenceEvent(leave);
+        }
+
+        expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 'completed', duration: 27 }),
+        );
+      },
+    );
 
     test('releases an agent who picks up after somebody else already has the call', async () => {
       const { flow, events, twilio, telephony } = buildFlow();
@@ -1513,14 +1573,16 @@ describe('CallFlow', () => {
     });
 
     test('a held call ends as any other when the held party hangs up', async () => {
+      const talk = holdTheClock();
       const { flow, events, twilio, telephony } = await answeredCall();
       await flow.holdCall(agent, true);
+      talk(40);
 
       await flow.handleCallStatus({
         conversationUuid: 'CAcall1',
         legUuid: 'CAcall1',
         status: 'completed',
-        duration: 40,
+        duration: 48,
       });
 
       expect(twilio.hangups()).toEqual(['CAleg1']);
@@ -2169,13 +2231,15 @@ describe('CallFlow', () => {
     });
 
     test('ends the call when the caller hangs up while it rings', async () => {
+      const talk = holdTheClock();
       const { flow, events, twilio, telephony } = await transferringCall();
+      talk(75);
 
       await flow.handleCallStatus({
         conversationUuid: 'CAcall1',
         legUuid: 'CAcall1',
         status: 'completed',
-        duration: 75,
+        duration: 83,
       });
 
       expect(twilio.hangups().sort()).toEqual(['CAleg1', 'CAleg2']);
@@ -2514,9 +2578,12 @@ describe('CallFlow', () => {
     });
 
     test('starts when the number answers and ends when it hangs up', async () => {
+      const clock = holdTheClock();
       const { flow, events, twilio } = buildFlow();
       await dialOut(flow);
       await settle();
+      // Rung for 12 seconds before the number answered: not talk time.
+      clock(12);
 
       await flow.handleConferenceEvent({
         conversationUuid: 'CAagent1',
@@ -2534,12 +2601,13 @@ describe('CallFlow', () => {
           externalLegUuid: 'CAleg1',
         }),
       );
+      clock(30);
 
       await flow.handleCallStatus({
         conversationUuid: 'CAagent1',
         legUuid: 'CAleg1',
         status: 'completed',
-        duration: 30,
+        duration: 37,
       });
       expect(twilio.hangups()).toEqual(['CAagent1']);
       expect(events.callEnded).toHaveBeenCalledWith(
@@ -2556,10 +2624,14 @@ describe('CallFlow', () => {
         conversationUuid: 'CAagent1',
         legUuid: 'CAagent1',
         status: 'completed',
+        duration: 20,
       });
 
       expect(twilio.hangups()).toEqual(['CAleg1']);
-      expect(events.callEnded).toHaveBeenCalledTimes(1);
+      // The agent's 20 seconds were all ringing.
+      expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ duration: 0 }),
+      );
       expect(claimsOf('user-1')).toEqual([]);
       await expect(telephony.getCallState('CAagent1')).resolves.toBeNull();
     });
@@ -2966,6 +3038,38 @@ describe('CallFlow', () => {
         expect(claimsOf('user-1')).toEqual([]);
         await expect(telephony.getCallState('CAcall1')).resolves.toBeNull();
         await expect(telephony.liveCallIds()).resolves.toEqual([]);
+      });
+
+      test('a call whose end is found late lasts until Twilio says it ended', async () => {
+        const talk = holdTheClock();
+        const { flow, twilio, events } = await answeredCall();
+        talk(60);
+        twilio.reportLeg('CAcall1', 'completed', new Date());
+        // Found by the reconciliation five minutes on.
+        talk(300);
+
+        await flow.reconcileWithTwilio();
+
+        expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ status: 'completed', duration: 60 }),
+        );
+      });
+
+      test('a call whose legs are all found over late ends when the first of them did', async () => {
+        const talk = holdTheClock();
+        const { flow, twilio, events } = await answeredOutboundCall();
+        // The number hung up after a minute; the agent's leg stayed on alone.
+        talk(60);
+        twilio.reportLeg('CAleg1', 'completed', new Date());
+        talk(240);
+        twilio.reportLeg('CAagent1', 'completed', new Date());
+        talk(60);
+
+        await flow.reconcileWithTwilio();
+
+        expect(events.callEnded).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ duration: 60 }),
+        );
       });
 
       test('a leg Twilio no longer knows is taken as gone', async () => {

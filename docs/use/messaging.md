@@ -19,6 +19,12 @@ ring. One that left a voicemail is under **Voicemails** too. A call somebody
 answered is never missed, even when it reaches voicemail later because a
 transfer did not go through.
 
+The length shown for a call is how long it was talked on: from the moment
+somebody first answered, a teammate on an incoming call or the number you
+dialed on an outgoing one, until the call ended, time on hold and transfers
+included. Ringing does not count: a call nobody answered, one that went to
+voicemail included, was talked on for no time at all.
+
 Not every sender is a person with a phone number. Delivery notices, one-time
 codes and alerts arrive from a short code such as 55501, or from a name such as
 EXAMPLECO. They land in the inbox as their own threads, named by whatever the

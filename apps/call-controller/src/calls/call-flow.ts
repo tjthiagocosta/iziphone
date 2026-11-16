@@ -39,6 +39,7 @@ import {
   occupantsOf,
   participantOfLeg,
   removeLeg,
+  talkTimeOf,
   usersLetGo,
 } from './call-state.js';
 import {
@@ -219,6 +220,11 @@ export interface CallStatusNotice {
   /** Twilio's `CallStatus`. */
   status: string;
   duration?: number;
+  /**
+   * When Twilio says the leg ended, for an end reconciliation found late.
+   * A status callback leaves it out: its arrival is the end.
+   */
+  endedAt?: Date;
 }
 
 export class CallFlow {
@@ -629,6 +635,7 @@ export class CallFlow {
       legUuid,
       status,
       notice.duration,
+      notice.endedAt,
     );
   }
 
@@ -709,8 +716,15 @@ export class CallFlow {
         ...(await telephony.fetchLegStatus(legUuid)),
       })),
     );
-    // One leg at a time: each is decided on what the one before it left.
-    for (const { legUuid, status, duration } of legs) {
+    // One leg at a time: each is decided on what the one before it left. In
+    // the order Twilio says they ended, so that the call ends when its first
+    // leg did; a leg Twilio gives no end for goes last.
+    const endOf = (leg: { endedAt?: Date }) =>
+      leg.endedAt?.getTime() ?? Number.POSITIVE_INFINITY;
+    const inOrderOfEnd = [...legs].sort((a, b) =>
+      endOf(a) === endOf(b) ? 0 : endOf(a) - endOf(b),
+    );
+    for (const { legUuid, status, duration, endedAt } of inOrderOfEnd) {
       const normalized = normalizeCallStatus(status);
       if (normalized && isTerminalStatus(normalized)) {
         await this.handleCallStatus({
@@ -718,6 +732,7 @@ export class CallFlow {
           legUuid,
           status,
           duration,
+          endedAt,
         });
       }
     }
@@ -1312,8 +1327,13 @@ export class CallFlow {
     legUuid: string,
     status: CallEndStatus,
     duration: number | undefined,
+    reportedEnd?: Date,
   ): Promise<void> {
     const { telephony } = this.deps;
+    // Whichever of Twilio's two reports of this end came first; the other
+    // finds the leg gone and changes nothing. An end found late by
+    // reconciliation brings the time Twilio says it happened.
+    const endedAt = reportedEnd ?? new Date();
     await telephony.deleteLegMetadata([legUuid]);
 
     const update = await this.changeCall(conversationUuid, (draft) =>
@@ -1343,7 +1363,7 @@ export class CallFlow {
         // one that fails must not cost the other. The API takes them in
         // either order.
         try {
-          await this.reportEnded(plan.final, status, duration ?? 0);
+          await this.reportEnded(plan.final, status, endedAt, duration);
         } finally {
           if (plan.callerGaveUp) {
             await this.reportMissed(plan.final, 'caller-hung-up');
@@ -1619,7 +1639,7 @@ export class CallFlow {
       remove: true,
     }));
     if (update) {
-      await this.reportEnded(update.before, status, 0);
+      await this.reportEnded(update.before, status, new Date());
     }
   }
 
@@ -1638,17 +1658,23 @@ export class CallFlow {
     });
   }
 
-  /** The call is over and its state is gone: tell the API, forget the legs. */
+  /**
+   * The call is over, as of `endedAt`, and its state is gone: tell the API
+   * how long it was talked on, and forget the legs. Twilio's `reported`
+   * figure counts only for a call answered under a controller that did not
+   * record when.
+   */
   private async reportEnded(
     state: CallState,
     status: CallEndStatus,
-    duration: number,
+    endedAt: Date,
+    reported?: number,
   ): Promise<void> {
     const { telephony, events } = this.deps;
 
     await events.callEnded({
       conversationUuid: state.conversationUuid,
-      duration,
+      duration: talkTimeOf(state, endedAt) ?? reported ?? 0,
       status,
       callerLegUuid: state.callerLegUuid,
       agentLegUuid: state.agentLegUuid,
@@ -1666,6 +1692,7 @@ export class CallFlow {
     legUuid: string,
   ): Promise<void> {
     const { telephony, events } = this.deps;
+    const joinedAt = new Date().toISOString();
 
     switch (participant.participantType) {
       case 'caller': {
@@ -1679,7 +1706,7 @@ export class CallFlow {
       case 'agent': {
         const agentUserId = participant.participantId;
         const update = await this.changeCall(conversationUuid, (draft) =>
-          decideAgentJoined(draft, agentUserId, legUuid),
+          decideAgentJoined(draft, agentUserId, legUuid, joinedAt),
         );
         const joined = update?.result;
         const state = update?.after;
@@ -1723,6 +1750,9 @@ export class CallFlow {
       case 'external': {
         const update = await this.changeCall(conversationUuid, (draft) => {
           const firstAnswer = !draft.answered && draft.direction === 'outbound';
+          if (!draft.answered) {
+            draft.answeredAt = joinedAt;
+          }
           draft.answered = true;
           draft.externalLegUuid = legUuid;
           return { result: firstAnswer };
@@ -1871,6 +1901,7 @@ function decideAgentJoined(
   draft: CallState,
   agentUserId: string,
   legUuid: string,
+  joinedAt: string,
 ): CallStateChange<AgentJoin> {
   const wasAnswered = draft.answered;
   const previousAgentUserId = draft.activeAgentUserId;
@@ -1921,6 +1952,7 @@ function decideAgentJoined(
   const firstAnswer = !wasAnswered && draft.direction === 'inbound';
   if (firstAnswer) {
     draft.answered = true;
+    draft.answeredAt = joinedAt;
   }
 
   return {

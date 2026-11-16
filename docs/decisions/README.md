@@ -26,6 +26,7 @@ would otherwise ask "why not the obvious way?".
 | [0011](0011-a-lines-history-stays-with-the-owner-it-was-written-under.md) | A line's history stays with the owner it was written under | 2026-09-23 |
 | [0012](0012-call-availability-belongs-to-the-controller.md) | Call availability belongs to the controller | 2026-09-23 |
 | [0013](0013-a-call-nobody-answered-stays-missed.md) | A call nobody answered stays missed | 2026-10-02 |
+| [0014](0014-a-calls-length-is-its-talk-time.md) | A call's length is its talk time | 2026-10-02 |
 
 ## Writing one
 

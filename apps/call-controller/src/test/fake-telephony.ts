@@ -165,6 +165,7 @@ export function createFakeTwilioClient() {
   const failures = new Map<string, unknown>();
   /** What Twilio says of a leg when asked; `in-progress` unless set. */
   const legStatuses = new Map<string, string>();
+  const legEnds = new Map<string, Date>();
   const unknownLegs = new Set<string>();
   const fetched: string[] = [];
   let fetchesStalled = false;
@@ -204,7 +205,12 @@ export function createFakeTwilioClient() {
           );
         }
         const status = legStatuses.get(legUuid) ?? 'in-progress';
-        return { sid: legUuid, status, duration: '42' };
+        return {
+          sid: legUuid,
+          status,
+          duration: '42',
+          endTime: legEnds.get(legUuid),
+        };
       },
     }),
     conferences: Object.assign(
@@ -269,10 +275,14 @@ export function createFakeTwilioClient() {
     holds: () => participantUpdates.map((update) => update.params.hold),
     /**
      * What Twilio answers when asked about the leg from now on, as when its
-     * status callback never arrived. A leg hung up here reads `completed`.
+     * status callback never arrived, and when it ended if it says. A leg hung
+     * up here reads `completed`.
      */
-    reportLeg(legUuid: string, status: string) {
+    reportLeg(legUuid: string, status: string, endedAt?: Date) {
       legStatuses.set(legUuid, status);
+      if (endedAt) {
+        legEnds.set(legUuid, endedAt);
+      }
     },
     /** Twilio answers 404 when asked about the leg. */
     forgetLeg(legUuid: string) {
