@@ -155,6 +155,16 @@ export const ENDED_DISPLAY_MS = 1000;
  */
 export const PENDING_ANSWER_TTL_MS = 10_000;
 
+/**
+ * How long a start that failed in a way that can pass waits before it is
+ * tried again: doubling from the first to the cap, as the call socket does
+ * after a refused handshake.
+ * Everyone behind one office address shares the API's rate limit, and a
+ * phone that gave up after one 429 would leave its user unreachable.
+ */
+export const START_RETRY_MIN_MS = 1000;
+export const START_RETRY_MAX_MS = 30_000;
+
 const CALL_STATE_CLOSED = 'closed';
 
 /**
@@ -200,6 +210,8 @@ export class TelephonySession {
   /** The call "Call ended" is on screen for. */
   private lastEndedCall: VoiceCall | null = null;
   private endedTimer: ReturnType<typeof setTimeout> | null = null;
+  private startRetryDelay = START_RETRY_MIN_MS;
+  private startRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
   constructor(
@@ -211,50 +223,103 @@ export class TelephonySession {
     return this.state;
   }
 
-  /** Registers the browser as the user's device. Resolves once it rang or failed. */
+  /**
+   * Registers the browser as the user's device. Resolves once the first
+   * attempt registered, failed for good, or failed in a way that can pass;
+   * that last is tried again, waiting longer each time, until the device
+   * registers or the session is disposed.
+   */
   async start(): Promise<void> {
     try {
       await this.deps.requestMicrophone();
-      if (this.disposed) return;
+    } catch (error) {
+      // Not tried again: asking would prompt the user again, or be refused
+      // again. They have to allow the microphone, or plug one in, and reload.
+      this.startFailed(error, false);
+      return;
+    }
+    if (this.disposed) return;
 
-      this.update({ deviceStatus: 'connecting', error: null });
+    await this.registerDevice();
+  }
 
-      const token = await this.deps.fetchVoiceToken();
-      if (this.disposed) return;
+  private async registerDevice(): Promise<void> {
+    this.update({ deviceStatus: 'connecting', error: null });
 
-      const device = this.deps.createDevice(token);
-      this.device = device;
+    let token: string;
+    try {
+      token = await this.deps.fetchVoiceToken();
+    } catch (error) {
+      this.startFailed(error, canPassByRetrying(error));
+      return;
+    }
+    if (this.disposed) return;
 
-      device.on('registering', () =>
-        this.update({ deviceStatus: 'connecting' }),
-      );
-      device.on('registered', () =>
-        this.update({ deviceStatus: 'ready', error: null }),
-      );
-      device.on('unregistered', () => this.update({ deviceStatus: 'offline' }));
-      device.on('error', (error) =>
-        this.update({
-          deviceStatus: 'error',
-          error: messageOf(error, 'The phone reported an error'),
-        }),
-      );
-      device.on('tokenWillExpire', () => void this.refreshToken(device));
-      device.on('incoming', (call) => this.ring(call));
+    let device: VoiceDevice;
+    try {
+      device = this.deps.createDevice(token);
+    } catch (error) {
+      // The browser cannot run the phone, which trying again does not change.
+      this.startFailed(error, false);
+      return;
+    }
+    this.device = device;
 
+    device.on('registering', () => this.update({ deviceStatus: 'connecting' }));
+    device.on('registered', () =>
+      this.update({ deviceStatus: 'ready', error: null }),
+    );
+    device.on('unregistered', () => this.update({ deviceStatus: 'offline' }));
+    device.on('error', (error) =>
+      this.update({
+        deviceStatus: 'error',
+        error: messageOf(error, 'The phone reported an error'),
+      }),
+    );
+    device.on('tokenWillExpire', () => void this.refreshToken(device));
+    device.on('incoming', (call) => this.ring(call));
+
+    try {
       await device.register();
     } catch (error) {
       if (this.disposed) return;
-      this.update({
-        deviceStatus: 'error',
-        error: messageOf(error, 'The phone could not start'),
-      });
+      // Destroyed, which also silences it, so that the next attempt does not
+      // leave two devices registering side by side.
+      device.destroy();
+      this.device = null;
+      this.startFailed(error, true);
     }
+  }
+
+  /**
+   * Shows why the phone could not start. One that can pass is tried again,
+   * meanwhile reading as connecting rather than offline.
+   */
+  private startFailed(error: unknown, canPass: boolean): void {
+    if (this.disposed) return;
+    const message = messageOf(error, 'The phone could not start');
+    if (!canPass) {
+      this.update({ deviceStatus: 'error', error: message });
+      return;
+    }
+
+    this.update({ deviceStatus: 'connecting', error: message });
+    const delay = this.startRetryDelay;
+    this.startRetryDelay = Math.min(delay * 2, START_RETRY_MAX_MS);
+    this.startRetryTimer = setTimeout(() => {
+      this.startRetryTimer = null;
+      void this.registerDevice();
+    }, delay);
   }
 
   /** Tears the device down. Twilio drops any call still on it. */
   dispose(): void {
     this.disposed = true;
     this.clearEndedTimer();
+    if (this.startRetryTimer !== null) {
+      clearTimeout(this.startRetryTimer);
+      this.startRetryTimer = null;
+    }
     this.device?.destroy();
     this.device = null;
     this.activeCall = null;
@@ -805,6 +870,25 @@ function wasTurnedDown(error: unknown): boolean {
     error.status >= 400 &&
     error.status < 500
   );
+}
+
+/**
+ * Whether a voice token request that failed this way may succeed later. No
+ * answer at all, a timeout, too many requests and a server error can all
+ * pass. Any other refusal, a 401 for a user who is signed out among them,
+ * would only be given again, and so would an answer this app cannot read.
+ */
+function canPassByRetrying(error: unknown): boolean {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    !('status' in error) ||
+    typeof error.status !== 'number'
+  ) {
+    return true;
+  }
+  const { status } = error;
+  return status === 408 || status === 429 || status >= 500;
 }
 
 const UNCONFIRMED_TRANSFER_MESSAGE =

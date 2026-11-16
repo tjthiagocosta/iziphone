@@ -11,6 +11,12 @@ green "Online - Ready to receive calls", yellow "Connecting...", grey "Offline -
 Cannot receive calls". Green needs both the phone and the realtime connection,
 so a grey or yellow dot means no call can be placed or received yet.
 
+If the phone cannot register because a server is busy or out of reach for a
+moment, it keeps trying on its own until it gets through. It gives up only when
+waiting would not help, and the grey dot then says why: the microphone was
+blocked or could not be used (allow it in the browser, or plug one in, and
+reload), the server refused the phone, or the browser cannot run it.
+
 ## Do not disturb
 
 Click the dot to switch **Do not disturb** on or off. While it is on, the dot is

@@ -147,7 +147,17 @@ See [0012](../decisions/0012-call-availability-belongs-to-the-controller.md).
 
 **Browser softphone behavior.** The web app registers a Twilio Voice device on
 sign-in and refreshes its token before it expires. Microphone access is
-requested before the device registers.
+requested before the device registers. A registration that fails in a way
+that can pass (no answer, a 408, 429 or 5xx for the voice token, or a
+registration that ends unregistered) is tried again on a new device, waiting
+from 1 s doubling to 30 s as the realtime socket does after a refused
+handshake, and the device reads as connecting meanwhile. A microphone that
+was refused or cannot be used, any other refusal of the token (a 401
+included), a token answer the app cannot read and a browser that cannot
+create the device are reported once and not retried. A signalling connection
+to Twilio that cannot be opened at all is left to the Voice SDK, which keeps
+the registration waiting and tries the connection again itself; the device
+reads as offline until it connects.
 
 ## The two rules
 

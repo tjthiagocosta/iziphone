@@ -4,6 +4,8 @@ import {
   ENDED_DISPLAY_MS,
   getCallSid,
   PENDING_ANSWER_TTL_MS,
+  START_RETRY_MAX_MS,
+  START_RETRY_MIN_MS,
   TelephonySession,
   type TelephonySessionDeps,
   type TelephonyState,
@@ -132,6 +134,11 @@ function refusal(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
+/** What the API client throws for a server that answered with an error. */
+function httpError(status: number, message: string): Error {
+  return Object.assign(new Error(message), { status });
+}
+
 describe('getCallSid', () => {
   test('prefers the SID Twilio assigns to an accepted outgoing call', () => {
     expect(
@@ -171,7 +178,7 @@ describe('TelephonySession', () => {
       expect(session.getState()).toBe(state);
     });
 
-    test('reports a denied microphone without creating a device', async () => {
+    test('reports a denied microphone without creating a device, and does not ask again', async () => {
       const context = setup({
         requestMicrophone: vi.fn(async () => {
           throw new Error('Permission denied');
@@ -179,7 +186,10 @@ describe('TelephonySession', () => {
       });
 
       await context.session.start();
+      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
 
+      expect(context.deps.requestMicrophone).toHaveBeenCalledOnce();
+      expect(context.deps.fetchVoiceToken).not.toHaveBeenCalled();
       expect(context.deps.createDevice).not.toHaveBeenCalled();
       expect(context.state).toMatchObject({
         deviceStatus: 'error',
@@ -187,19 +197,161 @@ describe('TelephonySession', () => {
       });
     });
 
-    test('reports a token the controller refused', async () => {
+    test('tries a token that could not be fetched again, and is ready once it comes', async () => {
       const context = setup({
-        fetchVoiceToken: vi.fn(async () => {
-          throw new Error('Voice is not configured');
+        fetchVoiceToken: vi
+          .fn<() => Promise<string>>()
+          .mockRejectedValueOnce(
+            httpError(429, 'Rate limit exceeded. Try again in 42 seconds.'),
+          )
+          .mockResolvedValueOnce('voice-token'),
+      });
+
+      await context.session.start();
+
+      // Reads as connecting, not offline, while it waits to try again.
+      expect(context.deps.createDevice).not.toHaveBeenCalled();
+      expect(context.state).toMatchObject({
+        deviceStatus: 'connecting',
+        error: 'Rate limit exceeded. Try again in 42 seconds.',
+      });
+
+      await vi.advanceTimersByTimeAsync(START_RETRY_MIN_MS);
+
+      expect(context.deps.createDevice).toHaveBeenCalledOnce();
+      expect(context.state).toMatchObject({
+        deviceStatus: 'ready',
+        error: null,
+      });
+    });
+
+    test.each([
+      ['no answer at all', new TypeError('Failed to fetch')],
+      ['a timeout', httpError(408, 'Request Timeout')],
+      ['a server error', httpError(502, 'Bad Gateway')],
+      ['voice not configured yet', httpError(503, 'Voice is not configured')],
+    ])('tries again after %s', async (_reason, error) => {
+      const context = setup({
+        fetchVoiceToken: vi
+          .fn<() => Promise<string>>()
+          .mockRejectedValueOnce(error)
+          .mockResolvedValueOnce('voice-token'),
+      });
+
+      await context.session.start();
+      await vi.advanceTimersByTimeAsync(START_RETRY_MIN_MS);
+
+      expect(context.state.deviceStatus).toBe('ready');
+    });
+
+    test('waits twice as long after each failure, up to a cap', async () => {
+      const attemptedAt: number[] = [];
+      const context = setup({
+        fetchVoiceToken: vi.fn(async (): Promise<string> => {
+          attemptedAt.push(Date.now());
+          throw httpError(503, 'Service Unavailable');
+        }),
+      });
+
+      await context.session.start();
+      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+
+      const waits = attemptedAt
+        .slice(1)
+        .map((at, i) => at - (attemptedAt[i] ?? Number.NaN));
+      expect(waits.slice(0, 7)).toEqual([
+        START_RETRY_MIN_MS,
+        START_RETRY_MIN_MS * 2,
+        START_RETRY_MIN_MS * 4,
+        START_RETRY_MIN_MS * 8,
+        START_RETRY_MIN_MS * 16,
+        START_RETRY_MAX_MS,
+        START_RETRY_MAX_MS,
+      ]);
+    });
+
+    test.each([
+      ['a user who is signed out', httpError(401, 'Unauthorized')],
+      ['a refusal', httpError(403, 'Forbidden')],
+      [
+        'an answer it cannot read',
+        httpError(200, 'The server answered with an unexpected shape'),
+      ],
+    ])('does not try again after %s', async (_reason, error) => {
+      const context = setup({
+        fetchVoiceToken: vi.fn(async (): Promise<string> => {
+          throw error;
+        }),
+      });
+
+      await context.session.start();
+      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+
+      expect(context.deps.fetchVoiceToken).toHaveBeenCalledOnce();
+      expect(context.state).toMatchObject({
+        deviceStatus: 'error',
+        error: error.message,
+      });
+    });
+
+    test('drops a device that could not register and registers a new one', async () => {
+      const devices: FakeDevice[] = [];
+      const context = setup({
+        createDevice: vi.fn((token: string) => {
+          const device = new FakeDevice(token);
+          if (devices.length === 0) {
+            // Twilio rejects with no reason once the device went unregistered.
+            device.register.mockRejectedValueOnce(undefined);
+          }
+          devices.push(device);
+          return device;
         }),
       });
 
       await context.session.start();
 
+      expect(devices[0]?.destroy).toHaveBeenCalledOnce();
+      expect(context.state).toMatchObject({
+        deviceStatus: 'connecting',
+        error: 'The phone could not start',
+      });
+
+      await vi.advanceTimersByTimeAsync(START_RETRY_MIN_MS);
+
+      expect(devices).toHaveLength(2);
+      expect(devices[1]?.register).toHaveBeenCalledOnce();
+      expect(context.state.deviceStatus).toBe('ready');
+    });
+
+    test('does not try again when the browser cannot run the phone', async () => {
+      const context = setup({
+        createDevice: vi.fn((): VoiceDevice => {
+          throw new Error('31100: WebRTC is not supported');
+        }),
+      });
+
+      await context.session.start();
+      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+
+      expect(context.deps.fetchVoiceToken).toHaveBeenCalledOnce();
       expect(context.state).toMatchObject({
         deviceStatus: 'error',
-        error: 'Voice is not configured',
+        error: '31100: WebRTC is not supported',
       });
+    });
+
+    test('stops trying once disposed', async () => {
+      const context = setup({
+        fetchVoiceToken: vi.fn(async (): Promise<string> => {
+          throw new TypeError('Failed to fetch');
+        }),
+      });
+      await context.session.start();
+
+      context.session.dispose();
+      await vi.advanceTimersByTimeAsync(START_RETRY_MAX_MS * 4);
+
+      expect(context.deps.fetchVoiceToken).toHaveBeenCalledOnce();
     });
 
     test('follows the device through its registration events', async () => {
