@@ -1,6 +1,7 @@
 import {
   type AttachedApplication,
   type AvailableNumbersResponse,
+  type Campaign,
   type MonthlyPrice,
   type OwnedPhoneNumber,
   type PhoneNumberConnection,
@@ -15,6 +16,8 @@ import twilio from 'twilio';
 import type { TwilioCredentials } from '../config.js';
 import { HttpError } from '../infra/index.js';
 import {
+  type CampaignRead,
+  campaignFrom,
   connectingUpdate,
   describeReconnect,
   describeTextingNote,
@@ -22,6 +25,7 @@ import {
   type MessagingServiceRef,
   type NumberSettings,
   reconnectReasons,
+  type TwilioCampaignFields,
   textingNote,
   type WebhookAddresses,
 } from './number-connection.js';
@@ -158,21 +162,26 @@ interface TwilioMessagingServiceSender {
   phoneNumber?: string | null;
 }
 
+interface TwilioMessagingServiceContextLike {
+  /** The service's senders. */
+  phoneNumbers: {
+    list(
+      params: Record<string, unknown>,
+    ): Promise<TwilioMessagingServiceSender[]>;
+  };
+  /** The service's A2P 10DLC campaign; Twilio allows one per service. */
+  usAppToPerson: {
+    list(params: Record<string, unknown>): Promise<TwilioCampaignFields[]>;
+  };
+}
+
 interface TwilioApplication {
   sid?: string | null;
   friendlyName?: string | null;
 }
 
 type TwilioMessagingServicesLike = {
-  (
-    sid: string,
-  ): {
-    phoneNumbers: {
-      list(
-        params: Record<string, unknown>,
-      ): Promise<TwilioMessagingServiceSender[]>;
-    };
-  };
+  (sid: string): TwilioMessagingServiceContextLike;
   list(params: Record<string, unknown>): Promise<TwilioMessagingService[]>;
 };
 
@@ -620,11 +629,15 @@ export class TwilioNumberManagementService {
           ? this.applicationNames()
           : new Map<string, string>(),
       ]);
+      const campaigns = await this.campaignsOfLocalSenders(
+        numbers.map((number) => this.mapOwnedNumber(number, 'LOCAL')),
+        services,
+      );
 
       return {
         truncated,
         numbers: numbers.map((number) =>
-          this.describeAccountNumber(number, services, applications),
+          this.describeAccountNumber(number, services, campaigns, applications),
         ),
       };
     } catch (error) {
@@ -651,11 +664,23 @@ export class TwilioNumberManagementService {
       const services = metadata.smsEnabled
         ? await this.messagingServicesBySender()
         : new Map<string, MessagingServiceRef>();
+      const service =
+        services === 'unknown'
+          ? null
+          : (services.get(metadata.phoneNumber) ?? null);
+      const campaigns = service
+        ? await this.campaignsOrUnknown([service.sid])
+        : new Map<string, Campaign | null>();
 
       return {
         state: 'checked',
         needsReconnect: reconnectReasons(settingsOf(ownedNumber), expected),
-        texting: textingNoteFor(metadata, services, expected.messagesInbound),
+        texting: textingNoteFor(
+          metadata,
+          services,
+          campaigns,
+          expected.messagesInbound,
+        ),
       };
     } catch (error) {
       throw this.wrapProviderError(error, 'Failed to check the Twilio number');
@@ -919,6 +944,10 @@ export class TwilioNumberManagementService {
         texting.length > 0
           ? await this.messagingServicesBySender()
           : new Map<string, MessagingServiceRef>();
+      const campaigns = await this.campaignsOfLocalSenders(
+        texting.map(({ metadata }) => metadata),
+        services,
+      );
 
       if (services === 'unknown') {
         report.warnings.push(
@@ -929,6 +958,7 @@ export class TwilioNumberManagementService {
           const note = textingNoteFor(
             metadata,
             services,
+            campaigns,
             this.messagesInboundUrl(),
           );
 
@@ -985,36 +1015,16 @@ export class TwilioNumberManagementService {
     ReadonlyMap<string, MessagingServiceRef> | 'unknown'
   > {
     try {
-      const messaging = this.getClient().messaging.v1.services;
-      const services = await messaging.list({
-        limit: MESSAGING_SERVICE_LIMIT + 1,
-        pageSize: MESSAGING_SERVICE_LIMIT + 1,
-      });
+      const services = await this.readMessagingServices();
 
-      if (services.length > MESSAGING_SERVICE_LIMIT) {
-        this.log.warn(
-          { services: services.length },
-          'Too many messaging services to check which one sends from each number',
-        );
+      if (services === 'unknown') {
         return 'unknown';
       }
 
+      const messaging = this.getClient().messaging.v1.services;
       const senders = await Promise.all(
-        services.map(async (service) => {
-          if (!service.sid) {
-            return [];
-          }
-
-          const ref: MessagingServiceRef = {
-            sid: service.sid,
-            friendlyName: service.friendlyName || service.sid,
-            useInboundWebhookOnNumber: Boolean(
-              service.useInboundWebhookOnNumber,
-            ),
-            inboundRequestUrl: service.inboundRequestUrl || null,
-            inboundMethod: service.inboundMethod || null,
-          };
-          const numbers = await messaging(service.sid).phoneNumbers.list({
+        services.map(async (ref) => {
+          const numbers = await messaging(ref.sid).phoneNumbers.list({
             limit: SERVICE_SENDER_LIMIT,
             pageSize: SERVICE_SENDER_LIMIT,
           });
@@ -1033,6 +1043,90 @@ export class TwilioNumberManagementService {
       this.log.warn({ error }, 'Could not read the messaging services');
       return 'unknown';
     }
+  }
+
+  /** The account's messaging services, or unknown past the number a check reads. */
+  private async readMessagingServices(): Promise<
+    MessagingServiceRef[] | 'unknown'
+  > {
+    const services = await this.getClient().messaging.v1.services.list({
+      limit: MESSAGING_SERVICE_LIMIT + 1,
+      pageSize: MESSAGING_SERVICE_LIMIT + 1,
+    });
+
+    if (services.length > MESSAGING_SERVICE_LIMIT) {
+      this.log.warn(
+        { services: services.length },
+        'Too many messaging services to check which one sends from each number',
+      );
+      return 'unknown';
+    }
+
+    return services.flatMap((service) =>
+      service.sid ? [serviceRefOf(service, service.sid)] : [],
+    );
+  }
+
+  /**
+   * Each service's A2P 10DLC campaign, null for a service with none, one
+   * call per service. Twilio allows one campaign per messaging service.
+   */
+  private async campaignsOf(
+    serviceSids: readonly string[],
+  ): Promise<ReadonlyMap<string, Campaign | null>> {
+    const messaging = this.getClient().messaging.v1.services;
+    const read = await Promise.all(
+      [...new Set(serviceSids)].map(async (sid) => {
+        const [campaign] = await messaging(sid).usAppToPerson.list({
+          limit: 1,
+          pageSize: 1,
+        });
+
+        return [sid, campaign ? campaignFrom(campaign) : null] as const;
+      }),
+    );
+
+    return new Map(read);
+  }
+
+  /** The campaigns, or unknown: like the services, a campaign only informs a warning. */
+  private async campaignsOrUnknown(
+    serviceSids: readonly string[],
+  ): Promise<ReadonlyMap<string, Campaign | null> | 'unknown'> {
+    if (serviceSids.length === 0) {
+      return new Map();
+    }
+
+    try {
+      return await this.campaignsOf(serviceSids);
+    } catch (error) {
+      this.log.warn({ error }, 'Could not read the messaging campaigns');
+      return 'unknown';
+    }
+  }
+
+  /**
+   * The campaigns of the services that local, text-capable numbers among
+   * `numbers` send for: only theirs decide whether texts are registered.
+   */
+  private async campaignsOfLocalSenders(
+    numbers: readonly OwnedNumberMetadata[],
+    services: ReadonlyMap<string, MessagingServiceRef> | 'unknown',
+  ): Promise<ReadonlyMap<string, Campaign | null> | 'unknown'> {
+    if (services === 'unknown') {
+      return new Map();
+    }
+
+    return this.campaignsOrUnknown(
+      numbers.flatMap((number) => {
+        const service =
+          number.type === 'LOCAL' && number.smsEnabled
+            ? services.get(number.phoneNumber)
+            : undefined;
+
+        return service ? [service.sid] : [];
+      }),
+    );
   }
 
   /** The account's applications' names, by sid; empty when they cannot be read. */
@@ -1060,6 +1154,7 @@ export class TwilioNumberManagementService {
   private describeAccountNumber(
     number: TwilioIncomingPhoneNumber,
     services: ReadonlyMap<string, MessagingServiceRef> | 'unknown',
+    campaigns: ReadonlyMap<string, Campaign | null> | 'unknown',
     applications: ReadonlyMap<string, string>,
   ): AccountNumber {
     const metadata = this.mapOwnedNumber(number, 'LOCAL');
@@ -1092,7 +1187,12 @@ export class TwilioNumberManagementService {
           ? { sid: service.sid, friendlyName: service.friendlyName }
           : null,
       },
-      texting: textingNoteFor(metadata, services, this.messagesInboundUrl()),
+      texting: textingNoteFor(
+        metadata,
+        services,
+        campaigns,
+        this.messagesInboundUrl(),
+      ),
     };
   }
 
@@ -1306,15 +1406,50 @@ function textCapable(number: TwilioIncomingPhoneNumber): boolean {
 function textingNoteFor(
   metadata: OwnedNumberMetadata,
   services: ReadonlyMap<string, MessagingServiceRef> | 'unknown',
+  campaigns: ReadonlyMap<string, Campaign | null> | 'unknown',
   messagesInbound: string,
 ): TextingNote | null {
-  return textingNote(
-    { local: metadata.type === 'LOCAL', texts: metadata.smsEnabled },
+  const service =
     services === 'unknown'
       ? 'unknown'
-      : (services.get(metadata.phoneNumber) ?? null),
+      : (services.get(metadata.phoneNumber) ?? null);
+
+  return textingNote(
+    { local: metadata.type === 'LOCAL', texts: metadata.smsEnabled },
+    service,
+    service === 'unknown' ? 'unknown' : campaignIn(campaigns, service),
     messagesInbound,
   );
+}
+
+/** The campaign of `service` among those read; unknown when it was not read. */
+function campaignIn(
+  campaigns: ReadonlyMap<string, Campaign | null> | 'unknown',
+  service: MessagingServiceRef | null,
+): CampaignRead {
+  if (!service) {
+    return null;
+  }
+  if (campaigns === 'unknown') {
+    return 'unknown';
+  }
+
+  const campaign = campaigns.get(service.sid);
+
+  return campaign === undefined ? 'unknown' : campaign;
+}
+
+function serviceRefOf(
+  service: TwilioMessagingService,
+  sid: string,
+): MessagingServiceRef {
+  return {
+    sid,
+    friendlyName: service.friendlyName || sid,
+    useInboundWebhookOnNumber: Boolean(service.useInboundWebhookOnNumber),
+    inboundRequestUrl: service.inboundRequestUrl || null,
+    inboundMethod: service.inboundMethod || null,
+  };
 }
 
 /** The host a webhook points at, which is what tells an administrator what it serves. */

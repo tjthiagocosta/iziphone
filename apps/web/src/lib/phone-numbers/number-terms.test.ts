@@ -190,6 +190,17 @@ describe('connection wording', () => {
   test('names the registration a local number in no service lacks', () => {
     expect(textingNoteText({ kind: 'unregistered' })).toContain('A2P 10DLC');
   });
+
+  test.each([
+    ['no-campaign', 'has no A2P 10DLC campaign'],
+    ['campaign-in-review', 'not approved yet'],
+    ['campaign-not-approved', 'was not approved'],
+  ] as const)('names the service of a %s note', (kind, says) => {
+    const text = textingNoteText({ kind, service: CUSTOMER_CARE });
+
+    expect(text).toContain('“Customer Care”');
+    expect(text).toContain(says);
+  });
 });
 
 describe('formatPrice', () => {

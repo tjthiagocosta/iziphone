@@ -268,6 +268,12 @@ export function textingNoteText(note: TextingNote): string {
       return `Texts to it do not reach iziphone: the messaging service “${note.service.friendlyName}” sends its senders’ incoming texts to its own address. In the Twilio Console, set the service to defer to the sender’s webhook, or take the number out of it.`;
     case 'unregistered':
       return 'It is in no messaging service, and US carriers block texts from an unregistered local number (A2P 10DLC): it can call, but not text, until it joins the messaging service of a registered campaign in the Twilio Console.';
+    case 'no-campaign':
+      return `Its messaging service “${note.service.friendlyName}” has no A2P 10DLC campaign, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
+    case 'campaign-in-review':
+      return `The A2P 10DLC campaign of its messaging service “${note.service.friendlyName}” is not approved yet, so its texts stay blocked until it is.`;
+    case 'campaign-not-approved':
+      return `The A2P 10DLC campaign of its messaging service “${note.service.friendlyName}” was not approved, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
     case 'unknown':
       return 'The messaging services on the Twilio account could not be read, so whether its texts arrive was not checked.';
   }

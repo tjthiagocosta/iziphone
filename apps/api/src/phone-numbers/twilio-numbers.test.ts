@@ -1580,30 +1580,152 @@ describe('TwilioNumberManagementService', () => {
   });
 });
 
-function buildMessagingResource(
-  services: {
-    sid: string;
-    friendlyName: string;
-    useInboundWebhookOnNumber: boolean;
-    inboundRequestUrl?: string;
-    senders: string[];
-  }[],
-) {
-  const servicesResource = Object.assign(
-    vi.fn((sid: string) => ({
+describe('TwilioNumberManagementService messaging services', () => {
+  const CUSTOMER_CARE = 'MGaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const APPOINTMENTS = 'MGbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const ownedNumbers = () =>
+    buildIncomingPhoneNumbersResource({
+      list: vi.fn(async () => [
+        {
+          sid: OWNED_SID,
+          phoneNumber: OWNED_LINE,
+          capabilities: { voice: true, sms: true },
+          ...POINTED_HERE,
+        },
+      ]),
+    });
+  const twoServices = (
+    overrides: {
+      customerCare?: Partial<FakeMessagingService>;
+      appointments?: Partial<FakeMessagingService>;
+    } = {},
+  ) =>
+    buildMessagingResource([
+      {
+        sid: CUSTOMER_CARE,
+        friendlyName: 'Customer Care',
+        useInboundWebhookOnNumber: true,
+        senders: [OWNED_LINE],
+        ...overrides.customerCare,
+      },
+      {
+        sid: APPOINTMENTS,
+        friendlyName: 'Appointments',
+        useInboundWebhookOnNumber: true,
+        senders: [],
+        ...overrides.appointments,
+      },
+    ]);
+
+  test.each([
+    [null, 'has no A2P 10DLC campaign'],
+    ['IN_PROGRESS', 'not approved yet'],
+    ['FAILED', 'was not approved'],
+  ])(
+    'should warn about a listed local number whose service has campaign %s',
+    async (campaignStatus, says) => {
+      const messaging = twoServices({ customerCare: { campaignStatus } });
+      const report = await buildService({
+        incomingPhoneNumbers: ownedNumbers(),
+        messaging,
+      }).getReadinessReport([{ phoneNumber: OWNED_LINE, type: 'LOCAL' }]);
+
+      expect(report.warnings).toEqual([expect.stringContaining(says)]);
+      // Only the campaigns of services holding a listed local number are read.
+      expect(
+        messaging.v1.services(APPOINTMENTS).usAppToPerson.list,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  test('should not hold a toll-free number to its service’s campaign', async () => {
+    const report = await buildService({
+      incomingPhoneNumbers: ownedNumbers(),
+      messaging: twoServices({ customerCare: { campaignStatus: null } }),
+    }).getReadinessReport([{ phoneNumber: OWNED_LINE, type: 'TOLL_FREE' }]);
+
+    expect(report.warnings).toEqual([]);
+  });
+
+  test('should call texting unknown when a campaign cannot be read', async () => {
+    const messaging = twoServices();
+    messaging.v1
+      .services(CUSTOMER_CARE)
+      .usAppToPerson.list.mockRejectedValueOnce(new Error('Forbidden'));
+
+    const connection = await buildService({
+      incomingPhoneNumbers: ownedNumbers(),
+      messaging,
+    }).checkConnection(OWNED_LINE, 'LOCAL');
+
+    expect(connection).toMatchObject({ texting: { kind: 'unknown' } });
+  });
+});
+
+interface FakeMessagingService {
+  sid: string;
+  friendlyName: string;
+  useInboundWebhookOnNumber: boolean;
+  inboundRequestUrl?: string;
+  senders: string[];
+  /** The campaign's status at Twilio: VERIFIED unless a test says otherwise, null for none. */
+  campaignStatus?: string | null;
+}
+
+/**
+ * The account's messaging services with their senders and campaigns. Each
+ * service answers with the same context every time, so a test can read what
+ * was asked of it.
+ */
+function buildMessagingResource(services: FakeMessagingService[]) {
+  const contexts = new Map<string, ReturnType<typeof contextOf>>();
+  const contextOf = (sid: string) => {
+    const service = services.find((candidate) => candidate.sid === sid);
+
+    return {
       phoneNumbers: {
         list: vi.fn(async () =>
-          (services.find((service) => service.sid === sid)?.senders ?? []).map(
-            (phoneNumber) => ({ phoneNumber }),
-          ),
+          (service?.senders ?? []).map((phoneNumber) => ({ phoneNumber })),
         ),
       },
-    })),
+      usAppToPerson: {
+        list: vi.fn(async () => {
+          const campaignStatus =
+            service?.campaignStatus === undefined
+              ? 'VERIFIED'
+              : service.campaignStatus;
+
+          return campaignStatus === null
+            ? []
+            : [
+                {
+                  campaignStatus,
+                  usAppToPersonUsecase: 'CUSTOMER_CARE',
+                  description: `${service?.friendlyName} replies`,
+                },
+              ];
+        }),
+      },
+    };
+  };
+  const servicesResource = Object.assign(
+    vi.fn((sid: string) => {
+      const context = contexts.get(sid) ?? contextOf(sid);
+
+      contexts.set(sid, context);
+      return context;
+    }),
     {
       list: vi.fn(async (params: Record<string, unknown>) =>
         services
           .slice(0, Number(params.limit ?? services.length))
-          .map(({ senders: _senders, ...service }) => service),
+          .map(
+            ({
+              senders: _senders,
+              campaignStatus: _campaignStatus,
+              ...service
+            }) => service,
+          ),
       ),
     },
   );

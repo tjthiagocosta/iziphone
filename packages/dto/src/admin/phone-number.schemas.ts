@@ -167,6 +167,33 @@ export const PhoneNumberListResponseSchema = PaginationMetaSchema.extend({
   phoneNumbers: z.array(PhoneNumberResponseSchema),
 });
 
+export const MessagingServiceNameSchema = z.object({
+  sid: z.string(),
+  friendlyName: z.string(),
+});
+
+/**
+ * Where a messaging service's A2P 10DLC campaign stands: carriers accept
+ * texts once it is approved, and block them while it is in review. Any other
+ * state Twilio reports (failed, or one this app does not know) is not
+ * approved.
+ */
+export const CampaignStatusSchema = z.enum([
+  'approved',
+  'in-review',
+  'not-approved',
+]);
+
+/** The A2P 10DLC campaign registered for a messaging service. */
+export const CampaignSchema = z.object({
+  status: CampaignStatusSchema,
+  /** The state as Twilio names it, such as `VERIFIED` or `FAILED`. */
+  twilioStatus: z.string(),
+  /** Twilio's use case code, such as `CUSTOMER_CARE` or `LOW_VOLUME`. */
+  useCase: z.string(),
+  description: z.string(),
+});
+
 export const PurchasedPhoneNumberSchema = PhoneNumberResponseSchema.extend({
   /**
    * Whether Twilio took the number's call and text settings. When it did
@@ -200,11 +227,6 @@ export const ReconnectReasonSchema = z.enum([
   'sip-trunk',
 ]);
 
-export const MessagingServiceNameSchema = z.object({
-  sid: z.string(),
-  friendlyName: z.string(),
-});
-
 /**
  * Why texts to or from a number may not arrive although its webhooks are
  * right, which Reconnect does not change: messaging services are managed in
@@ -218,6 +240,21 @@ export const TextingNoteSchema = z.discriminatedUnion('kind', [
   }),
   /** A local number in no messaging service: carriers block its unregistered texts (A2P 10DLC). */
   z.object({ kind: z.literal('unregistered') }),
+  /** A local number in a service with no A2P 10DLC campaign: its texts are unregistered too. */
+  z.object({
+    kind: z.literal('no-campaign'),
+    service: MessagingServiceNameSchema,
+  }),
+  /** A local number whose service's campaign carriers have not approved yet. */
+  z.object({
+    kind: z.literal('campaign-in-review'),
+    service: MessagingServiceNameSchema,
+  }),
+  /** A local number whose service's campaign was not approved. */
+  z.object({
+    kind: z.literal('campaign-not-approved'),
+    service: MessagingServiceNameSchema,
+  }),
   /** The account's messaging services could not be read. */
   z.object({ kind: z.literal('unknown') }),
 ]);
@@ -345,3 +382,5 @@ export type MonthlyPrice = z.infer<typeof MonthlyPriceSchema>;
 export type AvailableNumbersResponse = z.infer<
   typeof AvailableNumbersResponseSchema
 >;
+export type CampaignStatus = z.infer<typeof CampaignStatusSchema>;
+export type Campaign = z.infer<typeof CampaignSchema>;

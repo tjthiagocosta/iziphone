@@ -261,8 +261,10 @@ again**:
   and Reconnect cannot point it here.
 - A note on texting, under any of these: the number's messaging service keeps
   its senders' incoming texts and sends them to an address of its own that is
-  not this deployment, naming the service, or a local number is in no
-  messaging service and cannot text until it joins a registered campaign's.
+  not this deployment, naming the service; a local number is in no messaging
+  service and cannot text until it joins a registered campaign's; or its
+  service's campaign is missing, still in review or not approved, so carriers
+  block its texts.
 
 **Reconnect** tells Twilio again to send the number's calls and texts to this
 deployment, and detaches a TwiML App, an application or a SIP trunk that would

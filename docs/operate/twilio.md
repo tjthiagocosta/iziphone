@@ -19,8 +19,9 @@ development, and the account-level settings the system expects.
 
    - A number that is a sender of a **messaging service** whose incoming messages go to the service's own address rather than "Defer to sender's webhook" (`useInboundWebhookOnNumber=false`), unless that address is exactly the API's messaging webhook and is called with POST: its texts go there and never reach the API. The warning names the service. Change the service's integration setting in the Twilio Console, or take the number out of it; Reconnect does not.
    - A local number in **no messaging service**: it can call, but US carriers block its texts until it joins the service of an approved A2P 10DLC campaign.
+   - A local number in a service with **no campaign**, a campaign **in review**, or one **not approved**: its texts are blocked until the campaign is approved, or until the number moves to a service whose campaign is. The warning names the service.
 
-   Twilio names no service on the number itself, so the check lists the account's messaging services once and each service's senders: one request plus one per service, whatever the number of numbers. An account with more than 20 services is not checked for texting, and the report says so.
+   Twilio names no service on the number itself, so the check lists the account's messaging services once and each service's senders: one request plus one per service, whatever the number of numbers, plus one campaign read for each service that holds a listed local number. An account with more than 20 services is not checked for texting, and the report says so.
 4. Expose the call controller and API over HTTPS. One Nouva.sh session carries both, and each `-R` names the alias it answers on (up to five per session):
 
    ```bash

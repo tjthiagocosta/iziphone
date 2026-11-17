@@ -1,4 +1,10 @@
-import type { ReconnectReason, TextingNote } from '@repo/dto';
+import type {
+  Campaign,
+  CampaignStatus,
+  MessagingServiceName,
+  ReconnectReason,
+  TextingNote,
+} from '@repo/dto';
 
 /** Where this deployment wants a number's calls and texts. */
 export interface WebhookAddresses {
@@ -121,14 +127,73 @@ export function connectingUpdate(
 }
 
 /**
+ * A messaging service's campaign as far as a check knows it: null for none,
+ * `unknown` when it could not be read.
+ */
+export type CampaignRead = Campaign | null | 'unknown';
+
+/** A campaign as Twilio reports it on a messaging service. */
+export interface TwilioCampaignFields {
+  campaignStatus?: string | null;
+  usAppToPersonUsecase?: string | null;
+  description?: string | null;
+}
+
+/**
+ * What carriers make of a campaign in the state Twilio reports. Only
+ * `VERIFIED` is approved; `PENDING` and `IN_PROGRESS` are still in review;
+ * anything else, `FAILED` or a state this app does not know, is treated as
+ * not approved, so a number is never told its texts are registered when
+ * they may not be.
+ */
+export function campaignFrom(fields: TwilioCampaignFields): Campaign {
+  const twilioStatus = (fields.campaignStatus || '').trim().toUpperCase();
+
+  return {
+    status: campaignStatusOf(twilioStatus),
+    twilioStatus: twilioStatus || 'UNKNOWN',
+    useCase: (fields.usAppToPersonUsecase || '').trim() || 'UNKNOWN',
+    description: (fields.description || '').trim(),
+  };
+}
+
+function campaignStatusOf(twilioStatus: string): CampaignStatus {
+  if (twilioStatus === 'VERIFIED') {
+    return 'approved';
+  }
+
+  return twilioStatus === 'PENDING' || twilioStatus === 'IN_PROGRESS'
+    ? 'in-review'
+    : 'not-approved';
+}
+
+/**
+ * Whether the service sends its senders' incoming texts somewhere other than
+ * `messagesInbound`. One that keeps them but posts them to `messagesInbound`
+ * itself is no obstacle.
+ */
+export function keepsIncomingTexts(
+  service: MessagingServiceRef,
+  messagesInbound: string,
+): boolean {
+  return (
+    !service.useInboundWebhookOnNumber &&
+    !postsTo(service.inboundRequestUrl, service.inboundMethod, messagesInbound)
+  );
+}
+
+/**
  * What may keep the number's texts from arriving although its webhooks are
  * right. `service` is the messaging service sending from it, null for none,
- * or `unknown` when the services could not be read. A service that keeps its
- * senders' texts but sends them to `messagesInbound` itself is no obstacle.
+ * or `unknown` when the services could not be read; `campaign` is that
+ * service's campaign. A local number's texts need an approved campaign, so
+ * a missing or unapproved one comes first; a toll-free number is verified on
+ * its own, and its service's campaign does not matter.
  */
 export function textingNote(
   number: { local: boolean; texts: boolean },
   service: MessagingServiceRef | null | 'unknown',
+  campaign: CampaignRead,
   messagesInbound: string,
 ): TextingNote | null {
   if (!number.texts) {
@@ -138,17 +203,34 @@ export function textingNote(
     return { kind: 'unknown' };
   }
   if (service === null) {
-    // A toll-free number is verified on its own, not through a service.
     return number.local ? { kind: 'unregistered' } : null;
   }
 
-  return service.useInboundWebhookOnNumber ||
-    postsTo(service.inboundRequestUrl, service.inboundMethod, messagesInbound)
-    ? null
-    : {
-        kind: 'service-takes-texts',
-        service: { sid: service.sid, friendlyName: service.friendlyName },
-      };
+  const name = nameOf(service);
+
+  if (number.local) {
+    if (campaign === 'unknown') {
+      return { kind: 'unknown' };
+    }
+    if (campaign === null) {
+      return { kind: 'no-campaign', service: name };
+    }
+    if (campaign.status === 'not-approved') {
+      return { kind: 'campaign-not-approved', service: name };
+    }
+    if (campaign.status === 'in-review') {
+      return { kind: 'campaign-in-review', service: name };
+    }
+  }
+
+  return keepsIncomingTexts(service, messagesInbound)
+    ? { kind: 'service-takes-texts', service: name }
+    : null;
+}
+
+/** A service as the console names it. */
+export function nameOf(service: MessagingServiceRef): MessagingServiceName {
+  return { sid: service.sid, friendlyName: service.friendlyName };
 }
 
 const RECONNECT_REASON_TEXT: Record<ReconnectReason, string> = {
@@ -183,6 +265,12 @@ export function describeTextingNote(
       return `${phoneNumber}: the messaging service "${note.service.friendlyName}" sends this number's inbound texts to its own address, so they do not reach this deployment. In the Twilio Console, set the service's incoming messages to "Defer to sender's webhook", or take the number out of the service.`;
     case 'unregistered':
       return `${phoneNumber} is in no messaging service: US carriers block texts from an unregistered local number (A2P 10DLC), so it can call but not text until it joins the messaging service of a registered campaign in the Twilio Console.`;
+    case 'no-campaign':
+      return `${phoneNumber}: its messaging service "${note.service.friendlyName}" has no A2P 10DLC campaign, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
+    case 'campaign-in-review':
+      return `${phoneNumber}: the A2P 10DLC campaign of its messaging service "${note.service.friendlyName}" is not approved yet, so US carriers block its texts until it is.`;
+    case 'campaign-not-approved':
+      return `${phoneNumber}: the A2P 10DLC campaign of its messaging service "${note.service.friendlyName}" was not approved, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
     case 'unknown':
       return `${phoneNumber}: the account's messaging services could not be read, so whether its texts arrive was not checked.`;
   }

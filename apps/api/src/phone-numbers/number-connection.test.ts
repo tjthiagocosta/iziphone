@@ -1,8 +1,11 @@
+import type { Campaign } from '@repo/dto';
 import { describe, expect, test } from 'vitest';
 import {
+  campaignFrom,
   connectingUpdate,
   describeReconnect,
   describeTextingNote,
+  keepsIncomingTexts,
   type NumberSettings,
   reconnectReasons,
   textingNote,
@@ -35,6 +38,12 @@ const CUSTOMER_CARE = {
   friendlyName: 'Customer Care',
 };
 const ELSEWHERE = 'https://agent.example.com/sms';
+const APPROVED: Campaign = {
+  status: 'approved',
+  twilioStatus: 'VERIFIED',
+  useCase: 'CUSTOMER_CARE',
+  description: 'Replies to customers who wrote first',
+};
 
 describe('reconnectReasons', () => {
   test('finds nothing to fix on a number pointed here', () => {
@@ -168,6 +177,7 @@ describe('textingNote', () => {
           inboundRequestUrl: ELSEWHERE,
           inboundMethod: 'POST',
         },
+        APPROVED,
         EXPECTED.messagesInbound,
       ),
     ).toEqual({ kind: 'service-takes-texts', service: CUSTOMER_CARE });
@@ -183,6 +193,7 @@ describe('textingNote', () => {
           inboundRequestUrl: ELSEWHERE,
           inboundMethod: 'POST',
         },
+        APPROVED,
         EXPECTED.messagesInbound,
       ),
     ).toBeNull();
@@ -198,6 +209,7 @@ describe('textingNote', () => {
           inboundRequestUrl: EXPECTED.messagesInbound,
           inboundMethod: null,
         },
+        APPROVED,
         EXPECTED.messagesInbound,
       ),
     ).toBeNull();
@@ -218,6 +230,7 @@ describe('textingNote', () => {
             inboundRequestUrl,
             inboundMethod,
           },
+          APPROVED,
           EXPECTED.messagesInbound,
         ),
       ).toEqual({ kind: 'service-takes-texts', service: CUSTOMER_CARE });
@@ -225,7 +238,7 @@ describe('textingNote', () => {
   );
 
   test('notes that a local number in no service cannot text yet', () => {
-    expect(textingNote(local, null, EXPECTED.messagesInbound)).toEqual({
+    expect(textingNote(local, null, null, EXPECTED.messagesInbound)).toEqual({
       kind: 'unregistered',
     });
   });
@@ -235,6 +248,7 @@ describe('textingNote', () => {
       textingNote(
         { local: false, texts: true },
         null,
+        null,
         EXPECTED.messagesInbound,
       ),
     ).toBeNull();
@@ -242,15 +256,142 @@ describe('textingNote', () => {
       textingNote(
         { local: true, texts: false },
         null,
+        null,
         EXPECTED.messagesInbound,
       ),
     ).toBeNull();
   });
 
   test('says when the services could not be read', () => {
-    expect(textingNote(local, 'unknown', EXPECTED.messagesInbound)).toEqual({
-      kind: 'unknown',
+    expect(
+      textingNote(local, 'unknown', 'unknown', EXPECTED.messagesInbound),
+    ).toEqual({ kind: 'unknown' });
+  });
+
+  const servedHere = {
+    ...CUSTOMER_CARE,
+    useInboundWebhookOnNumber: true,
+    inboundRequestUrl: null,
+    inboundMethod: null,
+  };
+
+  test.each([
+    ['no campaign', null, 'no-campaign'],
+    [
+      'a campaign in review',
+      { ...APPROVED, status: 'in-review' },
+      'campaign-in-review',
+    ],
+    [
+      'a campaign that was not approved',
+      { ...APPROVED, status: 'not-approved' },
+      'campaign-not-approved',
+    ],
+  ] as const)(
+    'warns about a local number whose service has %s',
+    (_what, campaign, kind) => {
+      expect(
+        textingNote(local, servedHere, campaign, EXPECTED.messagesInbound),
+      ).toEqual({ kind, service: CUSTOMER_CARE });
+    },
+  );
+
+  test('puts the campaign before the service’s own inbound address', () => {
+    expect(
+      textingNote(
+        local,
+        {
+          ...servedHere,
+          useInboundWebhookOnNumber: false,
+          inboundRequestUrl: ELSEWHERE,
+        },
+        null,
+        EXPECTED.messagesInbound,
+      ),
+    ).toEqual({ kind: 'no-campaign', service: CUSTOMER_CARE });
+  });
+
+  test('says it could not tell when the campaign could not be read', () => {
+    expect(
+      textingNote(local, servedHere, 'unknown', EXPECTED.messagesInbound),
+    ).toEqual({ kind: 'unknown' });
+  });
+
+  test('does not hold a toll-free number to its service’s campaign', () => {
+    expect(
+      textingNote(
+        { local: false, texts: true },
+        servedHere,
+        null,
+        EXPECTED.messagesInbound,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('campaignFrom', () => {
+  test.each([
+    ['VERIFIED', 'approved'],
+    ['verified', 'approved'],
+    ['IN_PROGRESS', 'in-review'],
+    ['PENDING', 'in-review'],
+    ['FAILED', 'not-approved'],
+    ['SUSPENDED', 'not-approved'],
+    [null, 'not-approved'],
+  ] as const)('reads a campaign Twilio reports as %s as %s', (raw, status) => {
+    expect(campaignFrom({ campaignStatus: raw }).status).toBe(status);
+  });
+
+  test('keeps what Twilio says and fills what it leaves out', () => {
+    expect(
+      campaignFrom({
+        campaignStatus: ' in_progress ',
+        usAppToPersonUsecase: 'CUSTOMER_CARE',
+        description: ' Replies to customers ',
+      }),
+    ).toEqual({
+      status: 'in-review',
+      twilioStatus: 'IN_PROGRESS',
+      useCase: 'CUSTOMER_CARE',
+      description: 'Replies to customers',
     });
+    expect(campaignFrom({})).toEqual({
+      status: 'not-approved',
+      twilioStatus: 'UNKNOWN',
+      useCase: 'UNKNOWN',
+      description: '',
+    });
+  });
+});
+
+describe('keepsIncomingTexts', () => {
+  const service = {
+    ...CUSTOMER_CARE,
+    useInboundWebhookOnNumber: false,
+    inboundRequestUrl: ELSEWHERE,
+    inboundMethod: 'POST',
+  };
+
+  test('is true for a service that sends its senders’ texts elsewhere', () => {
+    expect(keepsIncomingTexts(service, EXPECTED.messagesInbound)).toBe(true);
+  });
+
+  test('is false once the service defers to each number’s webhook', () => {
+    expect(
+      keepsIncomingTexts(
+        { ...service, useInboundWebhookOnNumber: true },
+        EXPECTED.messagesInbound,
+      ),
+    ).toBe(false);
+  });
+
+  test('is false for a service that posts them to this deployment', () => {
+    expect(
+      keepsIncomingTexts(
+        { ...service, inboundRequestUrl: EXPECTED.messagesInbound },
+        EXPECTED.messagesInbound,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -273,5 +414,19 @@ describe('readiness wording', () => {
     expect(
       describeTextingNote('+15555550101', { kind: 'unregistered' }),
     ).toContain('A2P 10DLC');
+  });
+
+  test.each([
+    ['no-campaign', 'has no A2P 10DLC campaign'],
+    ['campaign-in-review', 'not approved yet'],
+    ['campaign-not-approved', 'was not approved'],
+  ] as const)('says what a %s note means for the number', (kind, says) => {
+    const line = describeTextingNote('+15555550101', {
+      kind,
+      service: CUSTOMER_CARE,
+    });
+
+    expect(line).toContain('"Customer Care"');
+    expect(line).toContain(says);
   });
 });
