@@ -144,4 +144,32 @@ describe('twilioMessagesWebhookRoutes', () => {
     expect(response.json()).toEqual({ error: 'Missing signature' });
     expect(processInboundSpy).not.toHaveBeenCalled();
   });
+
+  test.each([
+    { checkTwilioSignatures: true, nodeEnv: 'development', status: 403 },
+    { checkTwilioSignatures: false, nodeEnv: 'development', status: 200 },
+  ] as const)(
+    'follows the signature check setting, not the environment ($checkTwilioSignatures in $nodeEnv)',
+    async ({ status, ...config }) => {
+      const configured = await createApiRouteApp(
+        async (fastify) => {
+          await fastify.register(formbody);
+          await fastify.register(twilioMessagesWebhookRoutes);
+        },
+        { db: {}, config },
+      );
+
+      const response = await configured.inject({
+        method: 'POST',
+        url: '/inbound',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        payload: `MessageSid=SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&From=${encodeURIComponent(CONTACT_NUMBER)}&To=${encodeURIComponent(SENDER_NUMBER)}&Body=Hello&NumMedia=0`,
+      });
+
+      expect(response.statusCode).toBe(status);
+      await configured.close();
+    },
+  );
 });

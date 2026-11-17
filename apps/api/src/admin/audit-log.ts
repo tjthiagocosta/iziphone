@@ -30,10 +30,20 @@ export type AuditAction =
   | 'department.phone_number_assigned'
   | 'department.phone_number_removed'
   | 'phone_number.purchased'
+  /** A number the Twilio account already held, brought into the list; records what it had attached. */
+  | 'phone_number.imported'
   | 'phone_number.updated'
   | 'phone_number.released'
   | 'phone_number.assigned'
   | 'phone_number.unassigned'
+  /**
+   * Reconnect asked Twilio to point it here again. Written before Twilio is
+   * changed, with what the number carried (`previously`), so it stands even
+   * when the change then failed.
+   */
+  | 'phone_number.reconnected'
+  /** Twilio refused a release; says whether the number went back to the reserve. */
+  | 'phone_number.release_failed'
   | 'settings.recording_retention_updated'
   | 'recording.deleted'
   /** One entry per sweep run, summarising it; never one per recording. */

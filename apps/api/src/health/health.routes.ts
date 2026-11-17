@@ -1,5 +1,8 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { TwilioNumberManagementService } from '../phone-numbers/index.js';
+import {
+  checkTwilioReadiness,
+  TwilioNumberManagementService,
+} from '../phone-numbers/index.js';
 
 type ServiceState = 'connected' | 'disconnected' | 'unknown';
 
@@ -15,6 +18,8 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
     log: fastify.log,
   });
   const adminOnly = { preHandler: [fastify.requireRole(['ADMIN'])] };
+  const checkTwilio = () =>
+    checkTwilioReadiness({ db: fastify.db, twilio, log: fastify.log });
 
   const checkDatabase = async (): Promise<ServiceState> => {
     try {
@@ -84,7 +89,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.get('/health/twilio', adminOnly, async (_request, reply) => {
-    const readiness = await twilio.getReadinessReport();
+    const readiness = await checkTwilio();
     if (readiness.status !== 'ok') reply.code(503);
     return readiness;
   });
@@ -98,7 +103,7 @@ export const healthRoutes: FastifyPluginAsync = async (fastify) => {
     let twilioState: ServiceState = 'unknown';
 
     if (twilio.hasAnyConfiguration()) {
-      const readiness = await twilio.getReadinessReport();
+      const readiness = await checkTwilio();
       twilioState = readiness.status === 'ok' ? 'connected' : 'disconnected';
     }
 

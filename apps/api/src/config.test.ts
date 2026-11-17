@@ -31,6 +31,7 @@ describe('loadApiConfig', () => {
       internalApiToken: requiredEnv.INTERNAL_API_TOKEN,
       routingCacheTtlSeconds: 86400,
       twilio: null,
+      checkTwilioSignatures: true,
       callControllerPublicUrl: null,
       mail: null,
       storage: {
@@ -250,6 +251,44 @@ describe('loadApiConfig', () => {
     ).toThrowError(
       /TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set together/,
     );
+  });
+
+  test('lets a development stack turn the Twilio signature check off', () => {
+    const config = loadApiConfig({
+      ...requiredEnv,
+      NODE_ENV: 'development',
+      TWILIO_SIGNATURE_CHECK: 'off',
+    });
+
+    expect(config.checkTwilioSignatures).toBe(false);
+  });
+
+  test('checks Twilio signatures in development unless told not to', () => {
+    expect(
+      loadApiConfig({ ...requiredEnv, NODE_ENV: 'development' })
+        .checkTwilioSignatures,
+    ).toBe(true);
+  });
+
+  test.each([{ NODE_ENV: 'production' }, {}])(
+    'refuses to start in production with the Twilio signature check off (%o)',
+    (nodeEnv) => {
+      expect(() =>
+        loadApiConfig({
+          ...requiredEnv,
+          ...nodeEnv,
+          TWILIO_SIGNATURE_CHECK: 'off',
+        }),
+      ).toThrowError(
+        /TWILIO_SIGNATURE_CHECK: off is allowed only with NODE_ENV=development/,
+      );
+    },
+  );
+
+  test('rejects a signature check value other than on or off', () => {
+    expect(() =>
+      loadApiConfig({ ...requiredEnv, TWILIO_SIGNATURE_CHECK: 'false' }),
+    ).toThrowError(/TWILIO_SIGNATURE_CHECK/);
   });
 
   test('rejects half-configured mail settings', () => {

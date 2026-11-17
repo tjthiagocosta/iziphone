@@ -417,6 +417,36 @@ describe('DepartmentService', () => {
     },
   );
 
+  test('should refuse a number that is being released', async () => {
+    const update = vi.fn(async () => ({}));
+    const { service, routingCache } = buildService({
+      department: { findUnique: vi.fn(async () => ({ id: 'dept-1' })) },
+      phoneNumber: {
+        // One row, being released, read through the filter the service asks for.
+        findUnique: vi.fn(
+          async ({ where }: { where: { status?: { not?: string } } }) =>
+            where.status?.not === 'RELEASED'
+              ? null
+              : {
+                  id: 'phone-2',
+                  phoneNumber: SECOND_LINE,
+                  userId: null,
+                  departmentId: null,
+                  status: 'RELEASED',
+                },
+        ),
+        updateMany: vi.fn(async () => ({ count: 0 })),
+        update,
+      },
+    });
+
+    expect(
+      await service.assignPhoneNumber('dept-1', 'phone-2', false, 'admin-1'),
+    ).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
+  });
+
   test('should refresh a number removed from the department', async () => {
     const numbers = departmentNumbers();
     const { service, db, auditCreate, routingCache } = buildService({

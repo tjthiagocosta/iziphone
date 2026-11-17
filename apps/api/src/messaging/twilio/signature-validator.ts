@@ -10,7 +10,7 @@ export interface TwilioSignatureOptions {
   authToken: string | null;
   /** Public base URL of this API, the URL Twilio signed against. */
   publicUrl: string;
-  /** Development skips validation so local tunnels are easy to work with. */
+  /** Set by `TWILIO_SIGNATURE_CHECK=off`, which only development allows. */
   skipValidation: boolean;
 }
 

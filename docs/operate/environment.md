@@ -10,7 +10,7 @@ every variable with local defaults.
 |---|---|---|
 | `DATABASE_URL` | api, db | PostgreSQL connection string |
 | `REDIS_URL` | api, call-controller | Redis connection string |
-| `NODE_ENV` | all | `development` or `production`. Controls webhook signature validation and secure cookies |
+| `NODE_ENV` | all | `development` or `production` (the default). Controls secure cookies, and whether `TWILIO_SIGNATURE_CHECK` may be off |
 | `LOG_LEVEL` | api, call-controller | Pino log level |
 | `API_PORT`, `API_HOST` | api | Listen address (default `3001`) |
 | `CALL_CONTROLLER_PORT`, `CALL_CONTROLLER_HOST` | call-controller | Listen address (default `3002`) |
@@ -35,6 +35,7 @@ every variable with local defaults.
 | `TWILIO_API_KEY`, `TWILIO_API_SECRET` | call-controller | Voice token minting |
 | `TWILIO_TWIML_APP_SID` | call-controller | TwiML app for outbound browser calls |
 | `TWILIO_HOLD_AUDIO_URL` | call-controller | Optional hold music URL |
+| `TWILIO_SIGNATURE_CHECK` | api, call-controller | `on` (the default) or `off`. Off accepts unsigned Twilio webhooks, for posting them by hand on a development stack; unless `NODE_ENV=development`, the services refuse to start with it off. See [Twilio configuration](twilio.md#webhook-signatures) |
 
 In production, session cookies are set with the `__Secure-` prefix and require
 HTTPS.

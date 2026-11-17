@@ -28,6 +28,7 @@ For whoever runs a stack.
 For the customer's administrator.
 
 - [Users and invites](admin/users-and-invites.md) — inviting, resending, reset links, deleting and restoring
+- [Phone numbers](admin/phone-numbers.md) — buying numbers, adding ones the account holds, assigning and moving them, the reserve, Reconnect, releasing
 - [Departments and routing](admin/departments-and-routing.md) — members, numbers, business hours, what a call does
 - [Voicemail greeting](admin/voicemail-greeting.md) — uploading the audio callers hear, and the fallback
 - [Recording retention](admin/recording-retention.md) — how long recordings are kept, and who may hear them

@@ -31,6 +31,7 @@ describe('loadControllerConfig', () => {
         token: requiredEnv.INTERNAL_API_TOKEN,
       },
       twilio: null,
+      checkTwilioSignatures: true,
     });
   });
 
@@ -106,6 +107,44 @@ describe('loadControllerConfig', () => {
     expect(() =>
       loadControllerConfig({ ...requiredEnv, BETTER_AUTH_SECRET: 'short' }),
     ).toThrowError(/BETTER_AUTH_SECRET: must be at least 16 characters/);
+  });
+
+  test('lets a development stack turn the Twilio signature check off', () => {
+    const config = loadControllerConfig({
+      ...requiredEnv,
+      NODE_ENV: 'development',
+      TWILIO_SIGNATURE_CHECK: 'off',
+    });
+
+    expect(config.checkTwilioSignatures).toBe(false);
+  });
+
+  test('checks Twilio signatures in development unless told not to', () => {
+    expect(
+      loadControllerConfig({ ...requiredEnv, NODE_ENV: 'development' })
+        .checkTwilioSignatures,
+    ).toBe(true);
+  });
+
+  test.each([{ NODE_ENV: 'production' }, {}])(
+    'refuses to start in production with the Twilio signature check off (%o)',
+    (nodeEnv) => {
+      expect(() =>
+        loadControllerConfig({
+          ...requiredEnv,
+          ...nodeEnv,
+          TWILIO_SIGNATURE_CHECK: 'off',
+        }),
+      ).toThrowError(
+        /TWILIO_SIGNATURE_CHECK: off is allowed only with NODE_ENV=development/,
+      );
+    },
+  );
+
+  test('rejects a signature check value other than on or off', () => {
+    expect(() =>
+      loadControllerConfig({ ...requiredEnv, TWILIO_SIGNATURE_CHECK: 'false' }),
+    ).toThrowError(/TWILIO_SIGNATURE_CHECK/);
   });
 
   test('rejects half-configured Twilio voice settings', () => {

@@ -33,7 +33,7 @@ describe('voiceWebhookRoutes', () => {
   beforeEach(async () => {
     flow = buildFlow();
     app = await createControllerRouteApp(voiceWebhookRoutes, {
-      config: { nodeEnv: 'development' },
+      config: { checkTwilioSignatures: false },
       registerOptions: { flow, telephony },
     });
   });
@@ -324,12 +324,13 @@ describe('voiceWebhookRoutes', () => {
     expect(response.body).toContain('We could not complete your call');
   });
 
-  test('requires a Twilio signature outside development', async () => {
-    const production = await createControllerRouteApp(voiceWebhookRoutes, {
+  test('requires a Twilio signature unless the check is turned off, even in development', async () => {
+    const development = await createControllerRouteApp(voiceWebhookRoutes, {
+      config: { nodeEnv: 'development' },
       registerOptions: { flow, telephony },
     });
 
-    const response = await production.inject({
+    const response = await development.inject({
       method: 'POST',
       url: '/webhooks/twilio/voice/inbound',
       headers: formHeaders,
@@ -338,6 +339,6 @@ describe('voiceWebhookRoutes', () => {
 
     expect(response.statusCode).toBe(403);
     expect(flow.acceptInboundCall).not.toHaveBeenCalled();
-    await production.close();
+    await development.close();
   });
 });

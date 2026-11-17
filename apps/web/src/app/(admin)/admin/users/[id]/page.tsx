@@ -227,7 +227,12 @@ export default function UserDetailPage() {
                     className="flex items-center justify-between p-2 rounded-md border"
                   >
                     <div>
-                      <span className="font-mono">{phone.phoneNumber}</span>
+                      <Link
+                        href={`/admin/phone-numbers/${phone.id}`}
+                        className="font-mono hover:underline"
+                      >
+                        {phone.phoneNumber}
+                      </Link>
                       {phone.label && (
                         <span className="ml-2 text-muted-foreground text-sm">
                           ({phone.label})

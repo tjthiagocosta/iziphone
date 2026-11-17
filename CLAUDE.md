@@ -125,7 +125,7 @@ rules below refine them.
 - The `prisma` CLI lives in the root `devDependencies`, not in `packages/db`, and `pnpm-workspace.yaml` turns off `autoInstallPeers`, `dedupePeerDependents`, and `resolvePeersFromWorkspaceRoot`. Together these keep `@prisma/client`'s and `better-auth`'s optional peers (the Prisma CLI, Studio, TypeScript, Next.js) out of the production images. If a new dependency needs a peer, declare it explicitly in that workspace, then run `pnpm peers check`.
   `packages/db` deliberately declares no `typescript` of its own: `@prisma/client` would resolve it as a peer and pnpm would then ship the compiler in the production image. It uses the root one.
 - Prisma is on `db:push` with no migrations directory yet. Do not run `db:push` against anything but a local database.
-- `NODE_ENV=development` disables Twilio signature validation in both services. Never set it on a reachable deployment.
+- `TWILIO_SIGNATURE_CHECK=off` disables Twilio signature validation in both services; they refuse to start with it in production. `NODE_ENV=development` no longer does. Never set it on a reachable deployment.
 - Better Auth cookies get a `__Secure-` prefix in production. Anything that reads the session cookie by name must handle both forms.
 - The routing cache has a 24-hour TTL. Any mutation that changes which user or department a phone number routes to must invalidate it.
 

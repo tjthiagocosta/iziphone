@@ -7,12 +7,20 @@ development, and the account-level settings the system expects.
 ## Steps
 
 1. Create an **API key and secret** in the Twilio console. The call controller uses them to mint browser voice tokens.
-2. Create a **TwiML application** and copy its SID into `TWILIO_TWIML_APP_SID`. Set its Voice request URL to the call controller's voice webhook (`${WEBHOOK_BASE_URL}/webhooks/twilio/voice/inbound`) with the HTTP POST method; the route accepts nothing else. Before the softphone dials, it asks the call controller for a grant to call that number from the line the user chose, and starts the call with the grant as its only parameter besides the `outbound-pstn` type. The webhook reads who is calling, whom and from where from the grant, because Twilio lets the browser set every other parameter of the call, `From` included. There is no deployment-wide caller ID: a call leaves from one of the caller's own lines (their number, or a number of a department they belong to) and is refused when it names no line they may use.
+2. Create a **TwiML application** and copy its SID into `TWILIO_TWIML_APP_SID`. Set its Voice request URL to the call controller's voice webhook (`${WEBHOOK_BASE_URL}/webhooks/twilio/voice/inbound`) with the HTTP POST method; the route accepts nothing else. The application is for the softphone's outgoing calls only: do not attach it to a phone number, whose own webhooks below must take its calls. Before the softphone dials, it asks the call controller for a grant to call that number from the line the user chose, and starts the call with the grant as its only parameter besides the `outbound-pstn` type. The webhook reads who is calling, whom and from where from the grant, because Twilio lets the browser set every other parameter of the call, `From` included. There is no deployment-wide caller ID: a call leaves from one of the caller's own lines (their number, or a number of a department they belong to) and is refused when it names no line they may use.
 3. For each **phone number** you add through the admin console, point its Voice webhook at the call controller and its Messaging webhooks at the API:
    - Voice: `${WEBHOOK_BASE_URL}/webhooks/twilio/voice/inbound`
-   - Voice status callback: `${WEBHOOK_BASE_URL}/webhooks/twilio/voice/status`
+   - Status callback: `${WEBHOOK_BASE_URL}/webhooks/twilio/voice/status`. A number has one status callback, and Twilio sends it for the calls to the number; the API asks for each text's status when it sends the text, at `<api url>/webhooks/twilio/messages/status`, so nothing points the number there.
    - Messaging: `<api url>/webhooks/twilio/messages/inbound`
-   - Messaging status callback: `<api url>/webhooks/twilio/messages/status`
+
+   A number bought in **Admin → Phone Numbers**, or added there with **Add a number you own** because the account already holds it, gets its webhooks at once, and **Reconnect** on its page writes them again (see [Phone numbers](../admin/phone-numbers.md)); there is no need to set them by hand. All three also detach a TwiML App, an SMS application or a SIP trunk attached to the number, because Twilio sends the number's calls or texts to those instead of its webhooks, and the audit log records what the number had before. None of them changes a messaging service.
+
+   `GET /health/twilio` (admin only) checks the numbers in the list, not every number on the account; the others are only counted, so numbers the account keeps for other systems do not turn it red. It reports as an issue every listed number that needs Reconnect, with the reason: a webhook pointing elsewhere (including a status callback that earlier versions left on the API's messaging status route) or set to GET, since every webhook route takes POST only and a trailing slash is a different route, or an attached TwiML App, SMS application or SIP trunk. While one does, `GET /health/all` reports Twilio as disconnected. It also warns, without changing the status, about a listed number the account does not hold, and about texting:
+
+   - A number that is a sender of a **messaging service** whose incoming messages go to the service's own address rather than "Defer to sender's webhook" (`useInboundWebhookOnNumber=false`), unless that address is exactly the API's messaging webhook and is called with POST: its texts go there and never reach the API. The warning names the service. Change the service's integration setting in the Twilio Console, or take the number out of it; Reconnect does not.
+   - A local number in **no messaging service**: it can call, but US carriers block its texts until it joins the service of an approved A2P 10DLC campaign.
+
+   Twilio names no service on the number itself, so the check lists the account's messaging services once and each service's senders: one request plus one per service, whatever the number of numbers. An account with more than 20 services is not checked for texting, and the report says so.
 4. Expose the call controller and API over HTTPS. One Nouva.sh session carries both, and each `-R` names the alias it answers on (up to five per session):
 
    ```bash
@@ -37,9 +45,19 @@ the numbers assigned to it.
 
 ## Webhook signatures
 
-Twilio signs every webhook. Signature validation is enforced when `NODE_ENV` is
-anything other than `development`, and skipped in development so local tunnels
-are easy to work with. Never run with `NODE_ENV=development` on a public host.
+Twilio signs every webhook, and both services refuse one without a valid
+signature with a 403 (a 500 while the Twilio credentials are not set), in
+every environment unless `TWILIO_SIGNATURE_CHECK` is `off` (below). Twilio signs the exact public URL it
+called, so the check works behind a proxy or a tunnel only when
+`BETTER_AUTH_URL` (texts) and `WEBHOOK_BASE_URL` (calls) are the addresses
+Twilio was given, scheme and host included.
+
+`TWILIO_SIGNATURE_CHECK=off` turns the check off, so a developer can post a
+webhook by hand with `curl`. It is for a development stack only: unless
+`NODE_ENV=development`, the services refuse to start with it off, and they log
+a warning at boot when it is. Never leave it off on a stack Twilio, or anybody
+else, can reach. See
+[0015](../decisions/0015-twilio-signatures-are-checked-unless-a-development-stack-says-otherwise.md).
 
 ## Related
 
