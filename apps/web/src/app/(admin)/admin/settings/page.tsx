@@ -1,12 +1,15 @@
 'use client';
 
 import type { RecordingRetention } from '@repo/dto';
+import { DefaultMessagingServiceForm } from '@/components/admin/settings/DefaultMessagingServiceForm';
 import { RecordingRetentionForm } from '@/components/admin/settings/RecordingRetentionForm';
+import { useMessagingServices } from '@/hooks/use-messaging-services';
 import { useSystemSettings } from '@/hooks/use-system-settings';
 
 export default function SettingsPage() {
   const { settings, isLoading, isSaving, error, saveRecordingRetention } =
     useSystemSettings();
+  const messaging = useMessagingServices(true);
 
   const handleSave = (retention: RecordingRetention) => {
     void saveRecordingRetention(retention);
@@ -17,7 +20,7 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-muted-foreground">
-          How this deployment keeps what it records
+          How this deployment keeps what it records and registers its texts
         </p>
       </div>
 
@@ -46,6 +49,26 @@ export default function SettingsPage() {
             onSave={handleSave}
           />
         )}
+      </section>
+
+      <section className="space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold">Texting</h2>
+          <p className="text-sm text-muted-foreground">
+            The A2P 10DLC campaign a new local number texts through, as its
+            messaging service on your Twilio account.
+          </p>
+        </div>
+
+        <DefaultMessagingServiceForm
+          services={messaging.data}
+          isLoading={messaging.isLoading}
+          error={messaging.error}
+          isSaving={messaging.isSaving}
+          saveError={messaging.saveError}
+          onRetry={() => void messaging.refetch()}
+          onSave={(sid) => void messaging.saveDefault(sid)}
+        />
       </section>
     </div>
   );

@@ -2,6 +2,7 @@ import {
   type AttachedApplication,
   type AvailableNumbersResponse,
   type Campaign,
+  type MessagingServiceOption,
   type MonthlyPrice,
   type OwnedPhoneNumber,
   type PhoneNumberConnection,
@@ -22,8 +23,10 @@ import {
   describeReconnect,
   describeTextingNote,
   detachableSmsApplication,
+  keepsIncomingTexts,
   type MessagingServiceRef,
   type NumberSettings,
+  nameOf,
   reconnectReasons,
   type TwilioCampaignFields,
   textingNote,
@@ -163,6 +166,7 @@ interface TwilioMessagingServiceSender {
 }
 
 interface TwilioMessagingServiceContextLike {
+  fetch(): Promise<TwilioMessagingService>;
   /** The service's senders. */
   phoneNumbers: {
     list(
@@ -735,6 +739,62 @@ export class TwilioNumberManagementService {
   }
 
   /**
+   * The account's messaging services, each with its A2P 10DLC campaign, for
+   * an administrator choosing the one a number texts through: one listing,
+   * and one call per service for its campaign. Unknown when they cannot be
+   * read, or when there are more of them than a check reads.
+   */
+  async listMessagingServices(): Promise<MessagingServiceOption[] | 'unknown'> {
+    this.getClient();
+
+    try {
+      const services = await this.readMessagingServices();
+
+      if (services === 'unknown') {
+        return 'unknown';
+      }
+
+      const campaigns = await this.campaignsOf(
+        services.map((service) => service.sid),
+      );
+
+      return services.map((service) =>
+        this.optionOf(service, campaigns.get(service.sid) ?? null),
+      );
+    } catch (error) {
+      // The pickers then say the services could not be read; nothing is
+      // chosen blind.
+      this.log.warn({ error }, 'Could not list the messaging services');
+      return 'unknown';
+    }
+  }
+
+  /** One messaging service with its campaign, or null when the account has none by that sid. */
+  async readMessagingService(
+    sid: string,
+  ): Promise<MessagingServiceOption | null> {
+    const messaging = this.getClient().messaging.v1.services;
+
+    try {
+      const service = await messaging(sid).fetch();
+      const campaigns = await this.campaignsOf([sid]);
+
+      return this.optionOf(
+        serviceRefOf(service, service.sid || sid),
+        campaigns.get(sid) ?? null,
+      );
+    } catch (error) {
+      if (twilioErrorCode(error) === RESOURCE_NOT_FOUND) {
+        return null;
+      }
+      throw this.wrapProviderError(
+        error,
+        'Failed to read the messaging service',
+      );
+    }
+  }
+
+  /**
    * The number as the account holds it before a purchase, or null. When the
    * account cannot be asked, nothing is bought: buying anyway could take
    * over a number another system uses.
@@ -1127,6 +1187,21 @@ export class TwilioNumberManagementService {
         return service ? [service.sid] : [];
       }),
     );
+  }
+
+  /** A service as an administrator chooses between them. */
+  private optionOf(
+    service: MessagingServiceRef,
+    campaign: Campaign | null,
+  ): MessagingServiceOption {
+    return {
+      ...nameOf(service),
+      campaign,
+      keepsIncomingTexts: keepsIncomingTexts(
+        service,
+        this.messagesInboundUrl(),
+      ),
+    };
   }
 
   /** The account's applications' names, by sid; empty when they cannot be read. */

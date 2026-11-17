@@ -52,6 +52,59 @@ export class SystemSettingsService {
     };
   }
 
+  /** The messaging service new local numbers join, or null for none. */
+  async readDefaultMessagingService(): Promise<string | null> {
+    const row = await this.db.systemSettings.findUnique({
+      where: { id: SYSTEM_SETTINGS_ID },
+      select: { defaultMessagingServiceSid: true },
+    });
+
+    return row?.defaultMessagingServiceSid ?? null;
+  }
+
+  /**
+   * Stores the messaging service new local numbers join, with an audit entry
+   * naming the one before. Whether the service can be the default is the
+   * caller's to check: only it can ask Twilio.
+   */
+  async updateDefaultMessagingService(
+    messagingServiceSid: string | null,
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<void> {
+    await this.db.$transaction(async (tx) => {
+      const previous = await tx.systemSettings.findUnique({
+        where: { id: SYSTEM_SETTINGS_ID },
+        select: { defaultMessagingServiceSid: true },
+      });
+
+      await tx.systemSettings.upsert({
+        where: { id: SYSTEM_SETTINGS_ID },
+        create: {
+          id: SYSTEM_SETTINGS_ID,
+          defaultMessagingServiceSid: messagingServiceSid,
+        },
+        update: { defaultMessagingServiceSid: messagingServiceSid },
+        select: { id: true },
+      });
+
+      await this.auditLog.create(
+        {
+          action: 'settings.default_messaging_service_updated',
+          entityType: 'SystemSettings',
+          entityId: SYSTEM_SETTINGS_ID,
+          userId: actorId,
+          changes: {
+            from: previous?.defaultMessagingServiceSid ?? null,
+            to: messagingServiceSid,
+          },
+          ipAddress,
+        },
+        tx,
+      );
+    });
+  }
+
   /** What the retention sweep reads before each run. */
   async readRecordingRetention(): Promise<RecordingRetention> {
     const { recordingRetention } = await this.read();

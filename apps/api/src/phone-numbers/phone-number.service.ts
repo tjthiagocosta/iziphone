@@ -1,21 +1,26 @@
 import type { Prisma, PrismaClient } from '@repo/db';
-import type {
-  AvailableNumbersResponse,
-  ImportedPhoneNumber,
-  ImportPhoneNumber,
-  MonthlyPrice,
-  OwnedPhoneNumbersResponse,
-  PhoneNumberConnection,
-  PhoneNumberListQuery,
-  PhoneNumberListResponse,
-  PhoneNumberOwner,
-  PhoneNumberResponse,
-  PhoneNumberType,
-  PurchasedPhoneNumber,
-  PurchasePhoneNumber,
-  ReleasedPhoneNumber,
-  SearchAvailableNumbers,
-  UpdatePhoneNumber,
+import {
+  type AvailableNumbersResponse,
+  type DefaultMessagingServiceResponse,
+  defaultRefusal,
+  type ImportedPhoneNumber,
+  type ImportPhoneNumber,
+  type MessagingServiceOption,
+  type MessagingServicesResponse,
+  type MonthlyPrice,
+  type OwnedPhoneNumbersResponse,
+  type PhoneNumberConnection,
+  type PhoneNumberListQuery,
+  type PhoneNumberListResponse,
+  type PhoneNumberOwner,
+  type PhoneNumberResponse,
+  type PhoneNumberType,
+  type PurchasedPhoneNumber,
+  type PurchasePhoneNumber,
+  REFUSAL_TEXT,
+  type ReleasedPhoneNumber,
+  type SearchAvailableNumbers,
+  type UpdatePhoneNumber,
 } from '@repo/dto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AuditLogParams, AuditLogService } from '../admin/index.js';
@@ -63,7 +68,22 @@ export type NumberProvider = Pick<
   | 'readNumberForImport'
   | 'listAccountNumbers'
   | 'checkConnection'
+  | 'listMessagingServices'
+  | 'readMessagingService'
 >;
+
+/**
+ * Where the deployment keeps the messaging service new local numbers join.
+ * Writing it records the change in the audit log.
+ */
+export interface TextingDefaults {
+  readDefaultMessagingService(): Promise<string | null>;
+  updateDefaultMessagingService(
+    messagingServiceSid: string | null,
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<void>;
+}
 
 /** A number the account holds, about to be written to the list with its holder. */
 interface HeldNumberRecord {
@@ -89,6 +109,7 @@ export class PhoneNumberService {
     private readonly auditLog: AuditLogService,
     private readonly routingCache: RoutingCacheService,
     private readonly provider: NumberProvider,
+    private readonly textingDefaults: TextingDefaults,
   ) {}
 
   async list(query: PhoneNumberListQuery): Promise<PhoneNumberListResponse> {
@@ -444,6 +465,49 @@ export class PhoneNumberService {
     );
 
     return { ...toPhoneNumberResponse(recorded), connected };
+  }
+
+  /** The account's messaging services an administrator can choose between, and the default. */
+  async messagingServices(): Promise<MessagingServicesResponse> {
+    const [services, defaultSid] = await Promise.all([
+      this.provider.listMessagingServices(),
+      this.textingDefaults.readDefaultMessagingService(),
+    ]);
+
+    return { services: services === 'unknown' ? null : services, defaultSid };
+  }
+
+  /**
+   * Sets the messaging service new local numbers join, or none. A service is
+   * checked against Twilio first: one whose campaign registers nothing, or
+   * that keeps its senders' incoming texts, would leave every new number
+   * unable to text or to receive texts.
+   *
+   * @throws AdminServiceError 400 when the account has no such service or it
+   *   cannot be the default.
+   */
+  async setDefaultMessagingService(
+    messagingServiceSid: string | null,
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<DefaultMessagingServiceResponse> {
+    if (messagingServiceSid) {
+      const refusal = defaultRefusal(
+        await this.requireMessagingService(messagingServiceSid),
+      );
+
+      if (refusal) {
+        throw new AdminServiceError(REFUSAL_TEXT[refusal]);
+      }
+    }
+
+    await this.textingDefaults.updateDefaultMessagingService(
+      messagingServiceSid,
+      actorId,
+      ipAddress,
+    );
+
+    return { defaultSid: messagingServiceSid };
   }
 
   /**
@@ -1003,6 +1067,21 @@ export class PhoneNumberService {
 
       return row;
     });
+  }
+
+  /** @throws AdminServiceError 400 when the account has no messaging service by that sid. */
+  private async requireMessagingService(
+    sid: string,
+  ): Promise<MessagingServiceOption> {
+    const service = await this.provider.readMessagingService(sid);
+
+    if (!service) {
+      throw new AdminServiceError(
+        'Your Twilio account has no messaging service by that id.',
+      );
+    }
+
+    return service;
   }
 
   /**

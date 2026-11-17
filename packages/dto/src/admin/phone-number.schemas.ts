@@ -29,6 +29,11 @@ export const PhoneNumberOwnerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('department'), id: EntityIdSchema }),
 ]);
 
+/** A Twilio messaging service, by its sid. */
+export const MessagingServiceSidSchema = z
+  .string()
+  .regex(/^MG[0-9a-fA-F]{32}$/, 'Not a Twilio messaging service id');
+
 export const PurchasePhoneNumberSchema = z.object({
   phoneNumber: E164PhoneNumberSchema,
   country: z
@@ -60,6 +65,11 @@ export const ImportPhoneNumberSchema = z
     message: 'Only a number a department holds can be its primary number.',
     path: ['isPrimary'],
   });
+
+/** The service new local numbers join; `null` for none. */
+export const UpdateDefaultMessagingServiceSchema = z.object({
+  messagingServiceSid: MessagingServiceSidSchema.nullable(),
+});
 
 export const UpdatePhoneNumberSchema = z.object({
   label: z.string().trim().max(50).nullable().optional(),
@@ -192,6 +202,31 @@ export const CampaignSchema = z.object({
   /** Twilio's use case code, such as `CUSTOMER_CARE` or `LOW_VOLUME`. */
   useCase: z.string(),
   description: z.string(),
+});
+
+/** A messaging service a number can text through, with its campaign. */
+export const MessagingServiceOptionSchema = MessagingServiceNameSchema.extend({
+  /** Null when the service has no A2P 10DLC campaign. */
+  campaign: CampaignSchema.nullable(),
+  /**
+   * The service sends its senders' incoming texts to an address of its own
+   * other than this deployment's, so they would not arrive here.
+   */
+  keepsIncomingTexts: z.boolean(),
+});
+
+export const MessagingServicesResponseSchema = z.object({
+  /**
+   * The account's messaging services, or null when they could not be read
+   * or there are more than a check reads.
+   */
+  services: z.array(MessagingServiceOptionSchema).nullable(),
+  /** The service new local numbers join, as the settings name it; null for none. */
+  defaultSid: z.string().nullable(),
+});
+
+export const DefaultMessagingServiceResponseSchema = z.object({
+  defaultSid: z.string().nullable(),
 });
 
 export const PurchasedPhoneNumberSchema = PhoneNumberResponseSchema.extend({
@@ -382,5 +417,71 @@ export type MonthlyPrice = z.infer<typeof MonthlyPriceSchema>;
 export type AvailableNumbersResponse = z.infer<
   typeof AvailableNumbersResponseSchema
 >;
+export type MessagingServiceSid = z.infer<typeof MessagingServiceSidSchema>;
+export type UpdateDefaultMessagingService = z.infer<
+  typeof UpdateDefaultMessagingServiceSchema
+>;
 export type CampaignStatus = z.infer<typeof CampaignStatusSchema>;
 export type Campaign = z.infer<typeof CampaignSchema>;
+export type MessagingServiceOption = z.infer<
+  typeof MessagingServiceOptionSchema
+>;
+export type MessagingServicesResponse = z.infer<
+  typeof MessagingServicesResponseSchema
+>;
+export type DefaultMessagingServiceResponse = z.infer<
+  typeof DefaultMessagingServiceResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
+// Which messaging service a local number may text through
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a local number may not join a messaging service. A service without a
+ * campaign, or whose campaign was not approved, registers nothing, so a number
+ * in it texts no better than one in none. A campaign still in review is
+ * allowed: the number is registered once carriers approve it.
+ */
+export type JoinRefusal = 'no-campaign' | 'campaign-not-approved';
+
+/**
+ * Why a service may not be the one every new local number joins: what keeps
+ * any number from joining it, and a service that keeps its senders' incoming
+ * texts, which would leave each new number unable to receive any. One number
+ * may still be put in such a service on purpose.
+ */
+export type DefaultRefusal = JoinRefusal | 'keeps-incoming-texts';
+
+/** Why a local number may not join `service`, or null when it may. */
+export function joinRefusal(
+  service: Pick<MessagingServiceOption, 'campaign'>,
+): JoinRefusal | null {
+  if (!service.campaign) {
+    return 'no-campaign';
+  }
+
+  return service.campaign.status === 'not-approved'
+    ? 'campaign-not-approved'
+    : null;
+}
+
+/** Why `service` may not be the default for new local numbers, or null when it may. */
+export function defaultRefusal(
+  service: Pick<MessagingServiceOption, 'campaign' | 'keepsIncomingTexts'>,
+): DefaultRefusal | null {
+  return (
+    joinRefusal(service) ??
+    (service.keepsIncomingTexts ? 'keeps-incoming-texts' : null)
+  );
+}
+
+/** Each refusal in one sentence, for the console and for the API's answer. */
+export const REFUSAL_TEXT: Record<DefaultRefusal, string> = {
+  'no-campaign':
+    'This messaging service has no A2P 10DLC campaign, so it registers no texts.',
+  'campaign-not-approved':
+    "This messaging service's A2P 10DLC campaign was not approved, so carriers block its texts.",
+  'keeps-incoming-texts':
+    "This messaging service sends its numbers' incoming texts to an address of its own, so they would not reach iziphone. In the Twilio Console, set its incoming messages to “Defer to sender's webhook” first.",
+};

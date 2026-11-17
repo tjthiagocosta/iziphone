@@ -45,6 +45,8 @@ export type AuditAction =
   /** Twilio refused a release; says whether the number went back to the reserve. */
   | 'phone_number.release_failed'
   | 'settings.recording_retention_updated'
+  /** The messaging service new local numbers join (`from`, `to`, either null for none). */
+  | 'settings.default_messaging_service_updated'
   | 'recording.deleted'
   /** One entry per sweep run, summarising it; never one per recording. */
   | 'recording.retention_swept';

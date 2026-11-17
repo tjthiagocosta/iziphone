@@ -1,5 +1,9 @@
 import { Prisma, type PrismaClient } from '@repo/db';
-import type { ImportPhoneNumber, PurchasePhoneNumber } from '@repo/dto';
+import type {
+  ImportPhoneNumber,
+  MessagingServiceOption,
+  PurchasePhoneNumber,
+} from '@repo/dto';
 import type { FastifyBaseLogger } from 'fastify';
 import { describe, expect, type Mock, test, vi } from 'vitest';
 import type { AuditLogService } from '../admin/index.js';
@@ -194,6 +198,27 @@ const HELD_METADATA = {
   faxEnabled: false,
 };
 
+const CUSTOMER_CARE = {
+  sid: 'MGaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  friendlyName: 'Customer Care',
+};
+const APPOINTMENTS = {
+  sid: 'MGbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  friendlyName: 'Appointments',
+};
+const APPROVED = {
+  status: 'approved' as const,
+  twilioStatus: 'VERIFIED',
+  useCase: 'CUSTOMER_CARE',
+  description: 'Replies to customers who wrote first',
+};
+
+/** The account's messaging services as the provider reads them. */
+const SERVICES: MessagingServiceOption[] = [
+  { ...CUSTOMER_CARE, campaign: APPROVED, keepsIncomingTexts: false },
+  { ...APPOINTMENTS, campaign: APPROVED, keepsIncomingTexts: false },
+];
+
 function fakeProvider(overrides: Partial<NumberProvider> = {}) {
   return {
     searchAvailableNumbers: vi.fn(async () => ({ numbers: [] })),
@@ -221,6 +246,12 @@ function fakeProvider(overrides: Partial<NumberProvider> = {}) {
       needsReconnect: [],
       texting: null,
     })),
+    listMessagingServices: vi.fn<NumberProvider['listMessagingServices']>(
+      async () => SERVICES,
+    ),
+    readMessagingService: vi.fn<NumberProvider['readMessagingService']>(
+      async (sid) => SERVICES.find((service) => service.sid === sid) ?? null,
+    ),
     ...overrides,
   };
 }
@@ -250,7 +281,11 @@ function accountNumber(phoneNumber: string) {
   };
 }
 
-function buildService(phoneNumbers: Row[] = [], provider = fakeProvider()) {
+function buildService(
+  phoneNumbers: Row[] = [],
+  provider = fakeProvider(),
+  defaultMessagingServiceSid: string | null = null,
+) {
   const store = fakePhoneNumbers(phoneNumbers);
   const db: Record<string, unknown> = {
     phoneNumber: store.table,
@@ -273,12 +308,17 @@ function buildService(phoneNumbers: Row[] = [], provider = fakeProvider()) {
     refreshPhoneNumbers: vi.fn(async () => undefined),
     refreshDepartment: vi.fn(async () => undefined),
   };
+  const textingDefaults = {
+    readDefaultMessagingService: vi.fn(async () => defaultMessagingServiceSid),
+    updateDefaultMessagingService: vi.fn(async () => undefined),
+  };
   const service = new PhoneNumberService(
     db as unknown as PrismaClient,
     log,
     { create: auditCreate } as unknown as AuditLogService,
     routingCache as unknown as RoutingCacheService,
     provider as unknown as NumberProvider,
+    textingDefaults,
   );
 
   return {
@@ -288,6 +328,7 @@ function buildService(phoneNumbers: Row[] = [], provider = fakeProvider()) {
     auditCreate,
     routingCache,
     provider,
+    textingDefaults,
   };
 }
 
@@ -871,6 +912,120 @@ describe('PhoneNumberService.importOwned', () => {
       ),
     ).rejects.toMatchObject({ statusCode: 400 });
     expect(provider.readNumberForImport).not.toHaveBeenCalled();
+  });
+});
+
+describe('PhoneNumberService messaging service default', () => {
+  test('should list the services with the default', async () => {
+    const { service } = buildService([], fakeProvider(), CUSTOMER_CARE.sid);
+
+    await expect(service.messagingServices()).resolves.toEqual({
+      services: SERVICES,
+      defaultSid: CUSTOMER_CARE.sid,
+    });
+  });
+
+  test('should answer null services when Twilio cannot list them', async () => {
+    const { service } = buildService(
+      [],
+      fakeProvider({
+        listMessagingServices: vi.fn(async () => 'unknown' as const),
+      }),
+    );
+
+    await expect(service.messagingServices()).resolves.toEqual({
+      services: null,
+      defaultSid: null,
+    });
+  });
+
+  test('should store a service that can be the default', async () => {
+    const { service, textingDefaults } = buildService();
+
+    await expect(
+      service.setDefaultMessagingService(
+        CUSTOMER_CARE.sid,
+        'admin-1',
+        '203.0.113.7',
+      ),
+    ).resolves.toEqual({ defaultSid: CUSTOMER_CARE.sid });
+    expect(textingDefaults.updateDefaultMessagingService).toHaveBeenCalledWith(
+      CUSTOMER_CARE.sid,
+      'admin-1',
+      '203.0.113.7',
+    );
+  });
+
+  test('should store none without asking Twilio', async () => {
+    const provider = fakeProvider();
+    const { service, textingDefaults } = buildService([], provider);
+
+    await service.setDefaultMessagingService(null, 'admin-1');
+
+    expect(provider.readMessagingService).not.toHaveBeenCalled();
+    expect(textingDefaults.updateDefaultMessagingService).toHaveBeenCalledWith(
+      null,
+      'admin-1',
+      undefined,
+    );
+  });
+
+  test.each([
+    [
+      'has no campaign',
+      { campaign: null, keepsIncomingTexts: false },
+      'no A2P 10DLC campaign',
+    ],
+    [
+      'has a campaign that was not approved',
+      {
+        campaign: { ...APPROVED, status: 'not-approved' as const },
+        keepsIncomingTexts: false,
+      },
+      'was not approved',
+    ],
+    [
+      'keeps its incoming texts',
+      { campaign: APPROVED, keepsIncomingTexts: true },
+      "Defer to sender's webhook",
+    ],
+  ])('should refuse a default that %s', async (_what, fields, says) => {
+    const { service, textingDefaults } = buildService(
+      [],
+      fakeProvider({
+        readMessagingService: vi.fn(async () => ({
+          ...CUSTOMER_CARE,
+          ...fields,
+        })),
+      }),
+    );
+
+    await expect(
+      service.setDefaultMessagingService(CUSTOMER_CARE.sid, 'admin-1'),
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      message: expect.stringContaining(says),
+    });
+    expect(
+      textingDefaults.updateDefaultMessagingService,
+    ).not.toHaveBeenCalled();
+  });
+
+  test('should take a campaign still in review as the default', async () => {
+    const { service } = buildService(
+      [],
+      fakeProvider({
+        readMessagingService: vi.fn(async () => ({
+          ...CUSTOMER_CARE,
+          campaign: { ...APPROVED, status: 'in-review' as const },
+          keepsIncomingTexts: false,
+        })),
+      }),
+    );
+
+    await expect(
+      service.setDefaultMessagingService(CUSTOMER_CARE.sid, 'admin-1'),
+    ).resolves.toEqual({ defaultSid: CUSTOMER_CARE.sid });
   });
 });
 

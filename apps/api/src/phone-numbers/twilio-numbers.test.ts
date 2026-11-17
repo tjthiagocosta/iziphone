@@ -1660,6 +1660,59 @@ describe('TwilioNumberManagementService messaging services', () => {
 
     expect(connection).toMatchObject({ texting: { kind: 'unknown' } });
   });
+
+  test('should list every service with its campaign and whether it keeps incoming texts', async () => {
+    const services = await buildService({
+      messaging: twoServices({
+        appointments: {
+          campaignStatus: 'FAILED',
+          useInboundWebhookOnNumber: false,
+          inboundRequestUrl: 'https://agent.example.com/sms',
+        },
+      }),
+    }).listMessagingServices();
+
+    expect(services).toEqual([
+      {
+        sid: CUSTOMER_CARE,
+        friendlyName: 'Customer Care',
+        campaign: expect.objectContaining({ status: 'approved' }),
+        keepsIncomingTexts: false,
+      },
+      {
+        sid: APPOINTMENTS,
+        friendlyName: 'Appointments',
+        campaign: expect.objectContaining({
+          status: 'not-approved',
+          twilioStatus: 'FAILED',
+        }),
+        keepsIncomingTexts: true,
+      },
+    ]);
+  });
+
+  test('should answer the services unknown when they cannot be listed', async () => {
+    const messaging = twoServices();
+    messaging.v1.services.list.mockRejectedValueOnce(new Error('Forbidden'));
+
+    await expect(
+      buildService({ messaging }).listMessagingServices(),
+    ).resolves.toBe('unknown');
+  });
+
+  test('should read one service, and answer null for a sid the account does not have', async () => {
+    const service = buildService({ messaging: twoServices() });
+
+    await expect(service.readMessagingService(APPOINTMENTS)).resolves.toEqual(
+      expect.objectContaining({
+        sid: APPOINTMENTS,
+        friendlyName: 'Appointments',
+      }),
+    );
+    await expect(
+      service.readMessagingService('MGcccccccccccccccccccccccccccccccc'),
+    ).resolves.toBeNull();
+  });
 });
 
 interface FakeMessagingService {
@@ -1683,6 +1736,21 @@ function buildMessagingResource(services: FakeMessagingService[]) {
     const service = services.find((candidate) => candidate.sid === sid);
 
     return {
+      fetch: vi.fn(async () => {
+        if (!service) {
+          throw Object.assign(
+            new Error('The requested resource was not found'),
+            { code: 20404, status: 404 },
+          );
+        }
+
+        const {
+          senders: _senders,
+          campaignStatus: _campaignStatus,
+          ...fields
+        } = service;
+        return fields;
+      }),
       phoneNumbers: {
         list: vi.fn(async () =>
           (service?.senders ?? []).map((phoneNumber) => ({ phoneNumber })),

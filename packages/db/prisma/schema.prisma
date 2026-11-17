@@ -665,6 +665,10 @@ model SystemSettings {
   voicemailRetention     RecordingRetentionPolicy @default(KEEP_UNTIL_DELETED) @map("voicemail_retention")
   /// Retention for the recordings of the calls themselves.
   callRecordingRetention RecordingRetentionPolicy @default(KEEP_UNTIL_DELETED) @map("call_recording_retention")
+  /// The Twilio messaging service (`MG…`) a local number joins when it is
+  /// bought or added without naming one; null for none. Which service a number
+  /// is in is read from Twilio, never stored.
+  defaultMessagingServiceSid String?             @map("default_messaging_service_sid")
   createdAt              DateTime                 @default(now()) @map("created_at")
   updatedAt              DateTime                 @updatedAt @map("updated_at")
 

@@ -10,6 +10,8 @@ import { adminPhoneNumberRoutes } from './admin.routes.js';
 import { PhoneNumberService } from './phone-number.service.js';
 import { TwilioProviderError } from './twilio-numbers.js';
 
+const CUSTOMER_CARE_SID = 'MGaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
 describe('adminPhoneNumberRoutes', () => {
   let app: FastifyInstance;
   let searchAvailableSpy: ReturnType<typeof vi.spyOn>;
@@ -305,6 +307,52 @@ describe('adminPhoneNumberRoutes', () => {
       expect.any(String),
     );
     reconnect.mockRestore();
+  });
+
+  test('should list the account’s messaging services with the default', async () => {
+    const messagingServices = vi
+      .spyOn(PhoneNumberService.prototype, 'messagingServices')
+      .mockResolvedValueOnce({ services: null, defaultSid: CUSTOMER_CARE_SID });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/messaging-services',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      services: null,
+      defaultSid: CUSTOMER_CARE_SID,
+    });
+    messagingServices.mockRestore();
+  });
+
+  test('should set the default messaging service, and refuse an id that is not one', async () => {
+    const setDefault = vi
+      .spyOn(PhoneNumberService.prototype, 'setDefaultMessagingService')
+      .mockResolvedValueOnce({ defaultSid: CUSTOMER_CARE_SID });
+
+    const set = await app.inject({
+      method: 'PUT',
+      url: '/messaging-services/default',
+      payload: { messagingServiceSid: CUSTOMER_CARE_SID },
+    });
+    const refused = await app.inject({
+      method: 'PUT',
+      url: '/messaging-services/default',
+      payload: { messagingServiceSid: 'PNaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+    });
+
+    expect(set.statusCode).toBe(200);
+    expect(set.json()).toEqual({ defaultSid: CUSTOMER_CARE_SID });
+    expect(setDefault).toHaveBeenCalledWith(
+      CUSTOMER_CARE_SID,
+      'user-1',
+      expect.any(String),
+    );
+    expect(refused.statusCode).toBe(400);
+    expect(setDefault).toHaveBeenCalledTimes(1);
+    setDefault.mockRestore();
   });
 
   test('should list the numbers the account holds that are not in the list', async () => {

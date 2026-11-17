@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
+  defaultRefusal,
   ImportPhoneNumberSchema,
+  joinRefusal,
+  MessagingServicesResponseSchema,
   OwnedPhoneNumberSchema,
   PhoneNumberConnectionSchema,
   PhoneNumberListQuerySchema,
@@ -8,8 +11,17 @@ import {
   PurchasedPhoneNumberSchema,
   PurchasePhoneNumberSchema,
   SearchAvailableNumbersSchema,
+  UpdateDefaultMessagingServiceSchema,
   UpdatePhoneNumberSchema,
 } from './phone-number.schemas.js';
+
+const CUSTOMER_CARE_SID = 'MGaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const APPROVED = {
+  status: 'approved' as const,
+  twilioStatus: 'VERIFIED',
+  useCase: 'CUSTOMER_CARE',
+  description: 'Replies to customers who wrote first',
+};
 
 describe('PurchasePhoneNumberSchema', () => {
   test('requires an E.164 number', () => {
@@ -285,6 +297,73 @@ describe('PurchasedPhoneNumberSchema', () => {
         .connected,
     ).toBe(false);
     expect(PurchasedPhoneNumberSchema.safeParse(bought).success).toBe(false);
+  });
+});
+
+describe('MessagingServicesResponseSchema', () => {
+  test('carries null services when they could not be read', () => {
+    expect(
+      MessagingServicesResponseSchema.parse({
+        services: null,
+        defaultSid: null,
+      }),
+    ).toEqual({ services: null, defaultSid: null });
+    expect(
+      MessagingServicesResponseSchema.safeParse({
+        services: [
+          {
+            sid: CUSTOMER_CARE_SID,
+            friendlyName: 'Customer Care',
+            campaign: { ...APPROVED, status: 'rejected' },
+            keepsIncomingTexts: false,
+          },
+        ],
+        defaultSid: null,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('UpdateDefaultMessagingServiceSchema', () => {
+  test('takes a messaging service id or null for none', () => {
+    expect(
+      UpdateDefaultMessagingServiceSchema.parse({ messagingServiceSid: null }),
+    ).toEqual({ messagingServiceSid: null });
+    expect(
+      UpdateDefaultMessagingServiceSchema.safeParse({
+        messagingServiceSid: 'MGnot-a-sid',
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('joinRefusal and defaultRefusal', () => {
+  const service = (
+    campaign: typeof APPROVED | null,
+    keepsIncomingTexts = false,
+  ) => ({ campaign, keepsIncomingTexts });
+
+  test('let a number join a service whose campaign is approved or in review', () => {
+    expect(joinRefusal(service(APPROVED))).toBeNull();
+    expect(
+      joinRefusal(service({ ...APPROVED, status: 'in-review' as never })),
+    ).toBeNull();
+  });
+
+  test('refuse a service with no campaign or one that was not approved', () => {
+    expect(joinRefusal(service(null))).toBe('no-campaign');
+    expect(
+      joinRefusal(service({ ...APPROVED, status: 'not-approved' as never })),
+    ).toBe('campaign-not-approved');
+  });
+
+  test('refuse as the default a service that keeps its incoming texts, which one number may join', () => {
+    expect(joinRefusal(service(APPROVED, true))).toBeNull();
+    expect(defaultRefusal(service(APPROVED, true))).toBe(
+      'keeps-incoming-texts',
+    );
+    expect(defaultRefusal(service(null, true))).toBe('no-campaign');
+    expect(defaultRefusal(service(APPROVED))).toBeNull();
   });
 });
 

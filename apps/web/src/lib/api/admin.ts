@@ -12,6 +12,8 @@ import {
   type CreateDepartment,
   type CreateHoliday,
   type CreateUser,
+  type DefaultMessagingServiceResponse,
+  DefaultMessagingServiceResponseSchema,
   type DepartmentGreetingResponse,
   DepartmentGreetingResponseSchema,
   type DepartmentListQuery,
@@ -26,6 +28,8 @@ import {
   type ImportPhoneNumber,
   type InvitedUserResponse,
   InvitedUserResponseSchema,
+  type MessagingServicesResponse,
+  MessagingServicesResponseSchema,
   type OwnedPhoneNumbersResponse,
   OwnedPhoneNumbersResponseSchema,
   type PhoneNumberConnection,
@@ -44,6 +48,7 @@ import {
   type SystemSettingsResponse,
   SystemSettingsResponseSchema,
   type UpdateAgentOrder,
+  type UpdateDefaultMessagingService,
   type UpdateDepartment,
   type UpdateDepartmentSettings,
   type UpdateHoliday,
@@ -452,6 +457,24 @@ export function reconnectPhoneNumber(
   return requestApi(`/api/admin/phone-numbers/${id(phoneNumberId)}/reconnect`, {
     method: 'POST',
     schema: PhoneNumberResponseSchema,
+  });
+}
+
+/** The account's messaging services with their campaigns, and the default. */
+export function getMessagingServices(): Promise<MessagingServicesResponse> {
+  return requestApi('/api/admin/phone-numbers/messaging-services', {
+    schema: MessagingServicesResponseSchema,
+  });
+}
+
+/** Sets the messaging service new local numbers join, or none. */
+export function updateDefaultMessagingService(
+  data: UpdateDefaultMessagingService,
+): Promise<DefaultMessagingServiceResponse> {
+  return requestApi('/api/admin/phone-numbers/messaging-services/default', {
+    method: 'PUT',
+    body: data,
+    schema: DefaultMessagingServiceResponseSchema,
   });
 }
 

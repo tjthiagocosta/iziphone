@@ -3,20 +3,22 @@ import {
   PhoneNumberListQuerySchema,
   PurchasePhoneNumberSchema,
   SearchAvailableNumbersSchema,
+  UpdateDefaultMessagingServiceSchema,
   UpdatePhoneNumberSchema,
 } from '@repo/dto';
 import type { FastifyPluginAsync } from 'fastify';
-import { AuditLogService } from '../admin/index.js';
+import { AuditLogService, SystemSettingsService } from '../admin/index.js';
 import { authenticatedUser } from '../auth/index.js';
 import { RoutingCacheService } from '../routing/index.js';
 import { PhoneNumberService } from './phone-number.service.js';
 import { TwilioNumberManagementService } from './twilio-numbers.js';
 
 export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
+  const auditLog = new AuditLogService(fastify.db);
   const phoneNumberService = new PhoneNumberService(
     fastify.db,
     fastify.log,
-    new AuditLogService(fastify.db),
+    auditLog,
     new RoutingCacheService(
       fastify.redis,
       fastify.db,
@@ -30,6 +32,7 @@ export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
       callControllerPublicUrl: fastify.config.callControllerPublicUrl,
       log: fastify.log,
     }),
+    new SystemSettingsService(fastify.db, auditLog),
   );
 
   fastify.get('/', async (request, reply) => {
@@ -46,6 +49,25 @@ export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
   // A static path wins over `/:id` in Fastify's router, whatever the order.
   fastify.get('/owned', async (_request, reply) => {
     return reply.send(await phoneNumberService.listOwned());
+  });
+
+  fastify.get('/messaging-services', async (_request, reply) => {
+    return reply.send(await phoneNumberService.messagingServices());
+  });
+
+  fastify.put('/messaging-services/default', async (request, reply) => {
+    const { messagingServiceSid } = UpdateDefaultMessagingServiceSchema.parse(
+      request.body,
+    );
+    const actor = authenticatedUser(request);
+
+    return reply.send(
+      await phoneNumberService.setDefaultMessagingService(
+        messagingServiceSid,
+        actor.id,
+        request.ip,
+      ),
+    );
   });
 
   fastify.get<{ Params: { id: string } }>('/:id', async (request, reply) => {
