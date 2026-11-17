@@ -12,6 +12,7 @@ const readyReport: TwilioReadinessReport = {
   timestamp: '2026-03-23T00:00:00.000Z',
   messagingTransport: 'messages-api',
   issues: [],
+  warnings: [],
   account: {
     sid: 'ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     configured: true,
@@ -19,11 +20,18 @@ const readyReport: TwilioReadinessReport = {
   },
   webhooks: {
     messagesInbound: 'https://api.example.com/webhooks/twilio/messages/inbound',
-    messagesStatus: 'https://api.example.com/webhooks/twilio/messages/status',
     voice: 'https://calls.example.com/webhooks/twilio/voice',
     voiceFallback: 'https://calls.example.com/webhooks/twilio/voice/fallback',
+    voiceStatus: 'https://calls.example.com/webhooks/twilio/voice/status',
   },
-  numbers: { checked: 1, misconfigured: [] },
+  numbers: {
+    checked: 1,
+    misconfigured: [],
+    reasons: {},
+    notInAccount: [],
+    untracked: 0,
+    texting: {},
+  },
 };
 
 const brokenReport: TwilioReadinessReport = {
@@ -32,7 +40,7 @@ const brokenReport: TwilioReadinessReport = {
   issues: ['Twilio credentials are not configured'],
   account: { sid: null, configured: false, reachable: null },
   webhooks: null,
-  numbers: { checked: 0, misconfigured: [] },
+  numbers: { ...readyReport.numbers, checked: 0 },
 };
 
 describe('healthRoutes', () => {
@@ -41,8 +49,11 @@ describe('healthRoutes', () => {
   const queryRaw = vi.fn(async () => 1);
   const ping = vi.fn(async () => 'PONG');
   const assertReady = vi.fn(async () => undefined);
+  const listedNumbers = [{ phoneNumber: '+15555550101', type: 'LOCAL' }];
+  const findMany = vi.fn(async () => listedNumbers);
 
   beforeEach(async () => {
+    findMany.mockImplementation(async () => listedNumbers);
     queryRaw.mockImplementation(async () => 1);
     ping.mockImplementation(async () => 'PONG');
     assertReady.mockImplementation(async () => undefined);
@@ -56,7 +67,7 @@ describe('healthRoutes', () => {
     ).mockResolvedValue(readyReport);
 
     app = await createApiRouteApp(healthRoutes, {
-      db: { $queryRaw: queryRaw },
+      db: { $queryRaw: queryRaw, phoneNumber: { findMany } },
       redis: { ping },
       mediaStore: { assertReady },
     });
@@ -188,6 +199,46 @@ describe('healthRoutes', () => {
     expect(response.json()).toEqual(brokenReport);
   });
 
+  test('checks the numbers in the list, not every number on the account', async () => {
+    const readiness = vi
+      .spyOn(TwilioNumberManagementService.prototype, 'getReadinessReport')
+      .mockResolvedValue(readyReport);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/health/twilio',
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(readiness).toHaveBeenCalledWith(listedNumbers);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deletedAt: null, status: { not: 'RELEASED' } },
+      }),
+    );
+  });
+
+  test('reports a list it could not read as an issue, and still checks the account', async () => {
+    findMany.mockRejectedValue(new Error('connection refused'));
+    const readiness = vi
+      .spyOn(TwilioNumberManagementService.prototype, 'getReadinessReport')
+      .mockResolvedValue(readyReport);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/health/twilio',
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(readiness).toHaveBeenCalledWith([]);
+    expect(response.json()).toMatchObject({
+      status: 'error',
+      issues: [
+        'The list of numbers could not be read, so no number was checked.',
+      ],
+    });
+  });
+
   test('includes Twilio readiness in the aggregated check when configured', async () => {
     vi.spyOn(
       TwilioNumberManagementService.prototype,
@@ -199,8 +250,12 @@ describe('healthRoutes', () => {
     ).mockResolvedValue({
       ...readyReport,
       status: 'error',
-      issues: ['1 owned number does not point at this deployment'],
-      numbers: { checked: 1, misconfigured: ['+15555550101'] },
+      issues: ['+15555550101 needs Reconnect: a TwiML App takes its calls'],
+      numbers: {
+        ...readyReport.numbers,
+        misconfigured: ['+15555550101'],
+        reasons: { '+15555550101': ['voice-application'] },
+      },
     });
 
     const response = await app.inject({ method: 'GET', url: '/health/all' });
@@ -221,7 +276,7 @@ describe('healthRoutes', () => {
 
   test('keeps the detailed checks behind an admin session', async () => {
     const anonymous = await createApiRouteApp(healthRoutes, {
-      db: { $queryRaw: queryRaw },
+      db: { $queryRaw: queryRaw, phoneNumber: { findMany } },
       redis: { ping },
       mediaStore: { assertReady },
       user: null,

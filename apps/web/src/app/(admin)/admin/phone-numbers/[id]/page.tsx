@@ -1,160 +1,151 @@
 'use client';
 
-import type { UpdatePhoneNumber } from '@repo/dto';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import type { PhoneNumberConnection, PhoneNumberOwner } from '@repo/dto';
+import { ArrowLeft, Loader2, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
-import { ConfirmDialog } from '@/components/admin/shared/ConfirmDialog';
+import { type ReactNode, useEffect, useState } from 'react';
+import { CapabilityBadges } from '@/components/admin/phone-numbers/CapabilityBadges';
+import { MoveNumberDialog } from '@/components/admin/phone-numbers/MoveNumberDialog';
+import { ReleaseNumberDialog } from '@/components/admin/phone-numbers/ReleaseNumberDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command';
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import {
   usePhoneNumber,
+  usePhoneNumberConnection,
   usePhoneNumberMutations,
 } from '@/hooks/use-admin-phone-numbers';
-import { getDepartments, getUsers } from '@/lib/api/admin';
+import { formatPhoneNumber } from '@/lib/phone-number';
+import {
+  NUMBER_TYPE_LABELS,
+  reconnectReasonText,
+  textingNoteText,
+} from '@/lib/phone-numbers/number-terms';
+import { ownerOf } from '@/lib/phone-numbers/owner-selection';
+
+type OpenDialog = 'move' | 'reserve' | 'release' | null;
 
 export default function PhoneNumberDetailPage() {
   const params = useParams();
   const router = useRouter();
   const phoneNumberId = params.id as string;
 
-  const { phoneNumber, isLoading, refetch } = usePhoneNumber(phoneNumberId);
+  const {
+    phoneNumber,
+    isLoading,
+    error: loadError,
+    refetch,
+  } = usePhoneNumber(phoneNumberId);
+  const {
+    connection,
+    isLoading: isCheckingConnection,
+    error: connectionError,
+    refetch: recheckConnection,
+  } = usePhoneNumberConnection(phoneNumberId);
   const {
     update,
+    reconnect,
     release,
     isLoading: isMutating,
     error: mutationError,
+    clearError,
   } = usePhoneNumberMutations();
 
   const [label, setLabel] = useState('');
-  const [hasChanges, setHasChanges] = useState(false);
-  const [showReleaseConfirm, setShowReleaseConfirm] = useState(false);
-  // The hook's error is shown next to the button that caused it: the page
-  // scrolls, and a reason at its top can be out of sight of either button.
-  const [failedAction, setFailedAction] = useState<'save' | 'release' | null>(
-    null,
-  );
+  const [openDialog, setOpenDialog] = useState<OpenDialog>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  // Assignment state
-  const [assignmentType, setAssignmentType] = useState<
-    'none' | 'user' | 'department'
-  >('none');
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const [selectedUserName, setSelectedUserName] = useState('');
-  const [selectedDepartmentId, setSelectedDepartmentId] = useState<
-    string | null
-  >(null);
-  const [selectedDepartmentName, setSelectedDepartmentName] = useState('');
-  const [isPrimary, setIsPrimary] = useState(false);
-
-  // Sync form state from fetched data
+  // Follows the stored label, not every reload, so text being typed survives
+  // a change made elsewhere on the page.
+  const storedLabel = phoneNumber?.label ?? '';
   useEffect(() => {
-    if (phoneNumber) {
-      setLabel(phoneNumber.label || '');
-      setIsPrimary(phoneNumber.isPrimary);
-      if (phoneNumber.assignedTo) {
-        setAssignmentType(phoneNumber.assignedTo.type);
-        if (phoneNumber.assignedTo.type === 'user') {
-          setSelectedUserId(phoneNumber.assignedTo.id);
-          setSelectedUserName(phoneNumber.assignedTo.name);
-          setSelectedDepartmentId(null);
-          setSelectedDepartmentName('');
-        } else {
-          setSelectedDepartmentId(phoneNumber.assignedTo.id);
-          setSelectedDepartmentName(phoneNumber.assignedTo.name);
-          setSelectedUserId(null);
-          setSelectedUserName('');
-        }
-      } else {
-        setAssignmentType('none');
-        setSelectedUserId(null);
-        setSelectedUserName('');
-        setSelectedDepartmentId(null);
-        setSelectedDepartmentName('');
-      }
-      setHasChanges(false);
-    }
-  }, [phoneNumber]);
+    setLabel(storedLabel);
+  }, [storedLabel]);
 
-  const handleSave = async () => {
-    if (!phoneNumber) return;
+  /** The holder on screen: a move decided on it is refused once somebody else moved the number. */
+  const shownOwner = phoneNumber ? ownerOf(phoneNumber.assignedTo) : undefined;
 
-    const updates: UpdatePhoneNumber = {};
-    const currentLabel = phoneNumber.label || '';
-    if (label !== currentLabel) updates.label = label || null;
+  const openOne = (dialog: OpenDialog) => {
+    clearError();
+    setNotice(null);
+    setOpenDialog(dialog);
+  };
 
-    // Assignment changes
-    if (assignmentType === 'none') {
-      if (phoneNumber.assignedTo) {
-        // Clear all assignment fields so the backend marks the number reserved.
-        updates.userId = null;
-        updates.departmentId = null;
-        updates.isPrimary = false;
-      }
-    } else if (assignmentType === 'user') {
-      if (
-        phoneNumber.assignedTo?.type !== 'user' ||
-        phoneNumber.assignedTo?.id !== selectedUserId
-      ) {
-        updates.userId = selectedUserId;
-        updates.departmentId = null;
-        updates.isPrimary = false;
-      }
-    } else if (assignmentType === 'department') {
-      if (
-        phoneNumber.assignedTo?.type !== 'department' ||
-        phoneNumber.assignedTo?.id !== selectedDepartmentId
-      ) {
-        updates.departmentId = selectedDepartmentId;
-        updates.userId = null;
-      }
-      if (isPrimary !== phoneNumber.isPrimary) {
-        updates.isPrimary = isPrimary;
-      }
-    }
+  // A refusal belongs to the dialog that met it, not to the page behind it.
+  const closeDialog = () => {
+    clearError();
+    setOpenDialog(null);
+  };
 
-    if (Object.keys(updates).length === 0) return;
+  /** Runs a change, then reloads the number; a failure stays in `mutationError`. */
+  const apply = async (change: () => Promise<unknown>, done: string) => {
+    setNotice(null);
 
     try {
-      await update(phoneNumberId, updates);
-      setHasChanges(false);
-      refetch();
+      await change();
+      setOpenDialog(null);
+      setNotice(done);
     } catch {
-      setFailedAction('save');
+      // The mutation hook keeps the error, and the page or dialog shows it.
+    } finally {
+      await refetch();
     }
+  };
+
+  const handleSaveLabel = () =>
+    apply(
+      () => update(phoneNumberId, { label: label.trim() || null }),
+      'Label saved.',
+    );
+
+  const handlePrimary = (isPrimary: boolean) =>
+    apply(
+      () => update(phoneNumberId, { isPrimary, expectedOwner: shownOwner }),
+      isPrimary ? 'Now the primary number.' : 'No longer the primary number.',
+    );
+
+  const handleMove = (owner: PhoneNumberOwner | null) =>
+    apply(
+      () => update(phoneNumberId, { owner, expectedOwner: shownOwner }),
+      owner ? 'Number assigned.' : 'Number moved to the reserve.',
+    );
+
+  const handleReconnect = async () => {
+    // The check that follows says what Twilio does with the number now,
+    // texts included, which a messaging service may still keep.
+    await apply(
+      () => reconnect(phoneNumberId),
+      'Reconnected: the number’s webhooks point here again.',
+    );
+    await recheckConnection();
   };
 
   const handleRelease = async () => {
     try {
-      await release(phoneNumberId);
-      router.push('/admin/phone-numbers');
+      const released = await release(phoneNumberId);
+      router.push(
+        released.cancelledAtTwilio
+          ? '/admin/phone-numbers'
+          : `/admin/phone-numbers?released=${phoneNumber?.provider ?? 'TWILIO'}`,
+      );
     } catch {
-      // The hook keeps the reason; the dialog would cover it.
-      setShowReleaseConfirm(false);
-      setFailedAction('release');
+      // The mutation hook keeps the error, and the dialog shows it.
+      await refetch();
     }
   };
 
-  if (isLoading) {
+  if (isLoading && !phoneNumber) {
     return (
       <div className="flex items-center justify-center h-[50vh]">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -172,67 +163,189 @@ export default function PhoneNumberDetailPage() {
           </Link>
         </Button>
         <div className="text-center py-12">
-          <p className="text-muted-foreground">Phone number not found</p>
+          <p className="text-muted-foreground">
+            {loadError ? loadError.message : 'Phone number not found'}
+          </p>
         </div>
       </div>
     );
   }
 
+  const holder = phoneNumber.assignedTo;
+  const labelChanged = label.trim() !== (phoneNumber.label ?? '');
+  const pageError = openDialog === null ? mutationError : null;
+  // A release that stopped half-way: only releasing again changes it.
+  const releaseUnfinished = phoneNumber.status === 'RELEASED';
+  const frozen = isMutating || releaseUnfinished;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
         <Button variant="ghost" size="icon" asChild>
-          <Link href="/admin/phone-numbers">
+          <Link href="/admin/phone-numbers" aria-label="Back to Phone Numbers">
             <ArrowLeft className="h-4 w-4" />
           </Link>
         </Button>
-        <div>
-          <h1 className="text-2xl font-bold">
-            {phoneNumber.friendlyName || phoneNumber.phoneNumber}
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold font-mono">
+            {formatPhoneNumber(phoneNumber.phoneNumber)}
           </h1>
-          <p className="text-muted-foreground">Edit phone number details</p>
+          <p className="text-muted-foreground truncate">
+            {phoneNumber.label ?? 'No label'}
+          </p>
         </div>
       </div>
 
+      {pageError && (
+        <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md dark:bg-red-900/20 dark:text-red-400">
+          {pageError.message}
+        </div>
+      )}
+      {releaseUnfinished && (
+        <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md dark:bg-red-900/20 dark:text-red-400">
+          A release of this number did not finish, so Twilio may still have it
+          and bill for it. Choose Finish release below; nothing else can change
+          the number until then.
+        </div>
+      )}
+      {notice && !pageError && (
+        <div className="p-3 text-sm rounded-md bg-muted" role="status">
+          {notice}
+        </div>
+      )}
+
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Details (read-only) */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Phone Number Details</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Number</span>
-              <span className="font-mono">{phoneNumber.phoneNumber}</span>
-            </div>
-            {phoneNumber.friendlyName && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Friendly Name</span>
-                <span>{phoneNumber.friendlyName}</span>
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Assigned to</CardTitle>
+              <CardDescription>
+                Who answers this number and texts from it.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {holder ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link
+                    href={
+                      holder.type === 'user'
+                        ? `/admin/users/${holder.id}`
+                        : `/admin/departments/${holder.id}`
+                    }
+                    className="font-medium hover:underline"
+                  >
+                    {holder.name}
+                  </Link>
+                  <Badge
+                    variant={
+                      holder.type === 'department' ? 'default' : 'secondary'
+                    }
+                  >
+                    {holder.type === 'department' ? 'Department' : 'User'}
+                  </Badge>
+                </div>
+              ) : releaseUnfinished ? (
+                <Badge variant="destructive">Release unfinished</Badge>
+              ) : (
+                <div className="space-y-1">
+                  <Badge variant="outline">In reserve</Badge>
+                  <p className="text-sm text-muted-foreground">
+                    Nobody answers it, and it still costs its monthly fee.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => openOne('move')}
+                  disabled={frozen}
+                >
+                  {holder ? 'Move to...' : 'Assign to...'}
+                </Button>
+                {holder && (
+                  <Button
+                    variant="outline"
+                    onClick={() => openOne('reserve')}
+                    disabled={isMutating}
+                  >
+                    Move to reserve
+                  </Button>
+                )}
               </div>
-            )}
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Type</span>
-              <Badge variant="outline">{phoneNumber.type}</Badge>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Status</span>
-              <Badge
-                variant={
-                  phoneNumber.status === 'ACTIVE' ? 'default' : 'secondary'
-                }
+
+              {holder?.type === 'department' && (
+                <>
+                  <Separator />
+                  <div className="flex items-center justify-between gap-4">
+                    <Label htmlFor="detail-is-primary" className="font-normal">
+                      Primary number
+                      <span className="block text-xs text-muted-foreground">
+                        The line the department’s members call and text from
+                        first.
+                      </span>
+                    </Label>
+                    <Switch
+                      id="detail-is-primary"
+                      checked={phoneNumber.isPrimary}
+                      onCheckedChange={handlePrimary}
+                      disabled={frozen}
+                    />
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Label</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <form
+                className="flex flex-col gap-2 sm:flex-row"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleSaveLabel();
+                }}
               >
-                {phoneNumber.status}
-              </Badge>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Provider</span>
-              <Badge variant="outline">{phoneNumber.provider}</Badge>
-            </div>
-            {(phoneNumber.locality || phoneNumber.region) && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Location</span>
-                <span>
+                <Input
+                  id="label"
+                  aria-label="Label"
+                  value={label}
+                  onChange={(event) => setLabel(event.target.value)}
+                  placeholder="Main sales line"
+                  maxLength={50}
+                  disabled={releaseUnfinished}
+                />
+                <Button
+                  type="submit"
+                  disabled={!labelChanged || frozen}
+                  className="sm:w-auto"
+                >
+                  Save
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Details</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <DetailRow label="Number">
+                <span className="font-mono">{phoneNumber.phoneNumber}</span>
+              </DetailRow>
+              <DetailRow label="Type">
+                <Badge variant="outline">
+                  {NUMBER_TYPE_LABELS[phoneNumber.type]}
+                </Badge>
+              </DetailRow>
+              {(phoneNumber.locality || phoneNumber.region) && (
+                <DetailRow label="Location">
                   {[
                     phoneNumber.locality,
                     phoneNumber.region,
@@ -240,401 +353,199 @@ export default function PhoneNumberDetailPage() {
                   ]
                     .filter(Boolean)
                     .join(', ')}
-                </span>
-              </div>
-            )}
-            <Separator />
-            <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">Capabilities</span>
-              <div className="flex gap-1">
-                {phoneNumber.smsEnabled && (
-                  <Badge variant="secondary" className="text-xs">
-                    SMS
-                  </Badge>
-                )}
-                {phoneNumber.mmsEnabled && (
-                  <Badge variant="secondary" className="text-xs">
-                    MMS
-                  </Badge>
-                )}
-                {phoneNumber.voiceEnabled && (
-                  <Badge variant="secondary" className="text-xs">
-                    Voice
-                  </Badge>
-                )}
-                {phoneNumber.faxEnabled && (
-                  <Badge variant="secondary" className="text-xs">
-                    Fax
-                  </Badge>
-                )}
-              </div>
-            </div>
-            <Separator />
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Created</span>
-              <span>
-                {new Date(phoneNumber.createdAt).toLocaleDateString()}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Updated</span>
-              <span>
-                {new Date(phoneNumber.updatedAt).toLocaleDateString()}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Configuration (editable) */}
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Configuration</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="label">Label</Label>
-                <Input
-                  id="label"
-                  value={label}
-                  onChange={(e) => {
-                    setLabel(e.target.value);
-                    setHasChanges(true);
-                  }}
-                  placeholder="e.g. Main Sales Line"
-                  maxLength={50}
-                />
-              </div>
-
-              <Separator />
-
-              <div className="space-y-3">
-                <Label>Assignment</Label>
-
-                <div className="space-y-2">
-                  <button
-                    type="button"
-                    className={`w-full text-left p-2 rounded-md border transition-colors ${assignmentType === 'none' ? 'border-primary bg-accent' : 'hover:bg-muted/50'}`}
-                    onClick={() => {
-                      setAssignmentType('none');
-                      setHasChanges(true);
-                    }}
-                  >
-                    <span className="text-sm">Unassigned (Reserved)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    className={`w-full text-left p-2 rounded-md border transition-colors ${assignmentType === 'user' ? 'border-primary bg-accent' : 'hover:bg-muted/50'}`}
-                    onClick={() => {
-                      setAssignmentType('user');
-                      if (!selectedUserId) {
-                        setSelectedDepartmentId(null);
-                        setSelectedDepartmentName('');
-                      }
-                      setHasChanges(true);
-                    }}
-                  >
-                    <span className="text-sm">Assign to user</span>
-                  </button>
-
-                  {assignmentType === 'user' && (
-                    <div className="pl-4">
-                      <AssignmentUserPicker
-                        selectedId={selectedUserId}
-                        selectedName={selectedUserName}
-                        onSelect={(id, name) => {
-                          setSelectedUserId(id);
-                          setSelectedUserName(name);
-                          setHasChanges(true);
-                        }}
-                      />
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    className={`w-full text-left p-2 rounded-md border transition-colors ${assignmentType === 'department' ? 'border-primary bg-accent' : 'hover:bg-muted/50'}`}
-                    onClick={() => {
-                      setAssignmentType('department');
-                      if (!selectedDepartmentId) {
-                        setSelectedUserId(null);
-                        setSelectedUserName('');
-                      }
-                      setHasChanges(true);
-                    }}
-                  >
-                    <span className="text-sm">Assign to department</span>
-                  </button>
-
-                  {assignmentType === 'department' && (
-                    <div className="pl-4 space-y-3">
-                      <AssignmentDepartmentPicker
-                        selectedId={selectedDepartmentId}
-                        selectedName={selectedDepartmentName}
-                        onSelect={(id, name) => {
-                          setSelectedDepartmentId(id);
-                          setSelectedDepartmentName(name);
-                          setHasChanges(true);
-                        }}
-                      />
-                      {selectedDepartmentId && (
-                        <div className="flex items-center justify-between">
-                          <Label
-                            htmlFor="detail-is-primary"
-                            className="font-normal"
-                          >
-                            Primary number
-                          </Label>
-                          <Switch
-                            id="detail-is-primary"
-                            checked={isPrimary}
-                            onCheckedChange={(checked) => {
-                              setIsPrimary(checked);
-                              setHasChanges(true);
-                            }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <Button
-                onClick={handleSave}
-                disabled={!hasChanges || isMutating}
-                className="w-full"
-              >
-                {isMutating ? 'Saving...' : 'Save Changes'}
-              </Button>
-              {mutationError && failedAction === 'save' && (
-                <p role="alert" className="text-sm text-destructive">
-                  {mutationError.message}
-                </p>
+                </DetailRow>
               )}
+              <DetailRow label="Provider">
+                <Badge variant="outline">{phoneNumber.provider}</Badge>
+              </DetailRow>
+              <Separator />
+              <DetailRow label="Capabilities">
+                <CapabilityBadges
+                  voice={phoneNumber.voiceEnabled}
+                  sms={phoneNumber.smsEnabled}
+                  mms={phoneNumber.mmsEnabled}
+                  fax={phoneNumber.faxEnabled}
+                  className="justify-end"
+                />
+              </DetailRow>
+              <Separator />
+              <DetailRow label="Added">
+                {new Date(phoneNumber.createdAt).toLocaleDateString()}
+              </DetailRow>
+              <DetailRow label="Updated">
+                {new Date(phoneNumber.updatedAt).toLocaleDateString()}
+              </DetailRow>
             </CardContent>
           </Card>
 
-          {/* Danger Zone */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Connection</CardTitle>
+              <CardDescription>
+                Reconnect tells Twilio to send this number’s calls and texts to
+                this deployment, and detaches a TwiML App, application or SIP
+                trunk that would take them instead. Use it when a purchase or an
+                import could not finish setting the number up, after the
+                deployment moved to a new address, or after somebody changed the
+                number in the Twilio Console. It does not change messaging
+                services.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!releaseUnfinished && (
+                <ConnectionStatus
+                  connection={connection}
+                  isChecking={isCheckingConnection}
+                  error={connectionError}
+                />
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => void handleReconnect()}
+                  disabled={frozen || connection?.state === 'not-in-account'}
+                >
+                  Reconnect
+                </Button>
+                {!releaseUnfinished && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => void recheckConnection()}
+                    disabled={isCheckingConnection}
+                  >
+                    <RefreshCw className="mr-2 h-4 w-4" />
+                    Check again
+                  </Button>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           <Card className="border-destructive/50">
             <CardHeader>
-              <CardTitle className="text-destructive">Danger Zone</CardTitle>
+              <CardTitle className="text-destructive">Release</CardTitle>
+              <CardDescription>
+                {holder
+                  ? 'Only a number in the reserve can be released. Move it to the reserve first.'
+                  : releaseUnfinished
+                    ? 'Asks Twilio again to take the number back, then takes it off the list.'
+                    : 'Gives the number back to Twilio, which stops charging for it.'}
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">
-                Releasing this number will cancel it with Twilio. This action
-                cannot be undone.
-              </p>
               <Button
                 variant="destructive"
-                className="w-full"
-                onClick={() => setShowReleaseConfirm(true)}
+                onClick={() => openOne('release')}
+                disabled={isMutating || holder !== null}
               >
-                Release Number
+                {releaseUnfinished ? 'Finish release' : 'Release number'}
               </Button>
-              {mutationError && failedAction === 'release' && (
-                <p role="alert" className="mt-2 text-sm text-destructive">
-                  {mutationError.message}
-                </p>
-              )}
             </CardContent>
           </Card>
         </div>
       </div>
 
-      <ConfirmDialog
-        open={showReleaseConfirm}
-        onOpenChange={setShowReleaseConfirm}
-        title="Release Phone Number"
-        description={`Are you sure you want to release ${phoneNumber.phoneNumber}? This will remove the number from Twilio and it cannot be recovered.`}
-        confirmLabel="Release"
-        variant="destructive"
-        onConfirm={handleRelease}
+      <MoveNumberDialog
+        phoneNumber={
+          openDialog === 'move' || openDialog === 'reserve' ? phoneNumber : null
+        }
+        toReserve={openDialog === 'reserve'}
+        onClose={closeDialog}
+        onConfirm={(owner) => void handleMove(owner)}
         isLoading={isMutating}
+        error={mutationError?.message ?? null}
+      />
+
+      <ReleaseNumberDialog
+        phoneNumber={openDialog === 'release' ? phoneNumber : null}
+        onClose={closeDialog}
+        onConfirm={() => void handleRelease()}
+        isLoading={isMutating}
+        error={mutationError?.message ?? null}
       />
     </div>
   );
 }
 
-// ============================================
-// Assignment pickers (same Popover+Command pattern)
-// ============================================
-
-function AssignmentUserPicker({
-  selectedId,
-  selectedName,
-  onSelect,
+/** What Twilio does with the number's calls and texts now, as last checked. */
+function ConnectionStatus({
+  connection,
+  isChecking,
+  error,
 }: {
-  selectedId: string | null;
-  selectedName: string;
-  onSelect: (id: string, name: string) => void;
+  connection: PhoneNumberConnection | null;
+  isChecking: boolean;
+  error: Error | null;
 }) {
-  const [open, setOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [users, setUsers] = useState<
-    { id: string; name: string; email: string }[]
-  >([]);
-  const [isSearching, setIsSearching] = useState(false);
+  if (isChecking && !connection) {
+    return (
+      <p className="flex items-center text-sm text-muted-foreground">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        Checking with Twilio...
+      </p>
+    );
+  }
 
-  const searchUsers = useCallback(async (query: string) => {
-    setIsSearching(true);
-    try {
-      const result = await getUsers({ search: query || undefined, limit: 20 });
-      setUsers(
-        result.users.map((u) => ({
-          id: u.id,
-          name: u.name || '',
-          email: u.email,
-        })),
-      );
-    } catch {
-      // Silently fail
-    } finally {
-      setIsSearching(false);
-    }
-  }, []);
+  if (error || !connection) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Could not check with Twilio
+        {error ? `: ${error.message}` : '.'}
+      </p>
+    );
+  }
 
-  useEffect(() => {
-    if (open) {
-      searchUsers(searchQuery);
-    }
-  }, [open, searchQuery, searchUsers]);
+  if (connection.state === 'not-in-account') {
+    return (
+      <div className="space-y-1">
+        <Badge variant="destructive">Not on the Twilio account</Badge>
+        <p className="text-sm text-muted-foreground">
+          This Twilio account does not hold the number, so its calls and texts
+          do not come through it, and Reconnect cannot point it here.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" className="w-full justify-start font-normal">
-          {selectedId ? selectedName : 'Select a user...'}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[400px] p-0" align="start">
-        <Command shouldFilter={false}>
-          <CommandInput
-            placeholder="Search users..."
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-          />
-          <CommandList>
-            {isSearching ? (
-              <div className="flex items-center justify-center p-4">
-                <Loader2 className="h-4 w-4 animate-spin" />
-              </div>
-            ) : (
-              <>
-                <CommandEmpty>No users found.</CommandEmpty>
-                <CommandGroup>
-                  {users.map((user) => (
-                    <CommandItem
-                      key={user.id}
-                      value={user.id}
-                      onSelect={() => {
-                        onSelect(user.id, user.name || user.email);
-                        setOpen(false);
-                        setSearchQuery('');
-                      }}
-                    >
-                      <div>
-                        <p className="font-medium">{user.name || user.email}</p>
-                        {user.name && (
-                          <p className="text-sm text-muted-foreground">
-                            {user.email}
-                          </p>
-                        )}
-                      </div>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </>
-            )}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <div className="space-y-2" role="status">
+      {connection.needsReconnect.length === 0 ? (
+        <div className="space-y-1">
+          <Badge variant="secondary">Connected</Badge>
+          <p className="text-sm text-muted-foreground">
+            Twilio sends this number’s calls and texts here.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          <Badge variant="destructive">Needs Reconnect</Badge>
+          <ul className="list-disc pl-5 text-sm text-muted-foreground">
+            {connection.needsReconnect.map((reason) => (
+              <li key={reason}>{reconnectReasonText(reason)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {connection.texting && (
+        <p className="text-sm text-amber-700 dark:text-amber-400">
+          {textingNoteText(connection.texting)}
+        </p>
+      )}
+    </div>
   );
 }
 
-function AssignmentDepartmentPicker({
-  selectedId,
-  selectedName,
-  onSelect,
+function DetailRow({
+  label,
+  children,
 }: {
-  selectedId: string | null;
-  selectedName: string;
-  onSelect: (id: string, name: string) => void;
+  label: string;
+  children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [departments, setDepartments] = useState<
-    { id: string; name: string }[]
-  >([]);
-  const [isSearching, setIsSearching] = useState(false);
-
-  const searchDepartments = useCallback(async (query: string) => {
-    setIsSearching(true);
-    try {
-      const result = await getDepartments({
-        search: query || undefined,
-        limit: 20,
-      });
-      setDepartments(
-        result.departments.map((d) => ({ id: d.id, name: d.name })),
-      );
-    } catch {
-      // Silently fail
-    } finally {
-      setIsSearching(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (open) {
-      searchDepartments(searchQuery);
-    }
-  }, [open, searchQuery, searchDepartments]);
-
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" className="w-full justify-start font-normal">
-          {selectedId ? selectedName : 'Select a department...'}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[400px] p-0" align="start">
-        <Command shouldFilter={false}>
-          <CommandInput
-            placeholder="Search departments..."
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-          />
-          <CommandList>
-            {isSearching ? (
-              <div className="flex items-center justify-center p-4">
-                <Loader2 className="h-4 w-4 animate-spin" />
-              </div>
-            ) : (
-              <>
-                <CommandEmpty>No departments found.</CommandEmpty>
-                <CommandGroup>
-                  {departments.map((dept) => (
-                    <CommandItem
-                      key={dept.id}
-                      value={dept.id}
-                      onSelect={() => {
-                        onSelect(dept.id, dept.name);
-                        setOpen(false);
-                        setSearchQuery('');
-                      }}
-                    >
-                      <p className="font-medium">{dept.name}</p>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </>
-            )}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right">{children}</span>
+    </div>
   );
 }

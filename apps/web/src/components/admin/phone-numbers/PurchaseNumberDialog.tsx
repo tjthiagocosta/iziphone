@@ -1,22 +1,25 @@
 'use client';
 
-import type {
-  AvailablePhoneNumber,
-  PhoneNumberType,
-  PurchasePhoneNumber,
-} from '@repo/dto';
-import { ArrowLeft, Check, Loader2, Search } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command';
+  type AvailablePhoneNumber,
+  type ContainsAt,
+  type MonthlyPrice,
+  type PhoneNumberType,
+  type PurchasePhoneNumber,
+  type SearchAvailableNumbers,
+  SUPPORTED_NUMBER_COUNTRY,
+} from '@repo/dto';
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Search,
+} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -27,11 +30,6 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
@@ -43,14 +41,39 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { useAvailableNumbers } from '@/hooks/use-admin-phone-numbers';
-import { getDepartments, getUsers } from '@/lib/api/admin';
+import { ApiError } from '@/lib/api/client';
+import { formatPhoneNumber } from '@/lib/phone-number';
+import {
+  EMPTY_NUMBER_SEARCH,
+  type NumberSearchField,
+  type NumberSearchForm,
+  toSearchQuery,
+} from '@/lib/phone-numbers/number-search';
+import {
+  formatPrice,
+  moveTerms,
+  NUMBER_TYPE_LABELS,
+  type PurchaseFailure,
+  purchaseFailureFrom,
+  purchaseTerms,
+} from '@/lib/phone-numbers/number-terms';
+import {
+  chosenHolder,
+  type OwnerSelection,
+  ownerOf,
+  RESERVE_SELECTION,
+} from '@/lib/phone-numbers/owner-selection';
 import { cn } from '@/lib/utils';
+import { CapabilityBadges } from './CapabilityBadges';
+import { OwnerPicker } from './OwnerPicker';
+import { TermsList } from './TermsList';
 
-type Step = 'search' | 'select' | 'configure';
+type Step = 'search' | 'results' | 'confirm';
 
 interface PurchaseNumberDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Rejects with the reason when the number was not bought. */
   onPurchase: (data: PurchasePhoneNumber) => Promise<void>;
   isLoading?: boolean;
 }
@@ -62,154 +85,172 @@ export function PurchaseNumberDialog({
   isLoading = false,
 }: PurchaseNumberDialogProps) {
   const [step, setStep] = useState<Step>('search');
-
-  // Search form
-  const [searchType, setSearchType] = useState<PhoneNumberType>('LOCAL');
-  const [areaCode, setAreaCode] = useState('');
-  const [contains, setContains] = useState('');
-  const [searchErrors, setSearchErrors] = useState<Record<string, string>>({});
-
-  // Selection
-  const [selectedNumber, setSelectedNumber] =
-    useState<AvailablePhoneNumber | null>(null);
-
-  // Configure form
+  const [form, setForm] = useState<NumberSearchForm>(EMPTY_NUMBER_SEARCH);
+  const [fieldErrors, setFieldErrors] = useState<
+    Partial<Record<NumberSearchField, string>>
+  >({});
+  const [lastQuery, setLastQuery] = useState<SearchAvailableNumbers | null>(
+    null,
+  );
+  const [selected, setSelected] = useState<AvailablePhoneNumber | null>(null);
   const [label, setLabel] = useState('');
-  const [assignmentType, setAssignmentType] = useState<
-    'none' | 'user' | 'department'
-  >('none');
-  const [selectedUserId, setSelectedUserId] = useState('');
-  const [selectedUserName, setSelectedUserName] = useState('');
-  const [selectedDepartmentId, setSelectedDepartmentId] = useState('');
-  const [selectedDepartmentName, setSelectedDepartmentName] = useState('');
+  const [owner, setOwner] = useState<OwnerSelection>(RESERVE_SELECTION);
   const [isPrimary, setIsPrimary] = useState(false);
+  const [purchaseFailure, setPurchaseFailure] = useState<
+    (PurchaseFailure & { phoneNumber: string }) | null
+  >(null);
+  // Until the purchase has answered and the list has reloaded, which the
+  // page's own loading flag does not cover.
+  const [isBuying, setIsBuying] = useState(false);
 
   const {
     numbers,
+    monthlyPrice,
     isLoading: isSearching,
+    isLoadingMore,
     error: searchError,
+    addedByMore,
     search,
+    searchMore,
     reset: resetSearch,
   } = useAvailableNumbers();
 
-  // Reset all state when dialog closes
   useEffect(() => {
     if (!open) {
       setStep('search');
-      setSearchType('LOCAL');
-      setAreaCode('');
-      setContains('');
-      setSearchErrors({});
-      setSelectedNumber(null);
+      setForm(EMPTY_NUMBER_SEARCH);
+      setFieldErrors({});
+      setLastQuery(null);
+      setSelected(null);
       setLabel('');
-      setAssignmentType('none');
-      setSelectedUserId('');
-      setSelectedUserName('');
-      setSelectedDepartmentId('');
-      setSelectedDepartmentName('');
+      setOwner(RESERVE_SELECTION);
       setIsPrimary(false);
+      setPurchaseFailure(null);
       resetSearch();
     }
   }, [open, resetSearch]);
 
-  const handleSearch = async () => {
-    const errors: Record<string, string> = {};
-    if (searchType === 'LOCAL' && areaCode && !/^\d{3}$/.test(areaCode)) {
-      errors.areaCode = 'Area code must be 3 digits';
-    }
-    setSearchErrors(errors);
-    if (Object.keys(errors).length > 0) return;
-
-    setSelectedNumber(null);
-    await search({
-      country: 'US',
-      type: searchType,
-      areaCode: searchType === 'LOCAL' && areaCode ? areaCode : undefined,
-      contains: contains || undefined,
-      limit: 20,
-    });
-    setStep('select');
+  const runSearch = async (query: SearchAvailableNumbers) => {
+    setSelected(null);
+    setLastQuery(query);
+    setStep('results');
+    await search(query);
   };
 
-  const handlePurchase = async () => {
-    if (!selectedNumber) return;
+  // Keeps the number chosen so far: "Show more" only adds to the list.
+  const showMore = async () => {
+    if (lastQuery) await searchMore(lastQuery);
+  };
 
-    const data: PurchasePhoneNumber = {
-      phoneNumber: selectedNumber.phoneNumber,
-      country: 'US',
-      type: selectedNumber.type,
-      label: label || undefined,
-      userId: assignmentType === 'user' ? selectedUserId : undefined,
-      departmentId:
-        assignmentType === 'department' ? selectedDepartmentId : undefined,
-      isPrimary: assignmentType === 'department' ? isPrimary : false,
-    };
+  const handleSearch = async () => {
+    const request = toSearchQuery(form);
 
-    await onPurchase(data);
-    onOpenChange(false);
+    if (!request.ok) {
+      setFieldErrors(request.errors);
+      return;
+    }
+
+    setFieldErrors({});
+    await runSearch(request.query);
+  };
+
+  const holder = chosenHolder(owner);
+  // A failure that may have bought a number holds back only that number.
+  const failureOfSelected =
+    purchaseFailure?.phoneNumber === selected?.phoneNumber
+      ? purchaseFailure
+      : null;
+
+  const handleBuy = async () => {
+    if (!selected || holder === undefined || isBuying) return;
+
+    setPurchaseFailure(null);
+    setIsBuying(true);
+
+    try {
+      await onPurchase({
+        phoneNumber: selected.phoneNumber,
+        country: SUPPORTED_NUMBER_COUNTRY,
+        type: selected.type,
+        label: label.trim() || undefined,
+        owner: ownerOf(holder) ?? undefined,
+        isPrimary: holder?.type === 'department' ? isPrimary : false,
+      });
+      onOpenChange(false);
+    } catch (err) {
+      setPurchaseFailure({
+        ...purchaseFailureFrom(
+          err instanceof ApiError ? err.status : undefined,
+          err instanceof Error ? err.message : 'The number was not bought.',
+        ),
+        phoneNumber: selected.phoneNumber,
+      });
+    } finally {
+      setIsBuying(false);
+    }
+  };
+
+  // Closing while Twilio is asked would hide the answer, and a failure that
+  // may have bought the number must be seen.
+  const closeUnlessBuying = (next: boolean) => {
+    if (!next && (isLoading || isBuying)) return;
+    onOpenChange(next);
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px]">
+    <Dialog open={open} onOpenChange={closeUnlessBuying}>
+      <DialogContent className="sm:max-w-[600px] max-h-[90dvh] overflow-y-auto">
         {step === 'search' && (
           <SearchStep
-            type={searchType}
-            onTypeChange={setSearchType}
-            areaCode={areaCode}
-            onAreaCodeChange={setAreaCode}
-            contains={contains}
-            onContainsChange={setContains}
-            errors={searchErrors}
+            form={form}
+            onChange={(changes) => setForm({ ...form, ...changes })}
+            errors={fieldErrors}
             isLoading={isSearching}
             onSearch={handleSearch}
             onCancel={() => onOpenChange(false)}
           />
         )}
 
-        {step === 'select' && (
-          <SelectStep
+        {step === 'results' && (
+          <ResultsStep
+            query={lastQuery}
             numbers={numbers}
-            selected={selectedNumber}
-            onSelect={setSelectedNumber}
+            monthlyPrice={monthlyPrice}
+            selected={selected}
+            onSelect={setSelected}
             isLoading={isSearching}
+            isLoadingMore={isLoadingMore}
+            addedByMore={addedByMore}
             error={searchError}
             onBack={() => setStep('search')}
-            onContinue={() => setStep('configure')}
+            onShowMore={showMore}
+            onContinue={() => {
+              if (purchaseFailure?.mayRetry !== false) {
+                setPurchaseFailure(null);
+              }
+              setStep('confirm');
+            }}
           />
         )}
 
-        {step === 'configure' && selectedNumber && (
-          <ConfigureStep
-            selectedNumber={selectedNumber}
+        {step === 'confirm' && selected && (
+          <ConfirmStep
+            number={selected}
+            monthlyPrice={monthlyPrice}
             label={label}
             onLabelChange={setLabel}
-            assignmentType={assignmentType}
-            onAssignmentTypeChange={(type) => {
-              setAssignmentType(type);
-              setSelectedUserId('');
-              setSelectedUserName('');
-              setSelectedDepartmentId('');
-              setSelectedDepartmentName('');
+            owner={owner}
+            onOwnerChange={(next) => {
+              setOwner(next);
               setIsPrimary(false);
-            }}
-            selectedUserId={selectedUserId}
-            selectedUserName={selectedUserName}
-            onUserSelect={(id, name) => {
-              setSelectedUserId(id);
-              setSelectedUserName(name);
-            }}
-            selectedDepartmentId={selectedDepartmentId}
-            selectedDepartmentName={selectedDepartmentName}
-            onDepartmentSelect={(id, name) => {
-              setSelectedDepartmentId(id);
-              setSelectedDepartmentName(name);
             }}
             isPrimary={isPrimary}
             onIsPrimaryChange={setIsPrimary}
-            isLoading={isLoading}
-            onBack={() => setStep('select')}
-            onPurchase={handlePurchase}
+            error={failureOfSelected?.message ?? null}
+            mayBuy={failureOfSelected?.mayRetry !== false}
+            isLoading={isLoading || isBuying}
+            onBack={() => setStep('results')}
+            onBuy={handleBuy}
           />
         )}
       </DialogContent>
@@ -218,83 +259,177 @@ export function PurchaseNumberDialog({
 }
 
 // ============================================
-// Step 1: Search
+// Step 1: what to look for
 // ============================================
 
 function SearchStep({
-  type,
-  onTypeChange,
-  areaCode,
-  onAreaCodeChange,
-  contains,
-  onContainsChange,
+  form,
+  onChange,
   errors,
   isLoading,
   onSearch,
   onCancel,
 }: {
-  type: PhoneNumberType;
-  onTypeChange: (type: PhoneNumberType) => void;
-  areaCode: string;
-  onAreaCodeChange: (value: string) => void;
-  contains: string;
-  onContainsChange: (value: string) => void;
-  errors: Record<string, string>;
+  form: NumberSearchForm;
+  onChange: (changes: Partial<NumberSearchForm>) => void;
+  errors: Partial<Record<NumberSearchField, string>>;
   isLoading: boolean;
   onSearch: () => void;
   onCancel: () => void;
 }) {
+  const local = form.type === 'LOCAL';
+  // Opened already when coming back to a search that used them.
+  const [showFilters, setShowFilters] = useState(
+    form.region !== '' || form.locality !== '' || form.contains !== '',
+  );
+
+  const containsField = (
+    <div className="space-y-2">
+      <SearchField
+        id="number-contains"
+        label="Digits or letters"
+        value={form.contains}
+        onChange={(value) =>
+          onChange({ contains: value.replace(/[^0-9A-Za-z]/g, '') })
+        }
+        placeholder={local ? '0101' : 'HELP'}
+        maxLength={10}
+        error={errors.contains}
+        hint="Letters stand for their keypad digits."
+      />
+      <RadioGroup
+        value={form.containsAt}
+        onValueChange={(value) => onChange({ containsAt: value as ContainsAt })}
+        className="flex flex-wrap gap-x-4 gap-y-2"
+      >
+        <div className="flex items-center gap-2">
+          <RadioGroupItem value="anywhere" id="contains-anywhere" />
+          <Label htmlFor="contains-anywhere" className="font-normal">
+            Anywhere in the number
+          </Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <RadioGroupItem value="end" id="contains-end" />
+          <Label htmlFor="contains-end" className="font-normal">
+            At the end
+          </Label>
+        </div>
+      </RadioGroup>
+    </div>
+  );
+
   return (
-    <>
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSearch();
+      }}
+    >
       <DialogHeader>
-        <DialogTitle>Purchase Phone Number</DialogTitle>
+        <DialogTitle>Buy a number</DialogTitle>
         <DialogDescription>
-          Search for available numbers from Twilio
+          {local
+            ? 'Enter an area code to see the numbers Twilio has for sale in it. '
+            : 'Search the toll-free numbers Twilio has for sale. '}
+          Searching is free; every number found takes calls and texts.
         </DialogDescription>
       </DialogHeader>
 
       <div className="space-y-4 py-4">
-        <div className="space-y-2">
-          <Label>Number Type</Label>
-          <Select
-            value={type}
-            onValueChange={(value: PhoneNumberType) => onTypeChange(value)}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="LOCAL">Local</SelectItem>
-              <SelectItem value="TOLL_FREE">Toll-Free</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        {type === 'LOCAL' && (
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <Label>Area Code (optional)</Label>
-            <Input
-              value={areaCode}
-              onChange={(e) =>
-                onAreaCodeChange(e.target.value.replace(/\D/g, '').slice(0, 3))
+            <Label htmlFor="number-type">Type</Label>
+            <Select
+              value={form.type}
+              onValueChange={(value) =>
+                onChange({ type: value as PhoneNumberType })
               }
-              placeholder="e.g. 512"
-              maxLength={3}
-            />
-            {errors.areaCode && (
-              <p className="text-sm text-destructive">{errors.areaCode}</p>
-            )}
+            >
+              <SelectTrigger id="number-type">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="LOCAL">
+                  {NUMBER_TYPE_LABELS.LOCAL}
+                </SelectItem>
+                <SelectItem value="TOLL_FREE">
+                  {NUMBER_TYPE_LABELS.TOLL_FREE}
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-        )}
 
-        <div className="space-y-2">
-          <Label>Contains (optional)</Label>
-          <Input
-            value={contains}
-            onChange={(e) => onContainsChange(e.target.value)}
-            placeholder="e.g. 555"
-          />
+          {local && (
+            <SearchField
+              id="number-area-code"
+              label="Area code"
+              value={form.areaCode}
+              onChange={(value) =>
+                onChange({ areaCode: value.replace(/\D/g, '').slice(0, 3) })
+              }
+              placeholder="555"
+              inputMode="numeric"
+              maxLength={3}
+              autoFocus
+              error={errors.areaCode}
+            />
+          )}
         </div>
+
+        {local ? (
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-ml-2 text-muted-foreground"
+              aria-expanded={showFilters}
+              aria-controls="number-more-filters"
+              onClick={() => setShowFilters(!showFilters)}
+            >
+              <ChevronDown
+                className={cn(
+                  'mr-1 h-4 w-4 transition-transform',
+                  showFilters && 'rotate-180',
+                )}
+              />
+              {showFilters ? 'Fewer filters' : 'More filters'}
+            </Button>
+
+            {showFilters && (
+              <div id="number-more-filters" className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <SearchField
+                    id="number-region"
+                    label="State"
+                    value={form.region}
+                    onChange={(value) =>
+                      onChange({
+                        region: value.replace(/[^A-Za-z]/g, '').slice(0, 2),
+                      })
+                    }
+                    placeholder="TX"
+                    maxLength={2}
+                    className="uppercase"
+                    error={errors.region}
+                  />
+                  <SearchField
+                    id="number-locality"
+                    label="City"
+                    value={form.locality}
+                    onChange={(value) => onChange({ locality: value })}
+                    placeholder="Springfield"
+                    maxLength={60}
+                    error={errors.locality}
+                  />
+                </div>
+                {containsField}
+              </div>
+            )}
+          </>
+        ) : (
+          containsField
+        )}
       </div>
 
       <DialogFooter>
@@ -306,48 +441,110 @@ function SearchStep({
         >
           Cancel
         </Button>
-        <Button onClick={onSearch} disabled={isLoading}>
+        <Button type="submit" disabled={isLoading}>
           {isLoading ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : (
             <Search className="mr-2 h-4 w-4" />
           )}
-          Search Numbers
+          Search
         </Button>
       </DialogFooter>
-    </>
+    </form>
+  );
+}
+
+function SearchField({
+  id,
+  label,
+  value,
+  onChange,
+  error,
+  hint,
+  className,
+  ...input
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  error?: string;
+  hint?: string;
+  className?: string;
+  placeholder: string;
+  maxLength: number;
+  inputMode?: 'numeric';
+  autoFocus?: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-invalid={error ? true : undefined}
+        className={className}
+        {...input}
+      />
+      {error ? (
+        <p className="text-sm text-destructive">{error}</p>
+      ) : (
+        hint && <p className="text-xs text-muted-foreground">{hint}</p>
+      )}
+    </div>
   );
 }
 
 // ============================================
-// Step 2: Select
+// Step 2: pick one
 // ============================================
 
-function SelectStep({
+function ResultsStep({
+  query,
   numbers,
+  monthlyPrice,
   selected,
   onSelect,
   isLoading,
+  isLoadingMore,
+  addedByMore,
   error,
   onBack,
+  onShowMore,
   onContinue,
 }: {
+  query: SearchAvailableNumbers | null;
   numbers: AvailablePhoneNumber[];
+  monthlyPrice: MonthlyPrice | null;
   selected: AvailablePhoneNumber | null;
   onSelect: (number: AvailablePhoneNumber) => void;
   isLoading: boolean;
+  isLoadingMore: boolean;
+  /** How many new numbers the last "Show more" added; null before one. */
+  addedByMore: number | null;
   error: Error | null;
   onBack: () => void;
+  onShowMore: () => void;
   onContinue: () => void;
 }) {
+  const areaCode = query?.areaCode;
+  const found = `${numbers.length} number${numbers.length === 1 ? '' : 's'}${
+    areaCode ? ` in area code ${areaCode}` : ' found'
+  }`;
+
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Select a Number</DialogTitle>
+        <DialogTitle>Choose a number</DialogTitle>
         <DialogDescription>
-          {numbers.length > 0
-            ? `${numbers.length} number${numbers.length === 1 ? '' : 's'} found`
-            : 'Choose from available numbers'}
+          {isLoading
+            ? 'Searching Twilio...'
+            : numbers.length > 0
+              ? monthlyPrice
+                ? `${found}, ${formatPrice(monthlyPrice)} a month each.`
+                : `${found}.`
+              : 'Nothing to choose from yet.'}
         </DialogDescription>
       </DialogHeader>
 
@@ -364,88 +561,115 @@ function SelectStep({
                     <div className="h-4 w-36 bg-muted animate-pulse rounded" />
                     <div className="h-3 w-24 bg-muted animate-pulse rounded" />
                   </div>
-                  <div className="flex gap-1">
-                    <div className="h-5 w-10 bg-muted animate-pulse rounded" />
-                    <div className="h-5 w-10 bg-muted animate-pulse rounded" />
-                  </div>
+                  <div className="h-5 w-16 bg-muted animate-pulse rounded" />
                 </div>
               ),
             )}
           </div>
-        ) : error ? (
-          <div className="text-center py-8">
-            <p className="text-destructive">{error.message}</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              Try adjusting your search criteria
-            </p>
+        ) : error && numbers.length === 0 ? (
+          <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md dark:bg-red-900/20 dark:text-red-400">
+            The search failed: {error.message}
           </div>
         ) : numbers.length === 0 ? (
           <div className="text-center py-8">
-            <p className="text-muted-foreground">No numbers found</p>
+            <p className="text-muted-foreground">
+              {areaCode
+                ? `Twilio has no numbers for sale in area code ${areaCode} right now.`
+                : 'Twilio has no numbers matching this search.'}
+            </p>
             <p className="text-sm text-muted-foreground mt-1">
-              Try a different area code or search pattern
+              {areaCode
+                ? 'Busy area codes sell out. Try a neighbouring or overlay area code, or search a state under More filters.'
+                : 'Try fewer digits, a nearby area code, or only a state.'}
             </p>
           </div>
         ) : (
-          <ScrollArea className="max-h-[360px]">
-            <div className="space-y-2 pr-4">
-              {numbers.map((number) => (
-                <button
-                  key={number.phoneNumber}
-                  type="button"
-                  className={cn(
-                    'flex items-center gap-3 w-full p-3 border rounded-md text-left transition-colors',
-                    selected?.phoneNumber === number.phoneNumber
-                      ? 'border-primary bg-accent'
-                      : 'hover:bg-muted/50',
-                  )}
-                  onClick={() => onSelect(number)}
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="font-mono font-medium">
-                      {number.friendlyName}
-                    </p>
-                    {(number.locality || number.region) && (
-                      <p className="text-sm text-muted-foreground">
-                        {[number.locality, number.region]
-                          .filter(Boolean)
-                          .join(', ')}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {number.capabilities.sms && (
-                      <Badge variant="secondary" className="text-xs">
-                        SMS
-                      </Badge>
-                    )}
-                    {number.capabilities.mms && (
-                      <Badge variant="secondary" className="text-xs">
-                        MMS
-                      </Badge>
-                    )}
-                    {number.capabilities.voice && (
-                      <Badge variant="secondary" className="text-xs">
-                        Voice
-                      </Badge>
-                    )}
-                    {selected?.phoneNumber === number.phoneNumber && (
-                      <Check className="h-4 w-4 text-primary ml-1" />
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </ScrollArea>
+          <>
+            {error ? (
+              <p className="mb-2 text-sm text-red-600 dark:text-red-400">
+                Showing more failed: {error.message}
+              </p>
+            ) : addedByMore === 0 ? (
+              <p className="mb-2 text-sm text-muted-foreground">
+                Twilio had no other numbers for this search.
+              </p>
+            ) : null}
+            <ScrollArea className="h-[min(360px,45dvh)]">
+              <div
+                className="space-y-2 pr-4"
+                role="listbox"
+                aria-label="Numbers"
+              >
+                {numbers.map((number) => {
+                  const isSelected =
+                    selected?.phoneNumber === number.phoneNumber;
+                  const place = [number.locality, number.region]
+                    .filter(Boolean)
+                    .join(', ');
+
+                  return (
+                    <button
+                      key={number.phoneNumber}
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      className={cn(
+                        'flex items-center gap-3 w-full p-3 border rounded-md text-left transition-colors',
+                        isSelected
+                          ? 'border-primary bg-accent'
+                          : 'hover:bg-muted/50',
+                      )}
+                      onClick={() => onSelect(number)}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-mono font-medium">
+                          {formatPhoneNumber(number.phoneNumber)}
+                        </p>
+                        {place && (
+                          <p className="text-sm text-muted-foreground truncate">
+                            {place}
+                          </p>
+                        )}
+                      </div>
+                      <CapabilityBadges
+                        voice={number.capabilities.voice}
+                        sms={number.capabilities.sms}
+                        mms={number.capabilities.mms}
+                        className="shrink-0 flex-nowrap"
+                      />
+                      {isSelected && (
+                        <Check className="h-4 w-4 text-primary shrink-0" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </ScrollArea>
+          </>
         )}
       </div>
 
-      <DialogFooter>
+      <DialogFooter className="gap-2">
         <Button type="button" variant="outline" onClick={onBack}>
           <ArrowLeft className="mr-2 h-4 w-4" />
-          Back
+          Change search
         </Button>
-        <Button onClick={onContinue} disabled={!selected}>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onShowMore}
+          disabled={isLoading || isLoadingMore}
+        >
+          {isLoadingMore ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : numbers.length > 0 ? (
+            <Plus className="mr-2 h-4 w-4" />
+          ) : (
+            <RefreshCw className="mr-2 h-4 w-4" />
+          )}
+          {numbers.length > 0 ? 'Show more' : 'Try again'}
+        </Button>
+        <Button onClick={onContinue} disabled={!selected || isLoading}>
           Continue
         </Button>
       </DialogFooter>
@@ -454,164 +678,104 @@ function SelectStep({
 }
 
 // ============================================
-// Step 3: Configure & Purchase
+// Step 3: who gets it, what it costs
 // ============================================
 
-function ConfigureStep({
-  selectedNumber,
+function ConfirmStep({
+  number,
+  monthlyPrice,
   label,
   onLabelChange,
-  assignmentType,
-  onAssignmentTypeChange,
-  selectedUserId,
-  selectedUserName,
-  onUserSelect,
-  selectedDepartmentId,
-  selectedDepartmentName,
-  onDepartmentSelect,
+  owner,
+  onOwnerChange,
   isPrimary,
   onIsPrimaryChange,
+  error,
+  mayBuy,
   isLoading,
   onBack,
-  onPurchase,
+  onBuy,
 }: {
-  selectedNumber: AvailablePhoneNumber;
+  number: AvailablePhoneNumber;
+  monthlyPrice: MonthlyPrice | null;
   label: string;
   onLabelChange: (value: string) => void;
-  assignmentType: 'none' | 'user' | 'department';
-  onAssignmentTypeChange: (type: 'none' | 'user' | 'department') => void;
-  selectedUserId: string;
-  selectedUserName: string;
-  onUserSelect: (id: string, name: string) => void;
-  selectedDepartmentId: string;
-  selectedDepartmentName: string;
-  onDepartmentSelect: (id: string, name: string) => void;
+  owner: OwnerSelection;
+  onOwnerChange: (owner: OwnerSelection) => void;
   isPrimary: boolean;
   onIsPrimaryChange: (value: boolean) => void;
+  error: string | null;
+  /** Off after a failure that may have bought the number already. */
+  mayBuy: boolean;
   isLoading: boolean;
   onBack: () => void;
-  onPurchase: () => void;
+  onBuy: () => void;
 }) {
-  const canPurchase =
-    assignmentType === 'none' ||
-    (assignmentType === 'user' && selectedUserId) ||
-    (assignmentType === 'department' && selectedDepartmentId);
+  const holder = chosenHolder(owner);
+  const place = [number.locality, number.region].filter(Boolean).join(', ');
+  const terms = [
+    ...purchaseTerms(monthlyPrice, number.type),
+    ...(holder === undefined ? [] : moveTerms(null, holder)),
+  ];
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Configure & Purchase</DialogTitle>
+        <DialogTitle>Buy {formatPhoneNumber(number.phoneNumber)}?</DialogTitle>
         <DialogDescription>
-          Review your selection and configure assignment
+          {[place, NUMBER_TYPE_LABELS[number.type]].filter(Boolean).join(' · ')}
         </DialogDescription>
       </DialogHeader>
 
-      <div className="space-y-4 py-4">
-        {/* Selected number summary */}
-        <div className="p-3 border rounded-md bg-muted/50">
-          <p className="font-mono font-medium">{selectedNumber.friendlyName}</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-sm text-muted-foreground">
-              {selectedNumber.phoneNumber}
-            </span>
-            {(selectedNumber.locality || selectedNumber.region) && (
-              <span className="text-sm text-muted-foreground">
-                &middot;{' '}
-                {[selectedNumber.locality, selectedNumber.region]
-                  .filter(Boolean)
-                  .join(', ')}
-              </span>
-            )}
-          </div>
-          <div className="flex gap-1 mt-2">
-            {selectedNumber.capabilities.sms && (
-              <Badge variant="secondary" className="text-xs">
-                SMS
-              </Badge>
-            )}
-            {selectedNumber.capabilities.mms && (
-              <Badge variant="secondary" className="text-xs">
-                MMS
-              </Badge>
-            )}
-            {selectedNumber.capabilities.voice && (
-              <Badge variant="secondary" className="text-xs">
-                Voice
-              </Badge>
-            )}
-          </div>
-        </div>
-
-        {/* Label */}
+      <div className="space-y-5 py-4">
         <div className="space-y-2">
-          <Label>Label (optional)</Label>
+          <Label htmlFor="purchase-label">Label (optional)</Label>
           <Input
+            id="purchase-label"
             value={label}
-            onChange={(e) => onLabelChange(e.target.value)}
-            placeholder="e.g. Main Sales Line"
+            onChange={(event) => onLabelChange(event.target.value)}
+            placeholder="Main sales line"
             maxLength={50}
+            disabled={isLoading}
           />
         </div>
 
-        {/* Assignment */}
-        <div className="space-y-3">
-          <Label>Assign to</Label>
-          <RadioGroup
-            value={assignmentType}
-            onValueChange={(value) =>
-              onAssignmentTypeChange(value as 'none' | 'user' | 'department')
-            }
-          >
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="none" id="assign-none" />
-              <Label htmlFor="assign-none" className="font-normal">
-                No assignment (Reserved)
+        <div className="space-y-2">
+          <Label>Who gets it</Label>
+          <OwnerPicker
+            id="purchase-owner"
+            value={owner}
+            onChange={onOwnerChange}
+            disabled={isLoading}
+          />
+          {holder?.type === 'department' && (
+            <div className="flex items-center justify-between gap-4 pt-1">
+              <Label htmlFor="purchase-primary" className="font-normal">
+                Make it the department's primary number
+                <span className="block text-xs text-muted-foreground">
+                  A department's first number is its primary anyway.
+                </span>
               </Label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="user" id="assign-user" />
-              <Label htmlFor="assign-user" className="font-normal">
-                Assign to user
-              </Label>
-            </div>
-            <div className="flex items-center space-x-2">
-              <RadioGroupItem value="department" id="assign-department" />
-              <Label htmlFor="assign-department" className="font-normal">
-                Assign to department
-              </Label>
-            </div>
-          </RadioGroup>
-
-          {assignmentType === 'user' && (
-            <UserPicker
-              selectedId={selectedUserId}
-              selectedName={selectedUserName}
-              onSelect={onUserSelect}
-            />
-          )}
-
-          {assignmentType === 'department' && (
-            <div className="space-y-3">
-              <DepartmentPicker
-                selectedId={selectedDepartmentId}
-                selectedName={selectedDepartmentName}
-                onSelect={onDepartmentSelect}
+              <Switch
+                id="purchase-primary"
+                checked={isPrimary}
+                onCheckedChange={onIsPrimaryChange}
+                disabled={isLoading}
               />
-              {selectedDepartmentId && (
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="is-primary" className="font-normal">
-                    Set as primary number
-                  </Label>
-                  <Switch
-                    id="is-primary"
-                    checked={isPrimary}
-                    onCheckedChange={onIsPrimaryChange}
-                  />
-                </div>
-              )}
             </div>
           )}
         </div>
+
+        <div className="space-y-2 rounded-md border p-3">
+          <p className="text-sm font-medium">Before you buy</p>
+          <TermsList terms={terms} />
+        </div>
+
+        {error && (
+          <div className="p-3 text-sm text-red-600 bg-red-50 rounded-md dark:bg-red-900/20 dark:text-red-400">
+            {error}
+          </div>
+        )}
       </div>
 
       <DialogFooter>
@@ -624,192 +788,17 @@ function ConfigureStep({
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
         </Button>
-        <Button onClick={onPurchase} disabled={isLoading || !canPurchase}>
-          {isLoading ? 'Purchasing...' : 'Purchase Number'}
+        <Button
+          onClick={onBuy}
+          disabled={isLoading || !mayBuy || holder === undefined}
+        >
+          {isLoading
+            ? 'Buying...'
+            : monthlyPrice
+              ? `Buy for ${formatPrice(monthlyPrice)} a month`
+              : 'Buy number'}
         </Button>
       </DialogFooter>
     </>
-  );
-}
-
-// ============================================
-// Assignment pickers (Popover + Command pattern)
-// ============================================
-
-function UserPicker({
-  selectedId,
-  selectedName,
-  onSelect,
-}: {
-  selectedId: string;
-  selectedName: string;
-  onSelect: (id: string, name: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [users, setUsers] = useState<
-    { id: string; name: string; email: string }[]
-  >([]);
-  const [isSearching, setIsSearching] = useState(false);
-
-  const searchUsers = useCallback(async (query: string) => {
-    setIsSearching(true);
-    try {
-      const result = await getUsers({ search: query || undefined, limit: 20 });
-      setUsers(
-        result.users.map((u) => ({
-          id: u.id,
-          name: u.name || '',
-          email: u.email,
-        })),
-      );
-    } catch {
-      // Silently fail
-    } finally {
-      setIsSearching(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (open) {
-      searchUsers(searchQuery);
-    }
-  }, [open, searchQuery, searchUsers]);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" className="w-full justify-start font-normal">
-          {selectedId ? selectedName : 'Select a user...'}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[400px] p-0" align="start">
-        <Command shouldFilter={false}>
-          <CommandInput
-            placeholder="Search users..."
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-          />
-          <CommandList>
-            {isSearching ? (
-              <div className="flex items-center justify-center p-4">
-                <Loader2 className="h-4 w-4 animate-spin" />
-              </div>
-            ) : (
-              <>
-                <CommandEmpty>No users found.</CommandEmpty>
-                <CommandGroup>
-                  {users.map((user) => (
-                    <CommandItem
-                      key={user.id}
-                      value={user.id}
-                      onSelect={() => {
-                        onSelect(user.id, user.name || user.email);
-                        setOpen(false);
-                        setSearchQuery('');
-                      }}
-                    >
-                      <div>
-                        <p className="font-medium">{user.name || user.email}</p>
-                        {user.name && (
-                          <p className="text-sm text-muted-foreground">
-                            {user.email}
-                          </p>
-                        )}
-                      </div>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </>
-            )}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function DepartmentPicker({
-  selectedId,
-  selectedName,
-  onSelect,
-}: {
-  selectedId: string;
-  selectedName: string;
-  onSelect: (id: string, name: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [departments, setDepartments] = useState<
-    { id: string; name: string }[]
-  >([]);
-  const [isSearching, setIsSearching] = useState(false);
-
-  const searchDepartments = useCallback(async (query: string) => {
-    setIsSearching(true);
-    try {
-      const result = await getDepartments({
-        search: query || undefined,
-        limit: 20,
-      });
-      setDepartments(
-        result.departments.map((d) => ({ id: d.id, name: d.name })),
-      );
-    } catch {
-      // Silently fail
-    } finally {
-      setIsSearching(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (open) {
-      searchDepartments(searchQuery);
-    }
-  }, [open, searchQuery, searchDepartments]);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" className="w-full justify-start font-normal">
-          {selectedId ? selectedName : 'Select a department...'}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[400px] p-0" align="start">
-        <Command shouldFilter={false}>
-          <CommandInput
-            placeholder="Search departments..."
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-          />
-          <CommandList>
-            {isSearching ? (
-              <div className="flex items-center justify-center p-4">
-                <Loader2 className="h-4 w-4 animate-spin" />
-              </div>
-            ) : (
-              <>
-                <CommandEmpty>No departments found.</CommandEmpty>
-                <CommandGroup>
-                  {departments.map((dept) => (
-                    <CommandItem
-                      key={dept.id}
-                      value={dept.id}
-                      onSelect={() => {
-                        onSelect(dept.id, dept.name);
-                        setOpen(false);
-                        setSearchQuery('');
-                      }}
-                    >
-                      <p className="font-medium">{dept.name}</p>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </>
-            )}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
   );
 }

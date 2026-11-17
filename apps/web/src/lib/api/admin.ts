@@ -21,14 +21,25 @@ import {
   DepartmentResponseSchema,
   type HolidayCreatedResponse,
   HolidayCreatedResponseSchema,
+  type ImportedPhoneNumber,
+  ImportedPhoneNumberSchema,
+  type ImportPhoneNumber,
   type InvitedUserResponse,
   InvitedUserResponseSchema,
+  type OwnedPhoneNumbersResponse,
+  OwnedPhoneNumbersResponseSchema,
+  type PhoneNumberConnection,
+  PhoneNumberConnectionSchema,
   type PhoneNumberListQuery,
   type PhoneNumberListResponse,
   PhoneNumberListResponseSchema,
   type PhoneNumberResponse,
   PhoneNumberResponseSchema,
+  type PurchasedPhoneNumber,
+  PurchasedPhoneNumberSchema,
   type PurchasePhoneNumber,
+  type ReleasedPhoneNumber,
+  ReleasedPhoneNumberSchema,
   type SearchAvailableNumbers,
   type SystemSettingsResponse,
   SystemSettingsResponseSchema,
@@ -389,12 +400,39 @@ export function searchAvailableNumbers(
 
 export function purchasePhoneNumber(
   data: PurchasePhoneNumber,
-): Promise<PhoneNumberResponse> {
+): Promise<PurchasedPhoneNumber> {
   return requestApi('/api/admin/phone-numbers/purchase', {
     method: 'POST',
     body: data,
-    schema: PhoneNumberResponseSchema,
+    schema: PurchasedPhoneNumberSchema,
   });
+}
+
+/** The numbers the Twilio account holds that are not in the list. */
+export function getOwnedPhoneNumbers(): Promise<OwnedPhoneNumbersResponse> {
+  return requestApi('/api/admin/phone-numbers/owned', {
+    schema: OwnedPhoneNumbersResponseSchema,
+  });
+}
+
+export function importPhoneNumber(
+  data: ImportPhoneNumber,
+): Promise<ImportedPhoneNumber> {
+  return requestApi('/api/admin/phone-numbers/import', {
+    method: 'POST',
+    body: data,
+    schema: ImportedPhoneNumberSchema,
+  });
+}
+
+/** Whether the number's calls and texts reach this deployment, as Twilio has it now. */
+export function getPhoneNumberConnection(
+  phoneNumberId: string,
+): Promise<PhoneNumberConnection> {
+  return requestApi(
+    `/api/admin/phone-numbers/${id(phoneNumberId)}/connection`,
+    { schema: PhoneNumberConnectionSchema },
+  );
 }
 
 export function updatePhoneNumber(
@@ -408,8 +446,20 @@ export function updatePhoneNumber(
   });
 }
 
-export function releasePhoneNumber(phoneNumberId: string): Promise<void> {
+export function reconnectPhoneNumber(
+  phoneNumberId: string,
+): Promise<PhoneNumberResponse> {
+  return requestApi(`/api/admin/phone-numbers/${id(phoneNumberId)}/reconnect`, {
+    method: 'POST',
+    schema: PhoneNumberResponseSchema,
+  });
+}
+
+export function releasePhoneNumber(
+  phoneNumberId: string,
+): Promise<ReleasedPhoneNumber> {
   return requestApi(`/api/admin/phone-numbers/${id(phoneNumberId)}`, {
     method: 'DELETE',
+    schema: ReleasedPhoneNumberSchema,
   });
 }

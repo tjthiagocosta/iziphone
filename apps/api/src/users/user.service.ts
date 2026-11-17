@@ -181,6 +181,7 @@ export class UserService {
                 deletedAt: null,
                 userId: null,
                 departmentId: null,
+                status: { not: 'RELEASED' },
               },
               data: {
                 userId: created.id,
@@ -499,7 +500,12 @@ export class UserService {
     }
 
     const phoneNumber = await this.db.phoneNumber.findUnique({
-      where: { id: phoneNumberId, deletedAt: null },
+      // A number being released is on its way back to Twilio.
+      where: {
+        id: phoneNumberId,
+        deletedAt: null,
+        status: { not: 'RELEASED' },
+      },
       select: { id: true, phoneNumber: true, userId: true, departmentId: true },
     });
 

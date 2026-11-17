@@ -216,6 +216,35 @@ describe('UserService', () => {
     expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
   });
 
+  test('should refuse a number that is being released', async () => {
+    const update = vi.fn(async () => ({}));
+    const { service, routingCache } = buildService({
+      user: { findUnique: vi.fn(async () => ({ id: 'user-1' })) },
+      phoneNumber: {
+        // One row, being released, read through the filter the service asks for.
+        findUnique: vi.fn(
+          async ({ where }: { where: { status?: { not?: string } } }) =>
+            where.status?.not === 'RELEASED'
+              ? null
+              : {
+                  id: 'phone-1',
+                  phoneNumber: DIRECT_LINE,
+                  userId: null,
+                  departmentId: null,
+                  status: 'RELEASED',
+                },
+        ),
+        update,
+      },
+    });
+
+    expect(
+      await service.assignPhoneNumber('user-1', 'phone-1', 'admin-1'),
+    ).toBe(false);
+    expect(update).not.toHaveBeenCalled();
+    expect(routingCache.refreshPhoneNumbers).not.toHaveBeenCalled();
+  });
+
   test('should refresh the direct line when a phone number is removed', async () => {
     const number = reservedNumber();
     Object.assign(number.row, { userId: 'user-1', status: 'ACTIVE' });
@@ -431,6 +460,8 @@ describe('UserService', () => {
     expect(user.id).toBe('user-1');
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        // Nor a number on its way back to Twilio.
+        where: expect.objectContaining({ status: { not: 'RELEASED' } }),
         data: expect.objectContaining({ userId: 'user-1', status: 'ACTIVE' }),
       }),
     );

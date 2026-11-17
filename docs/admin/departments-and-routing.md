@@ -19,9 +19,10 @@ people a number rings are the people who may use it as caller ID.
 ## Numbers
 
 **Admin → Phone Numbers** buys numbers from Twilio and assigns them to a user or
-a department. A department's **Phone Numbers** tab lists what it owns. Releasing a
-number removes it from Twilio and cannot be undone; deleting a department moves
-its numbers to the reserved pool.
+a department; [Phone numbers](phone-numbers.md) covers buying, moving, the
+reserve and releasing. A department's **Phone Numbers** tab lists what it owns.
+Deleting a department moves its numbers to the reserved pool, where they keep
+costing their monthly fee until they are assigned again or released.
 
 A number has one owner at a time. Adding a number to a user or a department
 succeeds only while nobody holds it; if another administrator got there first,

@@ -1,4 +1,5 @@
 import {
+  ImportPhoneNumberSchema,
   PhoneNumberListQuerySchema,
   PurchasePhoneNumberSchema,
   SearchAvailableNumbersSchema,
@@ -42,6 +43,11 @@ export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(await phoneNumberService.searchAvailable(query));
   });
 
+  // A static path wins over `/:id` in Fastify's router, whatever the order.
+  fastify.get('/owned', async (_request, reply) => {
+    return reply.send(await phoneNumberService.listOwned());
+  });
+
   fastify.get<{ Params: { id: string } }>('/:id', async (request, reply) => {
     const phoneNumber = await phoneNumberService.getById(request.params.id);
 
@@ -67,6 +73,34 @@ export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send(phoneNumber);
   });
 
+  fastify.post('/import', async (request, reply) => {
+    const data = ImportPhoneNumberSchema.parse(request.body);
+    const actor = authenticatedUser(request);
+
+    const phoneNumber = await phoneNumberService.importOwned(
+      data,
+      actor.id,
+      request.ip,
+    );
+    return reply.status(201).send(phoneNumber);
+  });
+
+  fastify.get<{ Params: { id: string } }>(
+    '/:id/connection',
+    async (request, reply) => {
+      const connection = await phoneNumberService.connection(request.params.id);
+
+      if (!connection) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Phone number not found',
+        });
+      }
+
+      return reply.send(connection);
+    },
+  );
+
   fastify.patch<{ Params: { id: string } }>('/:id', async (request, reply) => {
     const data = UpdatePhoneNumberSchema.parse(request.body);
     const actor = authenticatedUser(request);
@@ -88,6 +122,28 @@ export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.send(phoneNumber);
   });
 
+  fastify.post<{ Params: { id: string } }>(
+    '/:id/reconnect',
+    async (request, reply) => {
+      const actor = authenticatedUser(request);
+
+      const phoneNumber = await phoneNumberService.reconnect(
+        request.params.id,
+        actor.id,
+        request.ip,
+      );
+
+      if (!phoneNumber) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Phone number not found',
+        });
+      }
+
+      return reply.send(phoneNumber);
+    },
+  );
+
   fastify.delete<{ Params: { id: string } }>('/:id', async (request, reply) => {
     const actor = authenticatedUser(request);
 
@@ -104,6 +160,6 @@ export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    return reply.status(204).send();
+    return reply.send(released);
   });
 };
