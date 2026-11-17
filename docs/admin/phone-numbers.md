@@ -57,12 +57,26 @@ it becomes the department's primary number. The confirmation states:
   prorated. If the price list cannot be read, the confirmation says so rather
   than guessing.
 - **Texting**: calls work at once, but texts from a US local number need an
-  approved A2P 10DLC registration, and texts from a toll-free number need
-  toll-free verification. Both are done in the Twilio Console; see
+  approved A2P 10DLC campaign, and texts from a toll-free number need
+  toll-free verification, which is done in the Twilio Console; see
   [Costs](../develop/costs.md).
+- **Texting registration**, for a local number: the messaging service it
+  joins, which is what registers it under that service's campaign. The picker
+  starts on the default set in **Settings → Texting**, lists every messaging
+  service of your Twilio account with its campaign's use case and state, and
+  offers **None**. See [Texting registration](#texting-registration).
 
 **Buy** buys the number, adds it to the list, points its calls and texts at
-this deployment, and reads its details (city, capabilities) back from Twilio.
+this deployment, reads its details (city, capabilities) back from Twilio, and
+adds it to the chosen messaging service.
+
+- A messaging service you chose is checked before anything is bought: one
+  that is gone from the account, or whose campaign cannot register texts, is
+  refused and nothing is charged.
+- If the number was bought but did not join its messaging service (the
+  default is gone, or Twilio refused it), a notice above the list says so
+  and names the reason. The number works for calls; open it and use its
+  **Texting** card to add it.
 
 - A number somebody else bought while you were deciding is refused with
   "That number is no longer available". Nothing is charged; search again.
@@ -126,12 +140,15 @@ primary choices as a purchase. It states what adding the number does:
 - **Nothing is bought.** The number keeps costing what it costs on your Twilio
   account.
 - **Its messaging service stays.** A messaging service carries the number's
-  texting registration, so it is never changed here. If the service sends its
-  senders' incoming texts to its own address, the confirmation says texts will
-  not reach iziphone until the service is set to defer to the sender's
-  webhook, or the number leaves it. A local number in no service can call but
-  not text until it joins the messaging service of a registered A2P 10DLC
-  campaign.
+  texting registration, so adding the number never takes it out of one; its
+  page can move it later. If the service sends its senders' incoming texts to
+  its own address, the confirmation says texts will not reach iziphone until
+  the service is set to defer to the sender's webhook, or the number leaves
+  it.
+- **A local number in no service** gets the same **Texting registration**
+  picker as a purchase, starting on the default, and joins the service
+  chosen. When the account's messaging services cannot be read, there is no
+  picker and the default applies.
 - **A number released here before comes back as the same number**, with its
   old history still with the owners it was written under.
 
@@ -153,6 +170,55 @@ Removing an added number later (moving it to the reserve, or releasing it)
 leaves its webhooks pointing here; nothing puts back what it had before. The
 reasons are in
 [0017. Adding a number the account holds takes it over](../decisions/0017-adding-a-number-the-account-holds-takes-it-over.md).
+
+## Texting registration
+
+US carriers deliver a local number's texts only while it is a sender of a
+messaging service whose A2P 10DLC campaign is approved. The brand and the
+campaign are registered once, in the Twilio Console; iziphone then puts
+numbers in the service that holds the campaign. It never changes a
+service's own settings and never creates or edits a campaign. The reasons are
+in
+[0018. An admin chooses the campaign a number texts through](../decisions/0018-an-admin-chooses-the-campaign-a-number-texts-through.md).
+
+Every picker lists each messaging service of the account with its campaign:
+its use case and its state, **Approved**, **In review** or **Not approved**,
+or **No campaign**.
+
+- A number can join a service whose campaign is approved, or still in
+  review: its texts stay blocked until the carriers approve it, and the
+  confirmation says so.
+- A service with no campaign, or one not approved, is listed but cannot be
+  chosen.
+- A service that sends its senders' incoming texts to an address of its own
+  can be chosen for one number, with a warning that replies will not reach
+  iziphone until the service defers to the sender's webhook.
+
+**Settings → Texting** sets the service new local numbers join: the one Buy
+and Add start on. It can be **None**. A service that keeps its senders'
+incoming texts cannot be the default, since every number bought after would
+miss its replies. If the default service is deleted in the Twilio Console,
+the settings say so and new numbers join none until another is chosen.
+
+The **Texting** card on a local number's page reads, each time the page
+opens or you choose **Check again**, which service the number is in and that
+service's campaign:
+
+- **Registered** through a service with an approved campaign, with **Change
+  campaign** to move it to another service of the account.
+- **Texts blocked**: the number is in no service, with **Add to a campaign**,
+  or its service's campaign is missing, in review or not approved, with
+  **Change campaign**.
+- A toll-free number is verified in the Twilio Console and has no choice
+  here.
+
+Moving a number takes it out of its service and puts it in the new one,
+because Twilio lets a number send for one service only; for a moment it is
+in neither, and a text sent then may be blocked. If the new service refuses
+it, it is put back in the old one, and the page says whether that worked. A
+number somebody moved in the Twilio Console since the page was read is
+refused; check again and choose once more. The other numbers of both
+services do not change.
 
 ## Assigning and moving
 
@@ -259,17 +325,15 @@ again**:
   could not finish setting it up.
 - **Not on the Twilio account**: the account does not hold the number any more,
   and Reconnect cannot point it here.
-- A note on texting, under any of these: the number's messaging service keeps
-  its senders' incoming texts and sends them to an address of its own that is
-  not this deployment, naming the service; a local number is in no messaging
-  service and cannot text until it joins a registered campaign's; or its
-  service's campaign is missing, still in review or not approved, so carriers
-  block its texts.
+- A note on texting, under any of these, when the number's messaging service
+  keeps its senders' incoming texts and sends them to an address of its own
+  that is not this deployment, naming the service. Whether its texts are
+  registered is on the **Texting** card.
 
 **Reconnect** tells Twilio again to send the number's calls and texts to this
 deployment, and detaches a TwiML App, an application or a SIP trunk that would
-take them instead. It does not change messaging services: those are changed in
-the Twilio Console. It costs nothing. The audit log records what the number had
+take them instead. It does not change the number's messaging service; the
+**Texting** card does. It costs nothing. The audit log records what the number had
 before Twilio is asked, so the record stays even when Reconnect then fails. If
 Twilio takes the change but something still sends the number's calls or texts
 elsewhere, Reconnect says so instead of reporting success.
@@ -278,8 +342,11 @@ elsewhere, Reconnect says so instead of reporting success.
 ## The audit log
 
 Every purchase, addition of a number you own, assignment, move, move to the
-reserve, label or primary change, reconnect and release is recorded in the
-audit log with who did it, from where, and what changed. An addition and a
+reserve, label or primary change, reconnect, messaging service join or change,
+and release is recorded in the audit log with who did it, from where, and
+what changed. A change of the default messaging service is recorded too.
+A messaging service change names both services and is written before Twilio
+is asked, so it stays even when the move then fails. An addition and a
 reconnect also record the number's settings before the change. So is a release
 Twilio refused, with Twilio's reason and whether the number went back to the
 reserve.
@@ -287,7 +354,9 @@ reserve.
 ## Not covered
 
 - Porting a number in or out, and numbers outside the US.
-- A2P 10DLC and toll-free verification, and messaging services, which live in
-  the Twilio Console.
+- Registering an A2P 10DLC brand or campaign, toll-free verification, and a
+  messaging service's own settings, which live in the Twilio Console.
+- Adding or moving many numbers at once, and taking a number out of its
+  messaging service without putting it in another.
 - Putting back what an added number had before it was added. The audit log
   keeps it; the Twilio Console sets it.

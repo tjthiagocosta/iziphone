@@ -28,6 +28,8 @@ import {
   type ImportPhoneNumber,
   type InvitedUserResponse,
   InvitedUserResponseSchema,
+  type MessagingServiceChange,
+  MessagingServiceChangeSchema,
   type MessagingServicesResponse,
   MessagingServicesResponseSchema,
   type OwnedPhoneNumbersResponse,
@@ -45,6 +47,7 @@ import {
   type ReleasedPhoneNumber,
   ReleasedPhoneNumberSchema,
   type SearchAvailableNumbers,
+  type SetMessagingService,
   type SystemSettingsResponse,
   SystemSettingsResponseSchema,
   type UpdateAgentOrder,
@@ -476,6 +479,17 @@ export function updateDefaultMessagingService(
     body: data,
     schema: DefaultMessagingServiceResponseSchema,
   });
+}
+
+/** Puts a local number in a messaging service, moving it from the one it is in. */
+export function setPhoneNumberMessagingService(
+  phoneNumberId: string,
+  data: SetMessagingService,
+): Promise<MessagingServiceChange> {
+  return requestApi(
+    `/api/admin/phone-numbers/${id(phoneNumberId)}/messaging-service`,
+    { method: 'PUT', body: data, schema: MessagingServiceChangeSchema },
+  );
 }
 
 export function releasePhoneNumber(

@@ -1,6 +1,10 @@
 'use client';
 
-import type { ImportPhoneNumber, OwnedPhoneNumber } from '@repo/dto';
+import type {
+  ImportPhoneNumber,
+  MessagingServicesResponse,
+  OwnedPhoneNumber,
+} from '@repo/dto';
 import { ArrowLeft, Check, Loader2, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -18,6 +22,7 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
 import { useOwnedNumbers } from '@/hooks/use-admin-phone-numbers';
+import { useMessagingServices } from '@/hooks/use-messaging-services';
 import { formatPhoneNumber } from '@/lib/phone-number';
 import {
   attachedToday,
@@ -30,8 +35,15 @@ import {
   ownerOf,
   RESERVE_SELECTION,
 } from '@/lib/phone-numbers/owner-selection';
+import {
+  choiceOf,
+  mayChooseServiceOnImport,
+  presetValue,
+  requestFieldOf,
+} from '@/lib/phone-numbers/texting-registration';
 import { cn } from '@/lib/utils';
 import { CapabilityBadges } from './CapabilityBadges';
+import { MessagingServicePicker } from './MessagingServicePicker';
 import { OwnerPicker } from './OwnerPicker';
 import { TermsList } from './TermsList';
 
@@ -60,12 +72,23 @@ export function ImportNumberDialog({
   const [label, setLabel] = useState('');
   const [owner, setOwner] = useState<OwnerSelection>(RESERVE_SELECTION);
   const [isPrimary, setIsPrimary] = useState(false);
+  /** The messaging service picked for a local number in none; see `MessagingServicePicker`. */
+  const [serviceValue, setServiceValue] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   // Until the import has answered and the list has reloaded, which the
   // page's own loading flag does not cover.
   const [isAdding, setIsAdding] = useState(false);
 
   const owned = useOwnedNumbers(open);
+  const choosesService = selected ? mayChooseServiceOnImport(selected) : false;
+  const messaging = useMessagingServices(
+    open && step === 'confirm' && choosesService,
+  );
+
+  // The picker starts on the default each time the services are read.
+  useEffect(() => {
+    setServiceValue(presetValue(messaging.data));
+  }, [messaging.data]);
 
   useEffect(() => {
     if (!open) {
@@ -74,6 +97,7 @@ export function ImportNumberDialog({
       setLabel('');
       setOwner(RESERVE_SELECTION);
       setIsPrimary(false);
+      setServiceValue(null);
       setFailure(null);
     }
   }, [open]);
@@ -92,6 +116,9 @@ export function ImportNumberDialog({
         label: label.trim() || undefined,
         owner: ownerOf(holder) ?? undefined,
         isPrimary: holder?.type === 'department' ? isPrimary : false,
+        messagingServiceSid: choosesService
+          ? requestFieldOf(choiceOf(messaging.data, serviceValue))
+          : undefined,
       });
       onOpenChange(false);
     } catch (err) {
@@ -143,6 +170,10 @@ export function ImportNumberDialog({
             }}
             isPrimary={isPrimary}
             onIsPrimaryChange={setIsPrimary}
+            choosesService={choosesService}
+            messaging={messaging}
+            serviceValue={serviceValue}
+            onServiceChange={setServiceValue}
             error={failure}
             isLoading={isLoading || isAdding}
             onBack={() => setStep('choose')}
@@ -345,6 +376,10 @@ function ConfirmStep({
   onOwnerChange,
   isPrimary,
   onIsPrimaryChange,
+  choosesService,
+  messaging,
+  serviceValue,
+  onServiceChange,
   error,
   isLoading,
   onBack,
@@ -357,13 +392,27 @@ function ConfirmStep({
   onOwnerChange: (owner: OwnerSelection) => void;
   isPrimary: boolean;
   onIsPrimaryChange: (value: boolean) => void;
+  /** Whether it is a local number in no messaging service, which joins one here. */
+  choosesService: boolean;
+  messaging: {
+    data: MessagingServicesResponse | null;
+    isLoading: boolean;
+    error: Error | null;
+    refetch: () => Promise<void>;
+  };
+  serviceValue: string | null;
+  onServiceChange: (value: string) => void;
   error: string | null;
   isLoading: boolean;
   onBack: () => void;
   onAdd: () => void;
 }) {
   const holder = chosenHolder(owner);
-  const terms = importTerms(number, holder);
+  const terms = importTerms(
+    number,
+    holder,
+    choosesService ? choiceOf(messaging.data, serviceValue) : undefined,
+  );
 
   return (
     <>
@@ -420,6 +469,25 @@ function ConfirmStep({
           )}
         </div>
 
+        {choosesService && (
+          <div className="space-y-2">
+            <Label htmlFor="import-messaging-service">
+              Texting registration
+            </Label>
+            <MessagingServicePicker
+              id="import-messaging-service"
+              services={messaging.data}
+              isLoading={messaging.isLoading}
+              error={messaging.error}
+              value={serviceValue}
+              onChange={onServiceChange}
+              onRetry={() => void messaging.refetch()}
+              purpose="number"
+              disabled={isLoading}
+            />
+          </div>
+        )}
+
         <div className="space-y-2 rounded-md border p-3">
           <p className="text-sm font-medium">Before you add it</p>
           <TermsList terms={terms} />
@@ -442,7 +510,14 @@ function ConfirmStep({
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
         </Button>
-        <Button onClick={onAdd} disabled={isLoading || holder === undefined}>
+        <Button
+          onClick={onAdd}
+          disabled={
+            isLoading ||
+            holder === undefined ||
+            (choosesService && messaging.isLoading)
+          }
+        >
           {isLoading ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

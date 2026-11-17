@@ -11,6 +11,7 @@ import type {
   TelephonyProvider,
   TextingNote,
 } from '@repo/dto';
+import { type JoinChoice, joinNotice, joinTerms } from './texting-registration';
 
 /*
  * What each change to a number means for the bill and for the people on it,
@@ -43,20 +44,30 @@ export function formatPrice(price: MonthlyPrice): string {
   }
 }
 
-/** What buying a number commits the account to. */
+/**
+ * What buying a number commits the account to. A local number's texts
+ * depend on the messaging service it joins, `joining`; a toll-free number
+ * joins none here.
+ */
 export function purchaseTerms(
   price: MonthlyPrice | null,
   type: PhoneNumberType,
+  joining: JoinChoice,
 ): string[] {
   const billing = price
     ? `Twilio charges ${formatPrice(price)} a month for this number, starting today. The first month is billed in full when you buy it, not prorated.`
     : 'The price could not be read from Twilio just now; check it in the Twilio Console first. The first month is billed in full when you buy it, not prorated.';
-  const texting =
-    type === 'TOLL_FREE'
-      ? 'Calls work at once. Texts from a toll-free number are blocked until the number is verified in the Twilio Console.'
-      : 'Calls work at once. Texts from a US local number need an approved A2P 10DLC registration in the Twilio Console, or carriers block them.';
 
-  return [billing, texting];
+  return type === 'TOLL_FREE'
+    ? [
+        billing,
+        'Calls work at once. Texts from a toll-free number are blocked until the number is verified in the Twilio Console.',
+      ]
+    : [
+        billing,
+        'Calls work at once. Texts from a US local number need an approved A2P 10DLC campaign, or carriers block them.',
+        ...joinTerms(joining),
+      ];
 }
 
 /**
@@ -118,9 +129,12 @@ export function releaseTerms(provider: TelephonyProvider): string[] {
  * not set it up, or null when there is nothing to add.
  */
 export function purchaseNotice(bought: PurchasedPhoneNumber): string | null {
-  return bought.connected
-    ? null
-    : 'The number is bought and in the list, but Twilio did not take its call and text settings, so calls and texts to it do not arrive yet. Open it and choose Reconnect; do not buy it again.';
+  return joinedNotices(
+    bought.connected
+      ? null
+      : 'The number is bought and in the list, but Twilio did not take its call and text settings, so calls and texts to it do not arrive yet. Open it and choose Reconnect; do not buy it again.',
+    joinNotice(bought.messagingService),
+  );
 }
 
 /**
@@ -147,6 +161,7 @@ export function attachedToday(number: OwnedPhoneNumber): string[] {
 export function importTerms(
   number: OwnedPhoneNumber,
   holder?: PhoneNumberAssignment | null,
+  joining?: JoinChoice,
 ): string[] {
   const { calls, texts } = takersToday(number);
   const serviceKeepsTexts = number.texting?.kind === 'service-takes-texts';
@@ -164,13 +179,23 @@ export function importTerms(
     'Nothing is bought: it keeps costing what it costs on your Twilio account today.',
   ];
 
+  // A number in no service joins the one chosen, so the note that it is
+  // unregistered gives way to what joining it means.
+  const joinsHere = joining !== undefined && !number.attached.messagingService;
+
   if (number.attached.messagingService) {
     terms.push(
-      `It stays a sender of the messaging service “${number.attached.messagingService.friendlyName}”, which carries its texting registration; that is changed in the Twilio Console only.`,
+      `It stays a sender of the messaging service “${number.attached.messagingService.friendlyName}”, which carries its texting registration; its page can move it to another one once it is added.`,
     );
   }
-  if (number.texting) {
+  if (
+    number.texting &&
+    !(joinsHere && number.texting.kind === 'unregistered')
+  ) {
     terms.push(textingNoteText(number.texting));
+  }
+  if (joining !== undefined && joinsHere) {
+    terms.push(...joinTerms(joining));
   }
   if (number.releasedHere) {
     terms.push(
@@ -234,9 +259,18 @@ function takersToday(number: OwnedPhoneNumber): {
  * that Twilio did not point here, or null when there is nothing to add.
  */
 export function importNotice(imported: ImportedPhoneNumber): string | null {
-  return imported.connected
-    ? null
-    : 'The number is in the list, but Twilio did not take its call and text settings, so its calls and texts do not reach iziphone yet. Open it and choose Reconnect.';
+  return joinedNotices(
+    imported.connected
+      ? null
+      : 'The number is in the list, but Twilio did not take its call and text settings, so its calls and texts do not reach iziphone yet. Open it and choose Reconnect.',
+    joinNotice(imported.messagingService),
+  );
+}
+
+function joinedNotices(...notices: (string | null)[]): string | null {
+  const said = notices.filter((notice): notice is string => notice !== null);
+
+  return said.length > 0 ? said.join(' ') : null;
 }
 
 /** Why a number needs Reconnect, as the number's page lists it. */
@@ -260,20 +294,21 @@ const RECONNECT_REASON_TEXT: Record<ReconnectReason, string> = {
 
 /**
  * Why texts may not arrive although the number is connected. Reconnect does
- * not change messaging services; they are managed in the Twilio Console.
+ * not change messaging services: the number's page moves a local number
+ * between them, and a service's own settings stay in the Twilio Console.
  */
 export function textingNoteText(note: TextingNote): string {
   switch (note.kind) {
     case 'service-takes-texts':
-      return `Texts to it do not reach iziphone: the messaging service “${note.service.friendlyName}” sends its senders’ incoming texts to its own address. In the Twilio Console, set the service to defer to the sender’s webhook, or take the number out of it.`;
+      return `Texts to it do not reach iziphone: the messaging service “${note.service.friendlyName}” sends its senders’ incoming texts to its own address. In the Twilio Console, set the service to defer to the sender’s webhook, or choose another messaging service on the number’s page.`;
     case 'unregistered':
-      return 'It is in no messaging service, and US carriers block texts from an unregistered local number (A2P 10DLC): it can call, but not text, until it joins the messaging service of a registered campaign in the Twilio Console.';
+      return 'It is in no messaging service, and US carriers block texts from an unregistered local number (A2P 10DLC): it can call, but not text, until it joins the messaging service of an approved campaign, which the number’s page can do.';
     case 'no-campaign':
-      return `Its messaging service “${note.service.friendlyName}” has no A2P 10DLC campaign, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
+      return `Its messaging service “${note.service.friendlyName}” has no A2P 10DLC campaign, so US carriers block its texts. Choose a messaging service with an approved campaign on the number’s page.`;
     case 'campaign-in-review':
       return `The A2P 10DLC campaign of its messaging service “${note.service.friendlyName}” is not approved yet, so its texts stay blocked until it is.`;
     case 'campaign-not-approved':
-      return `The A2P 10DLC campaign of its messaging service “${note.service.friendlyName}” was not approved, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
+      return `The A2P 10DLC campaign of its messaging service “${note.service.friendlyName}” was not approved, so US carriers block its texts. Choose a messaging service with an approved campaign on the number’s page.`;
     case 'unknown':
       return 'The messaging services on the Twilio account could not be read, so whether its texts arrive was not checked.';
   }

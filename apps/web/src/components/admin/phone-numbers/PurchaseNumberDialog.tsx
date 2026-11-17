@@ -3,6 +3,7 @@
 import {
   type AvailablePhoneNumber,
   type ContainsAt,
+  type MessagingServicesResponse,
   type MonthlyPrice,
   type PhoneNumberType,
   type PurchasePhoneNumber,
@@ -41,6 +42,7 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { useAvailableNumbers } from '@/hooks/use-admin-phone-numbers';
+import { useMessagingServices } from '@/hooks/use-messaging-services';
 import { ApiError } from '@/lib/api/client';
 import { formatPhoneNumber } from '@/lib/phone-number';
 import {
@@ -63,8 +65,14 @@ import {
   ownerOf,
   RESERVE_SELECTION,
 } from '@/lib/phone-numbers/owner-selection';
+import {
+  choiceOf,
+  presetValue,
+  requestFieldOf,
+} from '@/lib/phone-numbers/texting-registration';
 import { cn } from '@/lib/utils';
 import { CapabilityBadges } from './CapabilityBadges';
+import { MessagingServicePicker } from './MessagingServicePicker';
 import { OwnerPicker } from './OwnerPicker';
 import { TermsList } from './TermsList';
 
@@ -96,6 +104,8 @@ export function PurchaseNumberDialog({
   const [label, setLabel] = useState('');
   const [owner, setOwner] = useState<OwnerSelection>(RESERVE_SELECTION);
   const [isPrimary, setIsPrimary] = useState(false);
+  /** The messaging service picked for a local number; see `MessagingServicePicker`. */
+  const [serviceValue, setServiceValue] = useState<string | null>(null);
   const [purchaseFailure, setPurchaseFailure] = useState<
     (PurchaseFailure & { phoneNumber: string }) | null
   >(null);
@@ -114,6 +124,13 @@ export function PurchaseNumberDialog({
     searchMore,
     reset: resetSearch,
   } = useAvailableNumbers();
+  // Read from Twilio only once a local number is chosen: a toll-free one joins none.
+  const messaging = useMessagingServices(open && selected?.type === 'LOCAL');
+
+  // The picker starts on the default each time the services are read.
+  useEffect(() => {
+    setServiceValue(presetValue(messaging.data));
+  }, [messaging.data]);
 
   useEffect(() => {
     if (!open) {
@@ -125,6 +142,7 @@ export function PurchaseNumberDialog({
       setLabel('');
       setOwner(RESERVE_SELECTION);
       setIsPrimary(false);
+      setServiceValue(null);
       setPurchaseFailure(null);
       resetSearch();
     }
@@ -175,6 +193,10 @@ export function PurchaseNumberDialog({
         label: label.trim() || undefined,
         owner: ownerOf(holder) ?? undefined,
         isPrimary: holder?.type === 'department' ? isPrimary : false,
+        messagingServiceSid:
+          selected.type === 'LOCAL'
+            ? requestFieldOf(choiceOf(messaging.data, serviceValue))
+            : undefined,
       });
       onOpenChange(false);
     } catch (err) {
@@ -245,6 +267,9 @@ export function PurchaseNumberDialog({
               setIsPrimary(false);
             }}
             isPrimary={isPrimary}
+            messaging={messaging}
+            serviceValue={serviceValue}
+            onServiceChange={setServiceValue}
             onIsPrimaryChange={setIsPrimary}
             error={failureOfSelected?.message ?? null}
             mayBuy={failureOfSelected?.mayRetry !== false}
@@ -690,6 +715,9 @@ function ConfirmStep({
   onOwnerChange,
   isPrimary,
   onIsPrimaryChange,
+  messaging,
+  serviceValue,
+  onServiceChange,
   error,
   mayBuy,
   isLoading,
@@ -704,6 +732,14 @@ function ConfirmStep({
   onOwnerChange: (owner: OwnerSelection) => void;
   isPrimary: boolean;
   onIsPrimaryChange: (value: boolean) => void;
+  messaging: {
+    data: MessagingServicesResponse | null;
+    isLoading: boolean;
+    error: Error | null;
+    refetch: () => Promise<void>;
+  };
+  serviceValue: string | null;
+  onServiceChange: (value: string) => void;
   error: string | null;
   /** Off after a failure that may have bought the number already. */
   mayBuy: boolean;
@@ -713,8 +749,13 @@ function ConfirmStep({
 }) {
   const holder = chosenHolder(owner);
   const place = [number.locality, number.region].filter(Boolean).join(', ');
+  const local = number.type === 'LOCAL';
   const terms = [
-    ...purchaseTerms(monthlyPrice, number.type),
+    ...purchaseTerms(
+      monthlyPrice,
+      number.type,
+      choiceOf(messaging.data, serviceValue),
+    ),
     ...(holder === undefined ? [] : moveTerms(null, holder)),
   ];
 
@@ -766,6 +807,25 @@ function ConfirmStep({
           )}
         </div>
 
+        {local && (
+          <div className="space-y-2">
+            <Label htmlFor="purchase-messaging-service">
+              Texting registration
+            </Label>
+            <MessagingServicePicker
+              id="purchase-messaging-service"
+              services={messaging.data}
+              isLoading={messaging.isLoading}
+              error={messaging.error}
+              value={serviceValue}
+              onChange={onServiceChange}
+              onRetry={() => void messaging.refetch()}
+              purpose="number"
+              disabled={isLoading}
+            />
+          </div>
+        )}
+
         <div className="space-y-2 rounded-md border p-3">
           <p className="text-sm font-medium">Before you buy</p>
           <TermsList terms={terms} />
@@ -790,7 +850,12 @@ function ConfirmStep({
         </Button>
         <Button
           onClick={onBuy}
-          disabled={isLoading || !mayBuy || holder === undefined}
+          disabled={
+            isLoading ||
+            !mayBuy ||
+            holder === undefined ||
+            (local && messaging.isLoading)
+          }
         >
           {isLoading
             ? 'Buying...'

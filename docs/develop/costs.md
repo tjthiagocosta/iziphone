@@ -13,7 +13,10 @@ bills the first month in full, not prorated. The fee runs while a user or a
 department holds the number and while it sits in the reserve; only releasing it
 stops it. Texting from a US local number needs an A2P 10DLC registration, which
 Twilio charges for separately, and a toll-free number needs toll-free
-verification. See [Phone numbers](../admin/phone-numbers.md).
+verification. The brand and the campaign are registered once in the Twilio
+Console, under Twilio's fees; the requests the admin console makes to read
+the messaging services and their campaigns, and to put a number in one, are
+not billed. See [Phone numbers](../admin/phone-numbers.md).
 
 Object storage is billed by whoever hosts your bucket. Because the API copies
 each recording into the bucket and deletes it at Twilio, the audio you keep is

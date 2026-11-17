@@ -262,15 +262,15 @@ export function describeTextingNote(
 ): string {
   switch (note.kind) {
     case 'service-takes-texts':
-      return `${phoneNumber}: the messaging service "${note.service.friendlyName}" sends this number's inbound texts to its own address, so they do not reach this deployment. In the Twilio Console, set the service's incoming messages to "Defer to sender's webhook", or take the number out of the service.`;
+      return `${phoneNumber}: the messaging service "${note.service.friendlyName}" sends this number's inbound texts to its own address, so they do not reach this deployment. In the Twilio Console, set the service's incoming messages to "Defer to sender's webhook", or choose another messaging service on the number's page.`;
     case 'unregistered':
-      return `${phoneNumber} is in no messaging service: US carriers block texts from an unregistered local number (A2P 10DLC), so it can call but not text until it joins the messaging service of a registered campaign in the Twilio Console.`;
+      return `${phoneNumber} is in no messaging service: US carriers block texts from an unregistered local number (A2P 10DLC), so it can call but not text until it joins the messaging service of an approved campaign, which its page can do.`;
     case 'no-campaign':
-      return `${phoneNumber}: its messaging service "${note.service.friendlyName}" has no A2P 10DLC campaign, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
+      return `${phoneNumber}: its messaging service "${note.service.friendlyName}" has no A2P 10DLC campaign, so US carriers block its texts. Choose a messaging service with an approved campaign on the number's page.`;
     case 'campaign-in-review':
       return `${phoneNumber}: the A2P 10DLC campaign of its messaging service "${note.service.friendlyName}" is not approved yet, so US carriers block its texts until it is.`;
     case 'campaign-not-approved':
-      return `${phoneNumber}: the A2P 10DLC campaign of its messaging service "${note.service.friendlyName}" was not approved, so US carriers block its texts. Move it to a messaging service with an approved campaign in the Twilio Console.`;
+      return `${phoneNumber}: the A2P 10DLC campaign of its messaging service "${note.service.friendlyName}" was not approved, so US carriers block its texts. Choose a messaging service with an approved campaign on the number's page.`;
     case 'unknown':
       return `${phoneNumber}: the account's messaging services could not be read, so whether its texts arrive was not checked.`;
   }

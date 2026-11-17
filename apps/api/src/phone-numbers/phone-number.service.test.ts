@@ -245,12 +245,32 @@ function fakeProvider(overrides: Partial<NumberProvider> = {}) {
       state: 'checked' as const,
       needsReconnect: [],
       texting: null,
+      messagingService: null,
     })),
     listMessagingServices: vi.fn<NumberProvider['listMessagingServices']>(
       async () => SERVICES,
     ),
     readMessagingService: vi.fn<NumberProvider['readMessagingService']>(
       async (sid) => SERVICES.find((service) => service.sid === sid) ?? null,
+    ),
+    addToMessagingService: vi.fn<NumberProvider['addToMessagingService']>(
+      async () => ({ state: 'joined' }),
+    ),
+    currentMessagingService: vi.fn<NumberProvider['currentMessagingService']>(
+      async () => null,
+    ),
+    // Hands the service it leaves to the caller before changing it, as Twilio's does.
+    moveToMessagingService: vi.fn<NumberProvider['moveToMessagingService']>(
+      async (_phoneNumber, _sid, expected, beforeChange) => {
+        const from =
+          SERVICES.find((service) => service.sid === expected) ?? null;
+        const named = from
+          ? { sid: from.sid, friendlyName: from.friendlyName }
+          : null;
+
+        await beforeChange?.(named);
+        return { from: named, changed: true };
+      },
     ),
     ...overrides,
   };
@@ -915,6 +935,347 @@ describe('PhoneNumberService.importOwned', () => {
   });
 });
 
+describe('PhoneNumberService texting registration on purchase and import', () => {
+  const NO_CAMPAIGN = {
+    ...APPOINTMENTS,
+    campaign: null,
+    keepsIncomingTexts: false,
+  };
+  const LOCAL_HELD = {
+    metadata: {
+      ...HELD_METADATA,
+      type: 'LOCAL' as const,
+      providerType: 'local' as const,
+    },
+    settings: ATTACHED_BEFORE,
+  };
+  const joinedEntries = (auditCreate: Mock) =>
+    auditCreate.mock.calls
+      .map(([entry]) => entry as { action: string; changes: unknown })
+      .filter(
+        (entry) => entry.action === 'phone_number.messaging_service_joined',
+      );
+
+  test('should add a bought local number to the default service once it is set up', async () => {
+    const provider = fakeProvider();
+    const { service, auditCreate } = buildService(
+      [],
+      provider,
+      CUSTOMER_CARE.sid,
+    );
+
+    const result = await service.purchase(
+      purchaseOf(),
+      'admin-1',
+      '203.0.113.7',
+    );
+
+    expect(provider.addToMessagingService).toHaveBeenCalledWith(
+      NEW_LINE,
+      CUSTOMER_CARE.sid,
+    );
+    expect(firstCall(provider.configureNumber)).toBeLessThan(
+      firstCall(provider.addToMessagingService),
+    );
+    expect(result.messagingService).toEqual({
+      state: 'joined',
+      service: CUSTOMER_CARE,
+    });
+    expect(joinedEntries(auditCreate)).toEqual([
+      expect.objectContaining({
+        userId: 'admin-1',
+        ipAddress: '203.0.113.7',
+        changes: { phoneNumber: NEW_LINE, from: null, to: CUSTOMER_CARE },
+      }),
+    ]);
+  });
+
+  test('should add it to the service the admin named instead of the default', async () => {
+    const provider = fakeProvider();
+    const { service } = buildService([], provider, CUSTOMER_CARE.sid);
+
+    const result = await service.purchase(
+      purchaseOf({ messagingServiceSid: APPOINTMENTS.sid }),
+      'admin-1',
+    );
+
+    expect(provider.addToMessagingService).toHaveBeenCalledWith(
+      NEW_LINE,
+      APPOINTMENTS.sid,
+    );
+    expect(result.messagingService).toEqual({
+      state: 'joined',
+      service: APPOINTMENTS,
+    });
+  });
+
+  test('should leave it in no service when the admin chose none', async () => {
+    const provider = fakeProvider();
+    const { service } = buildService([], provider, CUSTOMER_CARE.sid);
+
+    const result = await service.purchase(
+      purchaseOf({ messagingServiceSid: null }),
+      'admin-1',
+    );
+
+    expect(provider.addToMessagingService).not.toHaveBeenCalled();
+    expect(result.messagingService).toEqual({ state: 'none' });
+  });
+
+  test('should leave it in no service when there is no default', async () => {
+    const provider = fakeProvider();
+    const { service } = buildService([], provider);
+
+    const result = await service.purchase(purchaseOf(), 'admin-1');
+
+    expect(provider.addToMessagingService).not.toHaveBeenCalled();
+    expect(result.messagingService).toEqual({ state: 'none' });
+  });
+
+  test.each([
+    ['one with no campaign', NO_CAMPAIGN.sid, 'has no A2P 10DLC campaign'],
+    [
+      'one the account does not have',
+      'MGcccccccccccccccccccccccccccccccc',
+      'no messaging service by that id',
+    ],
+  ])(
+    'should buy nothing when the admin named %s',
+    async (_what, messagingServiceSid, says) => {
+      const provider = fakeProvider({
+        readMessagingService: vi.fn(async (sid: string) =>
+          sid === NO_CAMPAIGN.sid ? NO_CAMPAIGN : null,
+        ),
+      });
+      const { service, rows } = buildService([], provider);
+
+      await expect(
+        service.purchase(purchaseOf({ messagingServiceSid }), 'admin-1'),
+      ).rejects.toMatchObject({
+        statusCode: 400,
+        message: expect.stringContaining(says),
+      });
+      expect(provider.buyNumber).not.toHaveBeenCalled();
+      expect(rows).toEqual([]);
+    },
+  );
+
+  test('should refuse a service for a toll-free number before buying it', async () => {
+    const provider = fakeProvider();
+    const { service } = buildService([], provider);
+
+    await expect(
+      service.purchase(
+        purchaseOf({
+          type: 'TOLL_FREE',
+          messagingServiceSid: CUSTOMER_CARE.sid,
+        }),
+        'admin-1',
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(provider.buyNumber).not.toHaveBeenCalled();
+  });
+
+  test('should not add a toll-free number to the default', async () => {
+    const provider = fakeProvider();
+    const { service } = buildService([], provider, CUSTOMER_CARE.sid);
+
+    const result = await service.purchase(
+      purchaseOf({ type: 'TOLL_FREE' }),
+      'admin-1',
+    );
+
+    expect(provider.readMessagingService).not.toHaveBeenCalled();
+    expect(result.messagingService).toEqual({ state: 'none' });
+  });
+
+  test.each([
+    [
+      'has no campaign',
+      fakeProvider({ readMessagingService: vi.fn(async () => NO_CAMPAIGN) }),
+      {
+        state: 'failed',
+        service: APPOINTMENTS,
+        message: expect.stringContaining('no A2P 10DLC campaign'),
+      },
+    ],
+    [
+      'keeps its incoming texts',
+      fakeProvider({
+        readMessagingService: vi.fn(async () => ({
+          ...CUSTOMER_CARE,
+          campaign: APPROVED,
+          keepsIncomingTexts: true,
+        })),
+      }),
+      {
+        state: 'failed',
+        service: CUSTOMER_CARE,
+        message: expect.stringContaining('incoming texts'),
+      },
+    ],
+    [
+      'is gone from the account',
+      fakeProvider({ readMessagingService: vi.fn(async () => null) }),
+      {
+        state: 'failed',
+        service: null,
+        message: expect.stringContaining('no longer on your Twilio account'),
+      },
+    ],
+    [
+      'cannot be read',
+      fakeProvider({
+        readMessagingService: vi.fn(async () => {
+          throw new TwilioProviderError('Twilio is unreachable');
+        }),
+      }),
+      {
+        state: 'failed',
+        service: null,
+        message: expect.stringContaining('could not be read'),
+      },
+    ],
+  ])(
+    'should still buy the number when the default %s, and say it did not join',
+    async (_what, provider, outcome) => {
+      const { service, rows } = buildService([], provider, CUSTOMER_CARE.sid);
+
+      const result = await service.purchase(purchaseOf(), 'admin-1');
+
+      // A number just sold is in no service, so nothing is asked about it.
+      expect(provider.currentMessagingService).not.toHaveBeenCalled();
+      expect(provider.buyNumber).toHaveBeenCalled();
+      expect(rows).toHaveLength(1);
+      expect(provider.addToMessagingService).not.toHaveBeenCalled();
+      expect(result.messagingService).toEqual(outcome);
+    },
+  );
+
+  test('should answer a number Twilio would not add as bought, with the reason', async () => {
+    const provider = fakeProvider({
+      addToMessagingService: vi.fn(async () => {
+        throw new TwilioProviderError(
+          'Twilio did not add the number to the messaging service: busy',
+        );
+      }),
+    });
+    const { service, auditCreate } = buildService(
+      [],
+      provider,
+      CUSTOMER_CARE.sid,
+    );
+
+    const result = await service.purchase(purchaseOf(), 'admin-1');
+
+    expect(result).toMatchObject({ phoneNumber: NEW_LINE, connected: true });
+    expect(result.messagingService).toEqual({
+      state: 'failed',
+      service: CUSTOMER_CARE,
+      message: expect.stringContaining('busy'),
+    });
+    expect(joinedEntries(auditCreate)).toEqual([]);
+  });
+
+  test('should still try to register a number whose webhooks could not be set', async () => {
+    const provider = fakeProvider({
+      configureNumber: vi.fn(async () => {
+        throw new TwilioProviderError('Twilio is unreachable');
+      }),
+    });
+    const { service } = buildService([], provider, CUSTOMER_CARE.sid);
+
+    const result = await service.purchase(purchaseOf(), 'admin-1');
+
+    expect(result.connected).toBe(false);
+    expect(result.messagingService).toMatchObject({ state: 'joined' });
+  });
+
+  test('should add an imported local number in no service to the service named', async () => {
+    const provider = fakeProvider({
+      readNumberForImport: vi.fn(async () => LOCAL_HELD),
+    });
+    const { service, auditCreate } = buildService([], provider);
+
+    const result = await service.importOwned(
+      importOf({ messagingServiceSid: APPOINTMENTS.sid }),
+      'admin-1',
+    );
+
+    expect(provider.addToMessagingService).toHaveBeenCalledWith(
+      NEW_LINE,
+      APPOINTMENTS.sid,
+    );
+    expect(result.messagingService).toEqual({
+      state: 'joined',
+      service: APPOINTMENTS,
+    });
+    expect(joinedEntries(auditCreate)).toHaveLength(1);
+  });
+
+  test('should leave an imported number in the service it was in, with no audit entry', async () => {
+    const provider = fakeProvider({
+      readNumberForImport: vi.fn(async () => LOCAL_HELD),
+      addToMessagingService: vi.fn(async () => ({
+        state: 'kept' as const,
+        service: APPOINTMENTS,
+      })),
+    });
+    const { service, auditCreate } = buildService(
+      [],
+      provider,
+      CUSTOMER_CARE.sid,
+    );
+
+    const result = await service.importOwned(importOf(), 'admin-1');
+
+    expect(result.messagingService).toEqual({
+      state: 'kept',
+      service: APPOINTMENTS,
+    });
+    expect(joinedEntries(auditCreate)).toEqual([]);
+  });
+
+  test('should not call an unusable default a failure for an imported number in a service', async () => {
+    const provider = fakeProvider({
+      readNumberForImport: vi.fn(async () => LOCAL_HELD),
+      readMessagingService: vi.fn(async () => NO_CAMPAIGN),
+      currentMessagingService: vi.fn(async () => CUSTOMER_CARE),
+    });
+    const { service } = buildService([], provider, NO_CAMPAIGN.sid);
+
+    const result = await service.importOwned(importOf(), 'admin-1');
+
+    expect(result.messagingService).toEqual({
+      state: 'kept',
+      service: CUSTOMER_CARE,
+    });
+    expect(provider.addToMessagingService).not.toHaveBeenCalled();
+  });
+
+  test('should report an unusable default for an imported number in none', async () => {
+    const provider = fakeProvider({
+      readNumberForImport: vi.fn(async () => LOCAL_HELD),
+      readMessagingService: vi.fn(async () => NO_CAMPAIGN),
+    });
+    const { service } = buildService([], provider, NO_CAMPAIGN.sid);
+
+    const result = await service.importOwned(importOf(), 'admin-1');
+
+    expect(result.messagingService).toMatchObject({ state: 'failed' });
+  });
+
+  test('should not read a service for an imported toll-free number', async () => {
+    const provider = fakeProvider();
+    const { service } = buildService([], provider, CUSTOMER_CARE.sid);
+
+    const result = await service.importOwned(importOf(), 'admin-1');
+
+    expect(provider.readMessagingService).not.toHaveBeenCalled();
+    expect(result.messagingService).toEqual({ state: 'none' });
+  });
+});
+
 describe('PhoneNumberService messaging service default', () => {
   test('should list the services with the default', async () => {
     const { service } = buildService([], fakeProvider(), CUSTOMER_CARE.sid);
@@ -1026,6 +1387,146 @@ describe('PhoneNumberService messaging service default', () => {
     await expect(
       service.setDefaultMessagingService(CUSTOMER_CARE.sid, 'admin-1'),
     ).resolves.toEqual({ defaultSid: CUSTOMER_CARE.sid });
+  });
+});
+
+describe('PhoneNumberService.setMessagingService', () => {
+  const listed = phoneRow({ status: 'ACTIVE', userId: 'user-1' });
+
+  test('should move the number, writing the audit entry before Twilio is changed', async () => {
+    const provider = fakeProvider();
+    const { service, auditCreate } = buildService([listed], provider);
+
+    const change = await service.setMessagingService(
+      'phone-1',
+      {
+        messagingServiceSid: APPOINTMENTS.sid,
+        expectedMessagingServiceSid: CUSTOMER_CARE.sid,
+      },
+      'admin-1',
+      '203.0.113.7',
+    );
+
+    expect(change).toEqual({ from: CUSTOMER_CARE, to: APPOINTMENTS });
+    expect(provider.moveToMessagingService).toHaveBeenCalledWith(
+      NEW_LINE,
+      APPOINTMENTS.sid,
+      CUSTOMER_CARE.sid,
+      expect.any(Function),
+    );
+    expect(auditCreate).toHaveBeenCalledWith({
+      action: 'phone_number.messaging_service_changed',
+      entityType: 'PhoneNumber',
+      entityId: 'phone-1',
+      userId: 'admin-1',
+      changes: { phoneNumber: NEW_LINE, from: CUSTOMER_CARE, to: APPOINTMENTS },
+      ipAddress: '203.0.113.7',
+    });
+  });
+
+  test('should answer null for a number that is not listed', async () => {
+    const { service } = buildService([]);
+
+    await expect(
+      service.setMessagingService(
+        'phone-1',
+        {
+          messagingServiceSid: APPOINTMENTS.sid,
+          expectedMessagingServiceSid: null,
+        },
+        'admin-1',
+      ),
+    ).resolves.toBeNull();
+  });
+
+  test.each([
+    ['being released', { status: 'RELEASED' }, 409],
+    ['toll-free', { type: 'TOLL_FREE' }, 400],
+    ['unable to text', { smsEnabled: false }, 400],
+  ])(
+    'should refuse a number that is %s',
+    async (_what, overrides, statusCode) => {
+      const provider = fakeProvider();
+      const { service } = buildService([phoneRow(overrides)], provider);
+
+      await expect(
+        service.setMessagingService(
+          'phone-1',
+          {
+            messagingServiceSid: APPOINTMENTS.sid,
+            expectedMessagingServiceSid: null,
+          },
+          'admin-1',
+        ),
+      ).rejects.toMatchObject({ statusCode });
+      expect(provider.moveToMessagingService).not.toHaveBeenCalled();
+    },
+  );
+
+  test('should refuse a service whose campaign registers nothing, and change nothing', async () => {
+    const provider = fakeProvider({
+      readMessagingService: vi.fn(async () => ({
+        ...APPOINTMENTS,
+        campaign: null,
+        keepsIncomingTexts: false,
+      })),
+    });
+    const { service, auditCreate } = buildService([listed], provider);
+
+    await expect(
+      service.setMessagingService(
+        'phone-1',
+        {
+          messagingServiceSid: APPOINTMENTS.sid,
+          expectedMessagingServiceSid: null,
+        },
+        'admin-1',
+      ),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(provider.moveToMessagingService).not.toHaveBeenCalled();
+    expect(auditCreate).not.toHaveBeenCalled();
+  });
+
+  test('should let a single number join a service that keeps its incoming texts', async () => {
+    const provider = fakeProvider({
+      readMessagingService: vi.fn(async () => ({
+        ...APPOINTMENTS,
+        campaign: APPROVED,
+        keepsIncomingTexts: true,
+      })),
+    });
+    const { service } = buildService([listed], provider);
+
+    await expect(
+      service.setMessagingService(
+        'phone-1',
+        {
+          messagingServiceSid: APPOINTMENTS.sid,
+          expectedMessagingServiceSid: null,
+        },
+        'admin-1',
+      ),
+    ).resolves.toEqual({ from: null, to: APPOINTMENTS });
+  });
+
+  test('should pass on Twilio’s refusal of a stale move', async () => {
+    const provider = fakeProvider({
+      moveToMessagingService: vi.fn(async () => {
+        throw new TwilioProviderError('moved since you opened it', 409);
+      }),
+    });
+    const { service } = buildService([listed], provider);
+
+    await expect(
+      service.setMessagingService(
+        'phone-1',
+        {
+          messagingServiceSid: APPOINTMENTS.sid,
+          expectedMessagingServiceSid: null,
+        },
+        'admin-1',
+      ),
+    ).rejects.toMatchObject({ statusCode: 409 });
   });
 });
 

@@ -11,6 +11,7 @@ import type {
   PhoneNumberResponse,
   PurchasePhoneNumber,
   SearchAvailableNumbers,
+  SetMessagingService,
   UpdatePhoneNumber,
 } from '@repo/dto';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -24,6 +25,7 @@ import {
   reconnectPhoneNumber,
   releasePhoneNumber,
   searchAvailableNumbers,
+  setPhoneNumberMessagingService,
   updatePhoneNumber,
 } from '@/lib/api/admin';
 import { ApiError } from '@/lib/api/client';
@@ -428,6 +430,26 @@ export function usePhoneNumberMutations() {
     }
   }, []);
 
+  const setMessagingService = useCallback(
+    async (id: string, data: SetMessagingService) => {
+      try {
+        setIsLoading(true);
+        setError(null);
+        return await setPhoneNumberMessagingService(id, data);
+      } catch (err) {
+        const error =
+          err instanceof Error
+            ? err
+            : new Error('Failed to change the messaging service');
+        setError(error);
+        throw error;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [],
+  );
+
   const release = useCallback(async (id: string) => {
     try {
       setIsLoading(true);
@@ -454,6 +476,7 @@ export function usePhoneNumberMutations() {
     importNumber,
     update,
     reconnect,
+    setMessagingService,
     release,
     clearError,
   };

@@ -1,11 +1,17 @@
 'use client';
 
-import type { PhoneNumberConnection, PhoneNumberOwner } from '@repo/dto';
+import type {
+  MessagingServiceName,
+  PhoneNumberConnection,
+  PhoneNumberOwner,
+  PhoneNumberResponse,
+} from '@repo/dto';
 import { ArrowLeft, Loader2, RefreshCw } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { type ReactNode, useEffect, useState } from 'react';
 import { CapabilityBadges } from '@/components/admin/phone-numbers/CapabilityBadges';
+import { ChangeMessagingServiceDialog } from '@/components/admin/phone-numbers/ChangeMessagingServiceDialog';
 import { MoveNumberDialog } from '@/components/admin/phone-numbers/MoveNumberDialog';
 import { ReleaseNumberDialog } from '@/components/admin/phone-numbers/ReleaseNumberDialog';
 import { Badge } from '@/components/ui/badge';
@@ -33,8 +39,9 @@ import {
   textingNoteText,
 } from '@/lib/phone-numbers/number-terms';
 import { ownerOf } from '@/lib/phone-numbers/owner-selection';
+import { textingStatus } from '@/lib/phone-numbers/texting-registration';
 
-type OpenDialog = 'move' | 'reserve' | 'release' | null;
+type OpenDialog = 'move' | 'reserve' | 'release' | 'messaging' | null;
 
 export default function PhoneNumberDetailPage() {
   const params = useParams();
@@ -56,6 +63,7 @@ export default function PhoneNumberDetailPage() {
   const {
     update,
     reconnect,
+    setMessagingService,
     release,
     isLoading: isMutating,
     error: mutationError,
@@ -128,6 +136,24 @@ export default function PhoneNumberDetailPage() {
       () => reconnect(phoneNumberId),
       'Reconnected: the number’s webhooks point here again.',
     );
+    await recheckConnection();
+  };
+
+  const texting =
+    phoneNumber && connection?.state === 'checked'
+      ? textingStatus(phoneNumber, connection)
+      : null;
+
+  const handleSetMessagingService = async (service: MessagingServiceName) => {
+    await apply(
+      () =>
+        setMessagingService(phoneNumberId, {
+          messagingServiceSid: service.sid,
+          expectedMessagingServiceSid: texting?.current?.sid ?? null,
+        }),
+      `It now texts through “${service.friendlyName}”.`,
+    );
+    // Moved or not, the card says where Twilio has the number now.
     await recheckConnection();
   };
 
@@ -387,8 +413,8 @@ export default function PhoneNumberDetailPage() {
                 trunk that would take them instead. Use it when a purchase or an
                 import could not finish setting the number up, after the
                 deployment moved to a new address, or after somebody changed the
-                number in the Twilio Console. It does not change messaging
-                services.
+                number in the Twilio Console. It does not change the number’s
+                messaging service; the Texting card does.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -421,6 +447,19 @@ export default function PhoneNumberDetailPage() {
             </CardContent>
           </Card>
 
+          {!releaseUnfinished && (
+            <TextingCard
+              phoneNumber={phoneNumber}
+              connection={connection}
+              status={texting}
+              isChecking={isCheckingConnection}
+              error={connectionError}
+              disabled={frozen}
+              onChange={() => openOne('messaging')}
+              onRecheck={() => void recheckConnection()}
+            />
+          )}
+
           <Card className="border-destructive/50">
             <CardHeader>
               <CardTitle className="text-destructive">Release</CardTitle>
@@ -452,6 +491,19 @@ export default function PhoneNumberDetailPage() {
         toReserve={openDialog === 'reserve'}
         onClose={closeDialog}
         onConfirm={(owner) => void handleMove(owner)}
+        isLoading={isMutating}
+        error={mutationError?.message ?? null}
+      />
+
+      <ChangeMessagingServiceDialog
+        phoneNumber={
+          openDialog === 'messaging' && phoneNumber
+            ? phoneNumber.phoneNumber
+            : null
+        }
+        current={texting?.current ?? null}
+        onClose={closeDialog}
+        onConfirm={(service) => void handleSetMessagingService(service)}
         isLoading={isMutating}
         error={mutationError?.message ?? null}
       />
@@ -526,12 +578,105 @@ function ConnectionStatus({
           </ul>
         </div>
       )}
-      {connection.texting && (
+      {connection.texting?.kind === 'service-takes-texts' && (
         <p className="text-sm text-amber-700 dark:text-amber-400">
           {textingNoteText(connection.texting)}
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * Which messaging service, and so which A2P 10DLC campaign, the number
+ * texts through, read with the connection check.
+ */
+function TextingCard({
+  phoneNumber,
+  connection,
+  status,
+  isChecking,
+  error,
+  disabled,
+  onChange,
+  onRecheck,
+}: {
+  phoneNumber: PhoneNumberResponse;
+  connection: PhoneNumberConnection | null;
+  status: ReturnType<typeof textingStatus> | null;
+  isChecking: boolean;
+  error: Error | null;
+  disabled: boolean;
+  onChange: () => void;
+  onRecheck: () => void;
+}) {
+  if (!phoneNumber.smsEnabled) {
+    return null;
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Texting</CardTitle>
+        <CardDescription>
+          US carriers deliver a local number’s texts only when it is a sender of
+          a messaging service whose A2P 10DLC campaign is approved. Brands and
+          campaigns are registered in the Twilio Console.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isChecking && !status ? (
+          <p className="flex items-center text-sm text-muted-foreground">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Checking with Twilio...
+          </p>
+        ) : status ? (
+          <div className="space-y-1" role="status">
+            <Badge
+              variant={status.tone === 'blocked' ? 'destructive' : 'secondary'}
+            >
+              {status.tone === 'registered'
+                ? 'Registered'
+                : status.tone === 'blocked'
+                  ? 'Texts blocked'
+                  : 'Not checked here'}
+            </Badge>
+            <p className="text-sm font-medium">{status.headline}</p>
+            {status.details.map((detail) => (
+              <p
+                key={detail}
+                className={
+                  status.tone === 'blocked'
+                    ? 'text-sm text-amber-700 dark:text-amber-400'
+                    : 'text-sm text-muted-foreground'
+                }
+              >
+                {detail}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {connection?.state === 'not-in-account'
+              ? 'This Twilio account does not hold the number.'
+              : `Could not check with Twilio${error ? `: ${error.message}` : '.'}`}
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {status?.action && (
+            <Button variant="outline" onClick={onChange} disabled={disabled}>
+              {status.action === 'add'
+                ? 'Add to a campaign'
+                : 'Change campaign'}
+            </Button>
+          )}
+          <Button variant="ghost" onClick={onRecheck} disabled={isChecking}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Check again
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

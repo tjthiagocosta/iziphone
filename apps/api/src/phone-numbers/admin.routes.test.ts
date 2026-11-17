@@ -309,6 +309,39 @@ describe('adminPhoneNumberRoutes', () => {
     reconnect.mockRestore();
   });
 
+  test('should pass a purchase that joins no messaging service through as null', async () => {
+    await app.inject({
+      method: 'POST',
+      url: '/purchase',
+      payload: {
+        phoneNumber: '+15555550101',
+        type: 'LOCAL',
+        messagingServiceSid: null,
+      },
+    });
+
+    expect(PhoneNumberService.prototype.purchase).toHaveBeenCalledWith(
+      expect.objectContaining({ messagingServiceSid: null }),
+      'user-1',
+      expect.any(String),
+    );
+  });
+
+  test('should refuse a messaging service for a toll-free purchase before asking Twilio', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/purchase',
+      payload: {
+        phoneNumber: '+18005550101',
+        type: 'TOLL_FREE',
+        messagingServiceSid: CUSTOMER_CARE_SID,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(PhoneNumberService.prototype.purchase).not.toHaveBeenCalled();
+  });
+
   test('should list the account’s messaging services with the default', async () => {
     const messagingServices = vi
       .spyOn(PhoneNumberService.prototype, 'messagingServices')
@@ -353,6 +386,51 @@ describe('adminPhoneNumberRoutes', () => {
     expect(refused.statusCode).toBe(400);
     expect(setDefault).toHaveBeenCalledTimes(1);
     setDefault.mockRestore();
+  });
+
+  test('should put a listed number in a messaging service and 404 on an unknown one', async () => {
+    const change = {
+      from: null,
+      to: { sid: CUSTOMER_CARE_SID, friendlyName: 'Customer Care' },
+    };
+    const setMessagingService = vi
+      .spyOn(PhoneNumberService.prototype, 'setMessagingService')
+      .mockResolvedValueOnce(change)
+      .mockResolvedValueOnce(null);
+    const payload = {
+      messagingServiceSid: CUSTOMER_CARE_SID,
+      expectedMessagingServiceSid: null,
+    };
+
+    const found = await app.inject({
+      method: 'PUT',
+      url: '/phone-1/messaging-service',
+      payload,
+    });
+    const missing = await app.inject({
+      method: 'PUT',
+      url: '/missing-phone/messaging-service',
+      payload,
+    });
+    const unnamed = await app.inject({
+      method: 'PUT',
+      url: '/phone-1/messaging-service',
+      payload: { messagingServiceSid: CUSTOMER_CARE_SID },
+    });
+
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toEqual(change);
+    expect(setMessagingService).toHaveBeenCalledWith(
+      'phone-1',
+      payload,
+      'user-1',
+      expect.any(String),
+    );
+    expect(missing.statusCode).toBe(404);
+    // Without the service the admin saw, a move could undo someone else's.
+    expect(unnamed.statusCode).toBe(400);
+    expect(setMessagingService).toHaveBeenCalledTimes(2);
+    setMessagingService.mockRestore();
   });
 
   test('should list the numbers the account holds that are not in the list', async () => {
@@ -526,6 +604,7 @@ function purchased(
     createdAt: '2026-03-20T00:00:00.000Z',
     updatedAt: '2026-03-20T00:00:00.000Z',
     connected: true,
+    messagingService: { state: 'none' },
     ...overrides,
   };
 }

@@ -34,18 +34,32 @@ export const MessagingServiceSidSchema = z
   .string()
   .regex(/^MG[0-9a-fA-F]{32}$/, 'Not a Twilio messaging service id');
 
-export const PurchasePhoneNumberSchema = z.object({
-  phoneNumber: E164PhoneNumberSchema,
-  country: z
-    .literal(SUPPORTED_NUMBER_COUNTRY)
-    .default(SUPPORTED_NUMBER_COUNTRY),
-  type: PhoneNumberTypeSchema,
-  label: z.string().trim().max(50).optional(),
-  /** Left out, the number goes into the reserve. */
-  owner: PhoneNumberOwnerSchema.optional(),
-  /** Only means something for a department; its first number is primary anyway. */
-  isPrimary: z.boolean().default(false),
-});
+/**
+ * The messaging service a new local number joins, whose A2P 10DLC campaign
+ * registers its texts. Left out, the deployment's default applies; `null`
+ * joins none.
+ */
+const JoinMessagingServiceSchema = MessagingServiceSidSchema.nullable();
+
+export const PurchasePhoneNumberSchema = z
+  .object({
+    phoneNumber: E164PhoneNumberSchema,
+    country: z
+      .literal(SUPPORTED_NUMBER_COUNTRY)
+      .default(SUPPORTED_NUMBER_COUNTRY),
+    type: PhoneNumberTypeSchema,
+    label: z.string().trim().max(50).optional(),
+    /** Left out, the number goes into the reserve. */
+    owner: PhoneNumberOwnerSchema.optional(),
+    /** Only means something for a department; its first number is primary anyway. */
+    isPrimary: z.boolean().default(false),
+    messagingServiceSid: JoinMessagingServiceSchema.optional(),
+  })
+  .refine((value) => !value.messagingServiceSid || value.type === 'LOCAL', {
+    // A toll-free number is verified on its own, not through a campaign.
+    message: 'Only a local number joins a messaging service here.',
+    path: ['messagingServiceSid'],
+  });
 
 /**
  * Brings a number the Twilio account already holds into the list. It names
@@ -60,11 +74,29 @@ export const ImportPhoneNumberSchema = z
     owner: PhoneNumberOwnerSchema.optional(),
     /** Only for a department; its first number is primary anyway. */
     isPrimary: z.boolean().default(false),
+    /**
+     * Joined only by a local number in no messaging service: one already in
+     * a service stays in it.
+     */
+    messagingServiceSid: JoinMessagingServiceSchema.optional(),
   })
   .refine((value) => !value.isPrimary || value.owner?.type === 'department', {
     message: 'Only a number a department holds can be its primary number.',
     path: ['isPrimary'],
   });
+
+/**
+ * Puts a listed local number in a messaging service, or moves it there from
+ * the one it is in.
+ */
+export const SetMessagingServiceSchema = z.object({
+  messagingServiceSid: MessagingServiceSidSchema,
+  /**
+   * The service the admin saw the number in (`null` for none). The change is
+   * refused once the number is in another one.
+   */
+  expectedMessagingServiceSid: MessagingServiceSidSchema.nullable(),
+});
 
 /** The service new local numbers join; `null` for none. */
 export const UpdateDefaultMessagingServiceSchema = z.object({
@@ -229,12 +261,35 @@ export const DefaultMessagingServiceResponseSchema = z.object({
   defaultSid: z.string().nullable(),
 });
 
+/** What happened to a number's messaging service when it was bought or added. */
+export const MessagingServiceJoinSchema = z.discriminatedUnion('state', [
+  /** It joined this service, whose campaign registers its texts. */
+  z.object({ state: z.literal('joined'), service: MessagingServiceNameSchema }),
+  /** It was a sender of this service already, and stays one. */
+  z.object({ state: z.literal('kept'), service: MessagingServiceNameSchema }),
+  /** It joined none: none was asked for, there is no default, or it cannot text through one. */
+  z.object({ state: z.literal('none') }),
+  /** It was to join a service and did not; its page can add it. */
+  z.object({
+    state: z.literal('failed'),
+    service: MessagingServiceNameSchema.nullable(),
+    message: z.string(),
+  }),
+]);
+
+/** A number's move into a messaging service, from the one it was in. */
+export const MessagingServiceChangeSchema = z.object({
+  from: MessagingServiceNameSchema.nullable(),
+  to: MessagingServiceNameSchema,
+});
+
 export const PurchasedPhoneNumberSchema = PhoneNumberResponseSchema.extend({
   /**
    * Whether Twilio took the number's call and text settings. When it did
    * not, the number is still bought and listed, and Reconnect sets them.
    */
   connected: z.boolean(),
+  messagingService: MessagingServiceJoinSchema,
 });
 
 /**
@@ -264,8 +319,9 @@ export const ReconnectReasonSchema = z.enum([
 
 /**
  * Why texts to or from a number may not arrive although its webhooks are
- * right, which Reconnect does not change: messaging services are managed in
- * the Twilio Console.
+ * right, which Reconnect does not change. A number's messaging service is
+ * chosen on its page; the service's own settings and its campaign are
+ * managed in the Twilio Console.
  */
 export const TextingNoteSchema = z.discriminatedUnion('kind', [
   /** The service sends its senders' inbound texts to its own address, not the number's. */
@@ -302,6 +358,11 @@ export const PhoneNumberConnectionSchema = z.discriminatedUnion('state', [
     /** Empty when Twilio sends the number's calls and texts here. */
     needsReconnect: z.array(ReconnectReasonSchema),
     texting: TextingNoteSchema.nullable(),
+    /**
+     * The messaging service the number texts through; null when it is in
+     * none, or when the services could not be read (`texting` says which).
+     */
+    messagingService: MessagingServiceOptionSchema.nullable(),
   }),
 ]);
 
@@ -418,6 +479,7 @@ export type AvailableNumbersResponse = z.infer<
   typeof AvailableNumbersResponseSchema
 >;
 export type MessagingServiceSid = z.infer<typeof MessagingServiceSidSchema>;
+export type SetMessagingService = z.infer<typeof SetMessagingServiceSchema>;
 export type UpdateDefaultMessagingService = z.infer<
   typeof UpdateDefaultMessagingServiceSchema
 >;
@@ -431,6 +493,10 @@ export type MessagingServicesResponse = z.infer<
 >;
 export type DefaultMessagingServiceResponse = z.infer<
   typeof DefaultMessagingServiceResponseSchema
+>;
+export type MessagingServiceJoin = z.infer<typeof MessagingServiceJoinSchema>;
+export type MessagingServiceChange = z.infer<
+  typeof MessagingServiceChangeSchema
 >;
 
 // ---------------------------------------------------------------------------

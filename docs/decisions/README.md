@@ -30,6 +30,7 @@ would otherwise ask "why not the obvious way?".
 | [0015](0015-twilio-signatures-are-checked-unless-a-development-stack-says-otherwise.md) | Twilio signatures are checked unless a development stack says otherwise | 2026-10-02 |
 | [0016](0016-a-number-is-released-only-from-the-reserve.md) | A number is released only from the reserve | 2026-09-23 |
 | [0017](0017-adding-a-number-the-account-holds-takes-it-over.md) | Adding a number the account holds takes it over | 2026-10-02 |
+| [0018](0018-an-admin-chooses-the-campaign-a-number-texts-through.md) | An admin chooses the campaign a number texts through | 2026-11-17 |
 
 ## Writing one
 

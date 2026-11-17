@@ -3,6 +3,7 @@ import {
   defaultRefusal,
   ImportPhoneNumberSchema,
   joinRefusal,
+  MessagingServiceJoinSchema,
   MessagingServicesResponseSchema,
   OwnedPhoneNumberSchema,
   PhoneNumberConnectionSchema,
@@ -11,6 +12,7 @@ import {
   PurchasedPhoneNumberSchema,
   PurchasePhoneNumberSchema,
   SearchAvailableNumbersSchema,
+  SetMessagingServiceSchema,
   UpdateDefaultMessagingServiceSchema,
   UpdatePhoneNumberSchema,
 } from './phone-number.schemas.js';
@@ -66,6 +68,44 @@ describe('PurchasePhoneNumberSchema', () => {
       }).success,
     ).toBe(false);
   });
+
+  test('tells a messaging service left out from none, and takes one only for a local number', () => {
+    const local = { type: 'LOCAL', phoneNumber: '+15555550100' };
+
+    expect(PurchasePhoneNumberSchema.parse(local)).not.toHaveProperty(
+      'messagingServiceSid',
+    );
+    expect(
+      PurchasePhoneNumberSchema.parse({ ...local, messagingServiceSid: null })
+        .messagingServiceSid,
+    ).toBeNull();
+    expect(
+      PurchasePhoneNumberSchema.parse({
+        ...local,
+        messagingServiceSid: CUSTOMER_CARE_SID,
+      }).messagingServiceSid,
+    ).toBe(CUSTOMER_CARE_SID);
+    expect(
+      PurchasePhoneNumberSchema.safeParse({
+        ...local,
+        messagingServiceSid: 'PNaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      }).success,
+    ).toBe(false);
+    expect(
+      PurchasePhoneNumberSchema.safeParse({
+        type: 'TOLL_FREE',
+        phoneNumber: '+18005550100',
+        messagingServiceSid: CUSTOMER_CARE_SID,
+      }).success,
+    ).toBe(false);
+    expect(
+      PurchasePhoneNumberSchema.safeParse({
+        type: 'TOLL_FREE',
+        phoneNumber: '+18005550100',
+        messagingServiceSid: null,
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe('ImportPhoneNumberSchema', () => {
@@ -106,6 +146,12 @@ describe('PhoneNumberConnectionSchema', () => {
         texting: {
           kind: 'service-takes-texts',
           service: { sid: 'MGaaaa', friendlyName: 'Front desk texts' },
+        },
+        messagingService: {
+          sid: CUSTOMER_CARE_SID,
+          friendlyName: 'Front desk texts',
+          campaign: APPROVED,
+          keepsIncomingTexts: true,
         },
       }),
     ).toMatchObject({ needsReconnect: ['voice-application'] });
@@ -291,12 +337,49 @@ describe('PurchasedPhoneNumberSchema', () => {
       createdAt: '2026-04-21T12:00:00.000Z',
       updatedAt: '2026-04-21T12:00:00.000Z',
     };
+    const none = { state: 'none' };
 
     expect(
-      PurchasedPhoneNumberSchema.parse({ ...bought, connected: false })
-        .connected,
+      PurchasedPhoneNumberSchema.parse({
+        ...bought,
+        connected: false,
+        messagingService: none,
+      }).connected,
     ).toBe(false);
-    expect(PurchasedPhoneNumberSchema.safeParse(bought).success).toBe(false);
+    expect(
+      PurchasedPhoneNumberSchema.safeParse({
+        ...bought,
+        messagingService: none,
+      }).success,
+    ).toBe(false);
+    expect(
+      PurchasedPhoneNumberSchema.safeParse({ ...bought, connected: true })
+        .success,
+    ).toBe(false);
+  });
+});
+
+describe('MessagingServiceJoinSchema', () => {
+  test('names the service it joined or kept, and why a join failed', () => {
+    const service = { sid: CUSTOMER_CARE_SID, friendlyName: 'Customer Care' };
+
+    expect(
+      MessagingServiceJoinSchema.parse({ state: 'joined', service }),
+    ).toEqual({ state: 'joined', service });
+    expect(
+      MessagingServiceJoinSchema.parse({
+        state: 'failed',
+        service: null,
+        message: 'The default messaging service could not be read.',
+      }),
+    ).toMatchObject({ state: 'failed', service: null });
+    expect(
+      MessagingServiceJoinSchema.safeParse({ state: 'kept' }).success,
+    ).toBe(false);
+    expect(
+      MessagingServiceJoinSchema.safeParse({ state: 'failed', service })
+        .success,
+    ).toBe(false);
   });
 });
 
@@ -319,6 +402,28 @@ describe('MessagingServicesResponseSchema', () => {
           },
         ],
         defaultSid: null,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('SetMessagingServiceSchema', () => {
+  test('requires the service the admin saw the number in, null for none', () => {
+    expect(
+      SetMessagingServiceSchema.safeParse({
+        messagingServiceSid: CUSTOMER_CARE_SID,
+        expectedMessagingServiceSid: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      SetMessagingServiceSchema.safeParse({
+        messagingServiceSid: CUSTOMER_CARE_SID,
+      }).success,
+    ).toBe(false);
+    expect(
+      SetMessagingServiceSchema.safeParse({
+        messagingServiceSid: null,
+        expectedMessagingServiceSid: CUSTOMER_CARE_SID,
       }).success,
     ).toBe(false);
   });

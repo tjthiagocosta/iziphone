@@ -348,6 +348,7 @@ describe('TwilioNumberManagementService', () => {
       state: 'checked',
       needsReconnect: ['voice-url'],
       texting: null,
+      messagingService: null,
     });
 
     await service.configureNumber(OWNED_LINE);
@@ -1544,6 +1545,17 @@ describe('TwilioNumberManagementService', () => {
             friendlyName: 'Customer Care',
           },
         },
+        messagingService: {
+          sid: 'MGaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          friendlyName: 'Customer Care',
+          campaign: {
+            status: 'approved',
+            twilioStatus: 'VERIFIED',
+            useCase: 'CUSTOMER_CARE',
+            description: 'Customer Care replies',
+          },
+          keepsIncomingTexts: true,
+        },
       },
     );
     await expect(
@@ -1658,7 +1670,10 @@ describe('TwilioNumberManagementService messaging services', () => {
       messaging,
     }).checkConnection(OWNED_LINE, 'LOCAL');
 
-    expect(connection).toMatchObject({ texting: { kind: 'unknown' } });
+    expect(connection).toMatchObject({
+      texting: { kind: 'unknown' },
+      messagingService: null,
+    });
   });
 
   test('should list every service with its campaign and whether it keeps incoming texts', async () => {
@@ -1713,6 +1728,169 @@ describe('TwilioNumberManagementService messaging services', () => {
       service.readMessagingService('MGcccccccccccccccccccccccccccccccc'),
     ).resolves.toBeNull();
   });
+
+  test('should say which service a number sends for, null for none', async () => {
+    const service = buildService({
+      incomingPhoneNumbers: ownedNumbers(),
+      messaging: twoServices(),
+    });
+
+    await expect(service.currentMessagingService(OWNED_LINE)).resolves.toEqual({
+      sid: CUSTOMER_CARE,
+      friendlyName: 'Customer Care',
+    });
+  });
+
+  test('should add a number that is in no service', async () => {
+    const messaging = twoServices({ customerCare: { senders: [] } });
+    const service = buildService({
+      incomingPhoneNumbers: ownedNumbers(),
+      messaging,
+    });
+
+    await expect(
+      service.addToMessagingService(OWNED_LINE, APPOINTMENTS),
+    ).resolves.toEqual({ state: 'joined' });
+    expect(messaging.sendersOf(APPOINTMENTS)).toEqual([OWNED_LINE]);
+  });
+
+  test('should keep a number in the service it is in already', async () => {
+    const messaging = twoServices();
+    const service = buildService({
+      incomingPhoneNumbers: ownedNumbers(),
+      messaging,
+    });
+
+    await expect(
+      service.addToMessagingService(OWNED_LINE, APPOINTMENTS),
+    ).resolves.toEqual({
+      state: 'kept',
+      service: { sid: CUSTOMER_CARE, friendlyName: 'Customer Care' },
+    });
+    expect(messaging.sendersOf(CUSTOMER_CARE)).toEqual([OWNED_LINE]);
+    expect(messaging.sendersOf(APPOINTMENTS)).toEqual([]);
+  });
+
+  test('should take an addition whose answer was lost but that Twilio made', async () => {
+    const messaging = twoServices({ customerCare: { senders: [] } });
+    const create = messaging.v1.services(APPOINTMENTS).phoneNumbers.create;
+    const add = create.getMockImplementation();
+    create.mockImplementationOnce(async (params) => {
+      await add?.(params);
+      throw new Error('socket hang up');
+    });
+
+    await expect(
+      buildService({
+        incomingPhoneNumbers: ownedNumbers(),
+        messaging,
+      }).addToMessagingService(OWNED_LINE, APPOINTMENTS),
+    ).resolves.toEqual({ state: 'joined' });
+  });
+
+  test('should move a number, writing it down before anything changes', async () => {
+    const messaging = twoServices();
+    const service = buildService({
+      incomingPhoneNumbers: ownedNumbers(),
+      messaging,
+    });
+    const beforeChange = vi.fn(async () => {
+      expect(messaging.sendersOf(CUSTOMER_CARE)).toEqual([OWNED_LINE]);
+    });
+
+    await expect(
+      service.moveToMessagingService(
+        OWNED_LINE,
+        APPOINTMENTS,
+        CUSTOMER_CARE,
+        beforeChange,
+      ),
+    ).resolves.toEqual({
+      from: { sid: CUSTOMER_CARE, friendlyName: 'Customer Care' },
+      changed: true,
+    });
+    expect(beforeChange).toHaveBeenCalledWith({
+      sid: CUSTOMER_CARE,
+      friendlyName: 'Customer Care',
+    });
+    expect(messaging.sendersOf(CUSTOMER_CARE)).toEqual([]);
+    expect(messaging.sendersOf(APPOINTMENTS)).toEqual([OWNED_LINE]);
+  });
+
+  test('should refuse a move when the number is not in the service the admin saw', async () => {
+    const messaging = twoServices();
+    const beforeChange = vi.fn();
+
+    await expect(
+      buildService({
+        incomingPhoneNumbers: ownedNumbers(),
+        messaging,
+      }).moveToMessagingService(OWNED_LINE, APPOINTMENTS, null, beforeChange),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(beforeChange).not.toHaveBeenCalled();
+    expect(messaging.sendersOf(CUSTOMER_CARE)).toEqual([OWNED_LINE]);
+  });
+
+  test('should change nothing when the number is in that service already', async () => {
+    const messaging = twoServices();
+    const beforeChange = vi.fn();
+
+    await expect(
+      buildService({
+        incomingPhoneNumbers: ownedNumbers(),
+        messaging,
+      }).moveToMessagingService(
+        OWNED_LINE,
+        CUSTOMER_CARE,
+        CUSTOMER_CARE,
+        beforeChange,
+      ),
+    ).resolves.toMatchObject({ changed: false });
+    expect(beforeChange).not.toHaveBeenCalled();
+    expect(
+      messaging.v1.services(CUSTOMER_CARE).phoneNumbers,
+    ).not.toHaveBeenCalled();
+  });
+
+  test('should put the number back when the new service refuses it', async () => {
+    const messaging = twoServices({ appointments: { refusesSenders: true } });
+
+    await expect(
+      buildService({
+        incomingPhoneNumbers: ownedNumbers(),
+        messaging,
+      }).moveToMessagingService(OWNED_LINE, APPOINTMENTS, CUSTOMER_CARE),
+    ).rejects.toThrow('It is back in "Customer Care", as before.');
+    expect(messaging.sendersOf(CUSTOMER_CARE)).toEqual([OWNED_LINE]);
+  });
+
+  test('should say the number is in no service when it cannot be put back', async () => {
+    const messaging = twoServices({
+      customerCare: { refusesSenders: true },
+      appointments: { refusesSenders: true },
+    });
+
+    await expect(
+      buildService({
+        incomingPhoneNumbers: ownedNumbers(),
+        messaging,
+      }).moveToMessagingService(OWNED_LINE, APPOINTMENTS, CUSTOMER_CARE),
+    ).rejects.toThrow('it is in no messaging service now');
+    expect(messaging.sendersOf(CUSTOMER_CARE)).toEqual([]);
+  });
+
+  test('should change nothing when the services cannot be read', async () => {
+    const messaging = twoServices();
+    messaging.v1.services.list.mockRejectedValueOnce(new Error('Forbidden'));
+
+    await expect(
+      buildService({
+        incomingPhoneNumbers: ownedNumbers(),
+        messaging,
+      }).moveToMessagingService(OWNED_LINE, APPOINTMENTS, CUSTOMER_CARE),
+    ).rejects.toMatchObject({ statusCode: 503 });
+    expect(messaging.sendersOf(CUSTOMER_CARE)).toEqual([OWNED_LINE]);
+  });
 });
 
 interface FakeMessagingService {
@@ -1723,14 +1901,33 @@ interface FakeMessagingService {
   senders: string[];
   /** The campaign's status at Twilio: VERIFIED unless a test says otherwise, null for none. */
   campaignStatus?: string | null;
+  /** Twilio refuses every number added to it. */
+  refusesSenders?: boolean;
 }
 
 /**
- * The account's messaging services with their senders and campaigns. Each
- * service answers with the same context every time, so a test can read what
- * was asked of it.
+ * The account's messaging services, holding their senders the way Twilio
+ * does: one service per number, added and removed by the number's `PN` sid.
+ * `sendersOf` reads them back after a test changed them.
  */
-function buildMessagingResource(services: FakeMessagingService[]) {
+function buildMessagingResource(
+  services: FakeMessagingService[],
+  numbersBySid: Record<string, string> = { [OWNED_SID]: OWNED_LINE },
+) {
+  const senders = new Map(
+    services.map((service) => [service.sid, [...service.senders]]),
+  );
+  const phoneOf = (numberSid: string) => {
+    const phoneNumber = numbersBySid[numberSid];
+
+    if (!phoneNumber) {
+      throw Object.assign(new Error('The requested resource was not found'), {
+        code: 20404,
+        status: 404,
+      });
+    }
+    return phoneNumber;
+  };
   const contexts = new Map<string, ReturnType<typeof contextOf>>();
   const contextOf = (sid: string) => {
     const service = services.find((candidate) => candidate.sid === sid);
@@ -1747,15 +1944,50 @@ function buildMessagingResource(services: FakeMessagingService[]) {
         const {
           senders: _senders,
           campaignStatus: _campaignStatus,
+          refusesSenders: _refusesSenders,
           ...fields
         } = service;
         return fields;
       }),
-      phoneNumbers: {
-        list: vi.fn(async () =>
-          (service?.senders ?? []).map((phoneNumber) => ({ phoneNumber })),
-        ),
-      },
+      phoneNumbers: Object.assign(
+        vi.fn((numberSid: string) => ({
+          remove: vi.fn(async () => {
+            const phoneNumber = phoneOf(numberSid);
+
+            senders.set(
+              sid,
+              (senders.get(sid) ?? []).filter((held) => held !== phoneNumber),
+            );
+            return true;
+          }),
+        })),
+        {
+          list: vi.fn(async () =>
+            (senders.get(sid) ?? []).map((phoneNumber) => ({ phoneNumber })),
+          ),
+          create: vi.fn(
+            async ({ phoneNumberSid }: { phoneNumberSid: string }) => {
+              const phoneNumber = phoneOf(phoneNumberSid);
+
+              if (service?.refusesSenders) {
+                throw new Error(
+                  'Phone number is already in use by another service',
+                );
+              }
+              if (
+                [...senders.values()].some((held) => held.includes(phoneNumber))
+              ) {
+                throw new Error(
+                  'Phone Number or Short Code is already in the Messaging Service',
+                );
+              }
+
+              senders.set(sid, [...(senders.get(sid) ?? []), phoneNumber]);
+              return { sid: phoneNumberSid, phoneNumber };
+            },
+          ),
+        },
+      ),
       usAppToPerson: {
         list: vi.fn(async () => {
           const campaignStatus =
@@ -1791,6 +2023,7 @@ function buildMessagingResource(services: FakeMessagingService[]) {
             ({
               senders: _senders,
               campaignStatus: _campaignStatus,
+              refusesSenders: _refusesSenders,
               ...service
             }) => service,
           ),
@@ -1798,7 +2031,10 @@ function buildMessagingResource(services: FakeMessagingService[]) {
     },
   );
 
-  return { v1: { services: servicesResource } };
+  return {
+    v1: { services: servicesResource },
+    sendersOf: (sid: string) => senders.get(sid) ?? [],
+  };
 }
 
 function buildPricingResource(fetch: Mock): TwilioClientLike['pricing'] {

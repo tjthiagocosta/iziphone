@@ -44,6 +44,14 @@ export type AuditAction =
   | 'phone_number.reconnected'
   /** Twilio refused a release; says whether the number went back to the reserve. */
   | 'phone_number.release_failed'
+  /** A number just bought or added joined a messaging service (`from` null, `to`). */
+  | 'phone_number.messaging_service_joined'
+  /**
+   * An admin put the number in a messaging service from its page. Written
+   * before Twilio is changed, naming the service it leaves (`from`, null for
+   * none) and the one it joins (`to`), so it stands when the move then fails.
+   */
+  | 'phone_number.messaging_service_changed'
   | 'settings.recording_retention_updated'
   /** The messaging service new local numbers join (`from`, `to`, either null for none). */
   | 'settings.default_messaging_service_updated'

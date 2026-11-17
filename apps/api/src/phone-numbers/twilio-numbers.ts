@@ -2,6 +2,7 @@ import {
   type AttachedApplication,
   type AvailableNumbersResponse,
   type Campaign,
+  type MessagingServiceName,
   type MessagingServiceOption,
   type MonthlyPrice,
   type OwnedPhoneNumber,
@@ -167,11 +168,15 @@ interface TwilioMessagingServiceSender {
 
 interface TwilioMessagingServiceContextLike {
   fetch(): Promise<TwilioMessagingService>;
-  /** The service's senders. */
+  /** The service's senders; a sender is named by its number's `PN` sid. */
   phoneNumbers: {
+    (sid: string): { remove(): Promise<boolean> };
     list(
       params: Record<string, unknown>,
     ): Promise<TwilioMessagingServiceSender[]>;
+    create(params: {
+      phoneNumberSid: string;
+    }): Promise<TwilioMessagingServiceSender>;
   };
   /** The service's A2P 10DLC campaign; Twilio allows one per service. */
   usAppToPerson: {
@@ -675,6 +680,7 @@ export class TwilioNumberManagementService {
       const campaigns = service
         ? await this.campaignsOrUnknown([service.sid])
         : new Map<string, Campaign | null>();
+      const campaign = campaignIn(campaigns, service);
 
       return {
         state: 'checked',
@@ -685,6 +691,10 @@ export class TwilioNumberManagementService {
           campaigns,
           expected.messagesInbound,
         ),
+        messagingService:
+          service && campaign !== 'unknown'
+            ? this.optionOf(service, campaign)
+            : null,
       };
     } catch (error) {
       throw this.wrapProviderError(error, 'Failed to check the Twilio number');
@@ -792,6 +802,213 @@ export class TwilioNumberManagementService {
         'Failed to read the messaging service',
       );
     }
+  }
+
+  /**
+   * Makes the number a sender of the messaging service, unless it is a
+   * sender of one already: that service carries its registration today, and
+   * moving it is an administrator's choice on its page, not a side effect of
+   * adding it.
+   */
+  async addToMessagingService(
+    phoneNumber: string,
+    serviceSid: string,
+  ): Promise<
+    { state: 'joined' } | { state: 'kept'; service: MessagingServiceName }
+  > {
+    try {
+      const { numberSid, current } = await this.senderState(phoneNumber);
+
+      if (current) {
+        return { state: 'kept', service: nameOf(current) };
+      }
+
+      await this.addSender(serviceSid, numberSid, phoneNumber);
+
+      return { state: 'joined' };
+    } catch (error) {
+      throw this.wrapProviderError(
+        error,
+        'Failed to add the number to the messaging service',
+      );
+    }
+  }
+
+  /** The messaging service the number sends for now, or null for none. */
+  async currentMessagingService(
+    phoneNumber: string,
+  ): Promise<MessagingServiceName | null> {
+    try {
+      const { current } = await this.senderState(phoneNumber);
+
+      return current ? nameOf(current) : null;
+    } catch (error) {
+      throw this.wrapProviderError(
+        error,
+        "Failed to read the number's messaging service",
+      );
+    }
+  }
+
+  /**
+   * Moves the number into the messaging service from the one it is in, or
+   * adds it when it is in none. Twilio lets a number send for one service
+   * only, so it is taken out of the old one first; when the new one then
+   * refuses it, it is put back, and the error says whether that worked.
+   *
+   * `expectedSid` is the service the administrator saw it in (null for
+   * none); a number found in another is refused with 409 before anything
+   * changes. `beforeChange` gets the service it leaves once that is known and
+   * before Twilio is asked to change anything, so a caller can write the move
+   * down first. Nothing is changed when the number is in the service already.
+   */
+  async moveToMessagingService(
+    phoneNumber: string,
+    serviceSid: string,
+    expectedSid: string | null,
+    beforeChange?: (from: MessagingServiceName | null) => Promise<void>,
+  ): Promise<{ from: MessagingServiceName | null; changed: boolean }> {
+    try {
+      const { numberSid, current } = await this.senderState(phoneNumber);
+
+      if ((current?.sid ?? null) !== expectedSid) {
+        throw new TwilioProviderError(
+          'This number moved to another messaging service since you opened it. Reload it and try again.',
+          409,
+        );
+      }
+
+      const from = current ? nameOf(current) : null;
+
+      if (current?.sid === serviceSid) {
+        return { from, changed: false };
+      }
+
+      await beforeChange?.(from);
+
+      if (current) {
+        await this.removeSender(current, numberSid);
+      }
+
+      try {
+        await this.addSender(serviceSid, numberSid, phoneNumber);
+      } catch (error) {
+        if (!current) {
+          throw error;
+        }
+
+        throw await this.putBack(current, numberSid, error);
+      }
+
+      return { from, changed: true };
+    } catch (error) {
+      throw this.wrapProviderError(
+        error,
+        'Failed to move the number to the messaging service',
+      );
+    }
+  }
+
+  /** The number's `PN` sid and the messaging service it sends for now. */
+  private async senderState(phoneNumber: string): Promise<{
+    numberSid: string;
+    current: MessagingServiceRef | null;
+  }> {
+    const ownedNumber = await this.requireOwnedNumber(phoneNumber);
+    const services = await this.messagingServicesBySender();
+
+    if (services === 'unknown') {
+      throw new TwilioProviderError(
+        "The account's messaging services could not be read, so the number's was not changed. Try again in a moment.",
+        503,
+      );
+    }
+
+    return {
+      numberSid: ownedNumber.sid,
+      current:
+        services.get(normalizePhoneNumber(ownedNumber.phoneNumber)) ?? null,
+    };
+  }
+
+  /**
+   * Adds the sender. One whose answer was lost may have been added all the
+   * same, so a failure is checked against the service before it stands.
+   */
+  private async addSender(
+    serviceSid: string,
+    numberSid: string,
+    phoneNumber: string,
+  ): Promise<void> {
+    try {
+      await this.getClient()
+        .messaging.v1.services(serviceSid)
+        .phoneNumbers.create({ phoneNumberSid: numberSid });
+    } catch (error) {
+      // An account that cannot be read now proves nothing either way, so the
+      // failure stands, as it does when the number is not in the service.
+      const after = await this.senderState(phoneNumber).catch(() => null);
+
+      if (after?.current?.sid === serviceSid) {
+        return;
+      }
+
+      throw new TwilioProviderError(
+        `Twilio did not add the number to the messaging service: ${
+          error instanceof Error ? error.message : 'no answer'
+        }`,
+      );
+    }
+  }
+
+  private async removeSender(
+    service: MessagingServiceRef,
+    numberSid: string,
+  ): Promise<void> {
+    try {
+      await this.getClient()
+        .messaging.v1.services(service.sid)
+        .phoneNumbers(numberSid)
+        .remove();
+    } catch (error) {
+      // An answer that was lost may hide a removal that happened, so the
+      // admin is sent to look rather than told nothing changed.
+      throw new TwilioProviderError(
+        `Twilio did not confirm it took the number out of "${service.friendlyName}" (${
+          error instanceof Error ? error.message : 'no answer'
+        }). Check its messaging service again on this page before trying again.`,
+      );
+    }
+  }
+
+  /**
+   * Puts the number back in the service it left after the new one refused
+   * it, and answers the error to report: either way the move did not happen.
+   */
+  private async putBack(
+    previous: MessagingServiceRef,
+    numberSid: string,
+    refusal: unknown,
+  ): Promise<TwilioProviderError> {
+    const reason = refusal instanceof Error ? refusal.message : 'no answer';
+
+    try {
+      await this.getClient()
+        .messaging.v1.services(previous.sid)
+        .phoneNumbers.create({ phoneNumberSid: numberSid });
+    } catch (error) {
+      this.log.error(
+        { error, serviceSid: previous.sid },
+        'A number taken out of its messaging service could not be put back',
+      );
+      return new TwilioProviderError(
+        `${reason}. It could not be put back in "${previous.friendlyName}" either, so it is in no messaging service now and US carriers block its texts. Add it to one on this page.`,
+      );
+    }
+
+    return new TwilioProviderError(
+      `${reason}. It is back in "${previous.friendlyName}", as before.`,
+    );
   }
 
   /**

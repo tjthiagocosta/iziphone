@@ -126,6 +126,19 @@ describe('importTerms', () => {
     expect(terms.at(-1)).toContain('history comes back');
   });
 
+  test('says what joining the chosen service means instead of the unregistered note', () => {
+    const terms = importTerms(
+      owned({ texting: { kind: 'unregistered' } }),
+      null,
+      {
+        kind: 'none',
+      },
+    ).join(' ');
+
+    expect(terms).toContain('It joins no messaging service');
+    expect(terms).not.toContain('It is in no messaging service');
+  });
+
   test('ends with who answers it once a holder is chosen', () => {
     const number = owned({});
 
@@ -174,11 +187,30 @@ describe('importNotice', () => {
     updatedAt: '2026-04-21T12:00:00.000Z',
   } as const;
 
+  const none = { state: 'none' } as const;
+
   test('sends the admin to Reconnect only when Twilio did not take the settings', () => {
-    expect(importNotice({ ...imported, connected: true })).toBeNull();
-    expect(importNotice({ ...imported, connected: false })).toContain(
-      'Reconnect',
-    );
+    expect(
+      importNotice({ ...imported, connected: true, messagingService: none }),
+    ).toBeNull();
+    expect(
+      importNotice({ ...imported, connected: false, messagingService: none }),
+    ).toContain('Reconnect');
+  });
+
+  test('says both when it neither connected nor joined', () => {
+    const notice = importNotice({
+      ...imported,
+      connected: false,
+      messagingService: {
+        state: 'failed',
+        service: null,
+        message: 'The default messaging service could not be read.',
+      },
+    });
+
+    expect(notice).toContain('Reconnect');
+    expect(notice).toContain('did not join a messaging service');
   });
 });
 
@@ -219,6 +251,7 @@ describe('purchaseTerms', () => {
     const [billing] = purchaseTerms(
       { amount: '1.15', currency: 'USD' },
       'LOCAL',
+      { kind: 'none' },
     );
 
     expect(billing).toContain('$1.15 a month');
@@ -226,15 +259,42 @@ describe('purchaseTerms', () => {
   });
 
   test('says so when the price is unknown instead of guessing', () => {
-    const [billing] = purchaseTerms(null, 'LOCAL');
+    const [billing] = purchaseTerms(null, 'LOCAL', { kind: 'none' });
 
     expect(billing).toContain('could not be read');
     expect(billing).not.toMatch(/\$\d/);
   });
 
   test('names the texting registration each number type needs', () => {
-    expect(purchaseTerms(null, 'LOCAL')[1]).toContain('A2P 10DLC');
-    expect(purchaseTerms(null, 'TOLL_FREE')[1]).toContain('verified');
+    expect(purchaseTerms(null, 'LOCAL', { kind: 'none' })[1]).toContain(
+      'A2P 10DLC',
+    );
+    expect(purchaseTerms(null, 'TOLL_FREE', { kind: 'none' })[1]).toContain(
+      'verified',
+    );
+  });
+
+  test('says what joining the chosen service means for a local number only', () => {
+    const joining = {
+      kind: 'service',
+      service: {
+        ...CUSTOMER_CARE,
+        campaign: {
+          status: 'approved',
+          twilioStatus: 'VERIFIED',
+          useCase: 'CUSTOMER_CARE',
+          description: '',
+        },
+        keepsIncomingTexts: false,
+      },
+    } as const;
+
+    expect(purchaseTerms(null, 'LOCAL', joining).at(-1)).toContain(
+      'It joins “Customer Care”',
+    );
+    expect(purchaseTerms(null, 'TOLL_FREE', joining).join(' ')).not.toContain(
+      'Customer Care',
+    );
   });
 });
 
@@ -304,10 +364,28 @@ describe('purchaseNotice', () => {
     createdAt: '2026-04-21T12:00:00.000Z',
     updatedAt: '2026-04-21T12:00:00.000Z',
     connected: true,
+    messagingService: { state: 'joined', service: CUSTOMER_CARE },
   };
 
   test('has nothing to add when the number is set up', () => {
     expect(purchaseNotice(bought)).toBeNull();
+  });
+
+  test('says when the number did not join its messaging service', () => {
+    const notice = purchaseNotice({
+      ...bought,
+      messagingService: {
+        state: 'failed',
+        service: CUSTOMER_CARE,
+        message: 'Twilio did not add it.',
+      },
+    });
+
+    expect(notice).toContain(
+      'did not join the messaging service “Customer Care”',
+    );
+    expect(notice).toContain('Twilio did not add it.');
+    expect(notice).not.toContain('Reconnect');
   });
 
   test('says the number is bought and needs Reconnect, not a second purchase', () => {

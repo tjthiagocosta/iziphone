@@ -5,6 +5,10 @@ import {
   defaultRefusal,
   type ImportedPhoneNumber,
   type ImportPhoneNumber,
+  joinRefusal,
+  type MessagingServiceChange,
+  type MessagingServiceJoin,
+  type MessagingServiceName,
   type MessagingServiceOption,
   type MessagingServicesResponse,
   type MonthlyPrice,
@@ -20,6 +24,7 @@ import {
   REFUSAL_TEXT,
   type ReleasedPhoneNumber,
   type SearchAvailableNumbers,
+  type SetMessagingService,
   type UpdatePhoneNumber,
 } from '@repo/dto';
 import type { FastifyBaseLogger } from 'fastify';
@@ -70,6 +75,9 @@ export type NumberProvider = Pick<
   | 'checkConnection'
   | 'listMessagingServices'
   | 'readMessagingService'
+  | 'addToMessagingService'
+  | 'moveToMessagingService'
+  | 'currentMessagingService'
 >;
 
 /**
@@ -84,6 +92,20 @@ export interface TextingDefaults {
     ipAddress?: string,
   ): Promise<void>;
 }
+
+/**
+ * The messaging service a number about to be bought or added joins, settled
+ * before anything is bought: none, a service checked to register its texts,
+ * or a default that cannot be used now, which never stops the purchase.
+ */
+type JoinPlan =
+  | { kind: 'none' }
+  | { kind: 'join'; service: MessagingServiceName }
+  | {
+      kind: 'unusable-default';
+      service: MessagingServiceName | null;
+      message: string;
+    };
 
 /** A number the account holds, about to be written to the list with its holder. */
 interface HeldNumberRecord {
@@ -227,6 +249,12 @@ export class PhoneNumberService {
       throw alreadyOnAccount();
     }
 
+    // Search offers only numbers that can text, so a bought number does.
+    const joining = await this.serviceToJoin(data.messagingServiceSid, {
+      local: data.type === 'LOCAL',
+      texts: true,
+    });
+
     await this.provider.buyNumber({
       country: data.country,
       phoneNumber: data.phoneNumber,
@@ -296,6 +324,15 @@ export class PhoneNumberService {
       );
     }
 
+    // Registering its texts does not depend on its webhooks, so it is tried
+    // whether or not Twilio took them. A number just sold is in no service.
+    const messagingService = await this.joinAfterAdding(
+      recorded,
+      joining,
+      { mayBeInOne: false },
+      actorId,
+      ipAddress,
+    );
     const described = connected
       ? await this.applyOwnedMetadata(recorded, data.type)
       : recorded;
@@ -309,11 +346,16 @@ export class PhoneNumberService {
         actorId,
         boughtBack: Boolean(previous),
         connected,
+        messagingService: messagingService.state,
       },
       'Phone number purchased',
     );
 
-    return { ...toPhoneNumberResponse(described), connected };
+    return {
+      ...toPhoneNumberResponse(described),
+      connected,
+      messagingService,
+    };
   }
 
   /**
@@ -401,6 +443,10 @@ export class PhoneNumberService {
     const { metadata, settings } = await this.provider.readNumberForImport(
       data.phoneNumber,
     );
+    const joining = await this.serviceToJoin(data.messagingServiceSid, {
+      local: metadata.type === 'LOCAL',
+      texts: metadata.smsEnabled,
+    });
     const holder = holderOf(data.owner ?? null);
     let recorded: PhoneNumberRow;
 
@@ -453,6 +499,14 @@ export class PhoneNumberService {
       );
     }
 
+    const messagingService = await this.joinAfterAdding(
+      recorded,
+      joining,
+      { mayBeInOne: true },
+      actorId,
+      ipAddress,
+    );
+
     await this.refreshRoutingAfterward(recorded, actorId);
     this.log.info(
       {
@@ -460,11 +514,12 @@ export class PhoneNumberService {
         actorId,
         releasedHereBefore: Boolean(previous),
         connected,
+        messagingService: messagingService.state,
       },
       'Phone number imported',
     );
 
-    return { ...toPhoneNumberResponse(recorded), connected };
+    return { ...toPhoneNumberResponse(recorded), connected, messagingService };
   }
 
   /** The account's messaging services an administrator can choose between, and the default. */
@@ -508,6 +563,71 @@ export class PhoneNumberService {
     );
 
     return { defaultSid: messagingServiceSid };
+  }
+
+  /**
+   * Puts a listed local number in a messaging service, moving it from the one
+   * it is in. The audit entry, naming both services, is written once Twilio
+   * says where the number is and before it is changed, so a move that fails
+   * half-way is on record. Null when the number is not listed.
+   *
+   * @throws AdminServiceError 400 when the number cannot text through a
+   *   service here or the service cannot register it, 409 while it is being
+   *   released.
+   * @throws TwilioProviderError 409 when the number is in a service other
+   *   than the one the admin saw.
+   */
+  async setMessagingService(
+    id: string,
+    data: SetMessagingService,
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<MessagingServiceChange | null> {
+    const row = await this.db.phoneNumber.findUnique({
+      where: { id, deletedAt: null },
+      select: { phoneNumber: true, type: true, smsEnabled: true, status: true },
+    });
+
+    if (!row) {
+      return null;
+    }
+    if (row.status === 'RELEASED') {
+      throw beingReleased();
+    }
+    if (row.type !== 'LOCAL' || !row.smsEnabled) {
+      throw cannotJoin();
+    }
+
+    const target = await this.requireMessagingService(data.messagingServiceSid);
+    const refusal = joinRefusal(target);
+
+    if (refusal) {
+      throw new AdminServiceError(REFUSAL_TEXT[refusal]);
+    }
+
+    const to = serviceName(target);
+    const moved = await this.provider.moveToMessagingService(
+      row.phoneNumber,
+      to.sid,
+      data.expectedMessagingServiceSid,
+      async (from) => {
+        await this.auditLog.create({
+          action: 'phone_number.messaging_service_changed',
+          entityType: 'PhoneNumber',
+          entityId: id,
+          userId: actorId,
+          changes: { phoneNumber: row.phoneNumber, from, to },
+          ipAddress,
+        });
+      },
+    );
+
+    this.log.info(
+      { phoneNumberId: id, actorId, changed: moved.changed },
+      'Phone number messaging service set',
+    );
+
+    return { from: moved.from, to };
   }
 
   /**
@@ -1069,6 +1189,163 @@ export class PhoneNumberService {
     });
   }
 
+  /**
+   * The service a number about to be bought or added joins. A service the
+   * request names must register its texts, or nothing is bought; left out,
+   * the deployment's default applies, and a default that cannot be used now
+   * is reported after the purchase instead of stopping it.
+   */
+  private async serviceToJoin(
+    requested: string | null | undefined,
+    number: { local: boolean; texts: boolean },
+  ): Promise<JoinPlan> {
+    if (!number.local || !number.texts) {
+      if (requested) {
+        throw cannotJoin();
+      }
+      return { kind: 'none' };
+    }
+    if (requested === null) {
+      return { kind: 'none' };
+    }
+    if (requested !== undefined) {
+      const service = await this.requireMessagingService(requested);
+      const refusal = joinRefusal(service);
+
+      if (refusal) {
+        throw new AdminServiceError(REFUSAL_TEXT[refusal]);
+      }
+      return { kind: 'join', service: serviceName(service) };
+    }
+
+    const defaultSid = await this.textingDefaults.readDefaultMessagingService();
+
+    if (!defaultSid) {
+      return { kind: 'none' };
+    }
+
+    let service: MessagingServiceOption | null;
+
+    try {
+      service = await this.provider.readMessagingService(defaultSid);
+    } catch (error) {
+      // The number is worth buying without it; its page can add it later.
+      this.log.warn({ error }, 'Could not read the default messaging service');
+      return {
+        kind: 'unusable-default',
+        service: null,
+        message:
+          'The default messaging service could not be read from Twilio, so the number did not join it.',
+      };
+    }
+
+    if (!service) {
+      return {
+        kind: 'unusable-default',
+        service: null,
+        message:
+          'The default messaging service is no longer on your Twilio account. Choose another one in Settings.',
+      };
+    }
+
+    const refusal = defaultRefusal(service);
+
+    return refusal
+      ? {
+          kind: 'unusable-default',
+          service: serviceName(service),
+          message: REFUSAL_TEXT[refusal],
+        }
+      : { kind: 'join', service: serviceName(service) };
+  }
+
+  /**
+   * Adds a number just bought or added to the service planned for it. The
+   * number is listed either way, so a failure is answered, not thrown, and
+   * the number's page can add it later; a number already in a service stays
+   * in it, and an unusable default is no failure for such a number.
+   */
+  private async joinAfterAdding(
+    row: { id: string; phoneNumber: string },
+    plan: JoinPlan,
+    { mayBeInOne }: { mayBeInOne: boolean },
+    actorId: string,
+    ipAddress?: string,
+  ): Promise<MessagingServiceJoin> {
+    if (plan.kind === 'none') {
+      return { state: 'none' };
+    }
+    if (plan.kind === 'unusable-default') {
+      const current = mayBeInOne
+        ? await this.provider
+            .currentMessagingService(row.phoneNumber)
+            .catch((error: unknown) => {
+              // Unknown is reported as not joined, which the page can check.
+              this.log.warn(
+                { error, phoneNumberId: row.id },
+                'Could not read the messaging service of an added number',
+              );
+              return null;
+            })
+        : null;
+
+      return current
+        ? { state: 'kept', service: current }
+        : { state: 'failed', service: plan.service, message: plan.message };
+    }
+
+    let placed: Awaited<ReturnType<NumberProvider['addToMessagingService']>>;
+
+    try {
+      placed = await this.provider.addToMessagingService(
+        row.phoneNumber,
+        plan.service.sid,
+      );
+    } catch (error) {
+      this.log.error(
+        { error, phoneNumberId: row.id, actorId },
+        'Number could not join its messaging service',
+      );
+      return {
+        state: 'failed',
+        service: plan.service,
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Twilio did not add it to the messaging service.',
+      };
+    }
+
+    if (placed.state === 'kept') {
+      return placed;
+    }
+
+    try {
+      await this.auditLog.create({
+        action: 'phone_number.messaging_service_joined',
+        entityType: 'PhoneNumber',
+        entityId: row.id,
+        userId: actorId,
+        changes: { phoneNumber: row.phoneNumber, from: null, to: plan.service },
+        ipAddress,
+      });
+    } catch (error) {
+      // The number joined; answering otherwise would send the admin to add
+      // it a second time. The log keeps what the audit entry would have.
+      this.log.error(
+        {
+          error,
+          phoneNumberId: row.id,
+          actorId,
+          serviceSid: plan.service.sid,
+        },
+        'Number joined its messaging service, but the audit entry could not be written',
+      );
+    }
+
+    return { state: 'joined', service: plan.service };
+  }
+
   /** @throws AdminServiceError 400 when the account has no messaging service by that sid. */
   private async requireMessagingService(
     sid: string,
@@ -1259,6 +1536,16 @@ function changedHands(): AdminServiceError {
     'This number changed hands while you were editing it. Reload it and try again.',
     409,
   );
+}
+
+function cannotJoin(): AdminServiceError {
+  return new AdminServiceError(
+    'Only a local number that can text joins a messaging service here; a toll-free number is verified in the Twilio Console.',
+  );
+}
+
+function serviceName(service: MessagingServiceOption): MessagingServiceName {
+  return { sid: service.sid, friendlyName: service.friendlyName };
 }
 
 function beingReleased(): AdminServiceError {

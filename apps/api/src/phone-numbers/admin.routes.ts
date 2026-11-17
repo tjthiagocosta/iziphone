@@ -3,6 +3,7 @@ import {
   PhoneNumberListQuerySchema,
   PurchasePhoneNumberSchema,
   SearchAvailableNumbersSchema,
+  SetMessagingServiceSchema,
   UpdateDefaultMessagingServiceSchema,
   UpdatePhoneNumberSchema,
 } from '@repo/dto';
@@ -163,6 +164,30 @@ export const adminPhoneNumberRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       return reply.send(phoneNumber);
+    },
+  );
+
+  fastify.put<{ Params: { id: string } }>(
+    '/:id/messaging-service',
+    async (request, reply) => {
+      const data = SetMessagingServiceSchema.parse(request.body);
+      const actor = authenticatedUser(request);
+
+      const change = await phoneNumberService.setMessagingService(
+        request.params.id,
+        data,
+        actor.id,
+        request.ip,
+      );
+
+      if (!change) {
+        return reply.status(404).send({
+          error: 'Not Found',
+          message: 'Phone number not found',
+        });
+      }
+
+      return reply.send(change);
     },
   );
 
